@@ -1,0 +1,32 @@
+{% extends 'animation/base.html' %}
+
+{% block title %}Создать проект{% endblock %}
+
+{% block content %}
+<h2>Создать новый проект</h2>
+
+<form method="post">
+    {% csrf_token %}
+    <label>
+        Название
+        <input type="text" name="title">
+    </label>
+    <br>
+    <label>
+        FPS
+        <input type="number" name="fps" value="12" min="1" max="60">
+    </label>
+    <br>
+    <label>
+        Ширина
+        <input type="number" name="width" value="1280" min="100">
+    </label>
+    <br>
+    <label>
+        Высота
+        <input type="number" name="height" value="720" min="100">
+    </label>
+    <br>
+    <button type="submit">Создать</button>
+</form>
+{% endblock %}

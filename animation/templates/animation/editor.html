@@ -1,0 +1,57 @@
+{% extends 'animation/base.html' %}
+{% load static %}
+
+{% block title %}Редактор проекта {{ project.title }}{% endblock %}
+
+{% block content %}
+<div class="editor-root">
+
+    <div class="editor-toolbar">
+        <button type="button"
+                class="tool-button tool-button--active"
+                data-tool="brush">
+            Кисть
+        </button>
+
+        <button type="button"
+                class="tool-button"
+                data-tool="eraser">
+            Ластик
+        </button>
+
+        <label class="tool-control">
+            Цвет
+            <input type="color"
+                   id="color-picker"
+                   value="#000000">
+        </label>
+
+        <label class="tool-control">
+            Размер
+            <input type="range"
+                   id="brush-size"
+                   min="1"
+                   max="50"
+                   value="4">
+        </label>
+    </div>
+
+    <div class="editor-main">
+        <div class="canvas-wrapper">
+            <canvas id="editor-canvas"
+                    width="{{ project.width }}"
+                    height="{{ project.height }}">
+            </canvas>
+        </div>
+    </div>
+
+</div>
+
+{# bootstrap-код и подключение JS #}
+<script>
+    window.ANIM_PROJECT_ID = {{ project.id }};
+    window.ANIM_PROJECT_WIDTH = {{ project.width }};
+    window.ANIM_PROJECT_HEIGHT = {{ project.height }};
+</script>
+<script src="{% static 'animation/editor.js' %}"></script>
+{% endblock %}

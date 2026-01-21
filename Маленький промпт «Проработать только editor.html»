@@ -1,0 +1,23 @@
+Сейчас сосредоточься только на файле templates/animation/editor.html
+
+Цель
+- Страница редактора одного AnimationProject
+- Должна содержать
+  - панель инструментов
+  - область Canvas
+  - минимальный аккуратный layout без лишней верстки
+
+Сделай
+- Разметку на основе base.html
+- Структуру с классами
+  .editor-root
+    .editor-toolbar
+    .editor-main
+      .canvas-wrapper
+- Подключение static/animation/editor.js
+- Вывод размеров холста из полей project.width и project.height
+
+Не пиши JS логики в editor.html
+все скрипты кроме подключения editor.js убери
+
+Покажи полный файл editor.html и коротко поясни структуру
