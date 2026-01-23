@@ -5,16 +5,530 @@
 {% block content %}
 <h2>Мои проекты</h2>
 
-<a href="{% url 'animation:project_create' %}">Создать новый проект</a>
+<button type="button"
+        class="project-action"
+        id="create-project-button">
+    Создать новый проект
+</button>
 
-<ul>
-    {% for project in projects %}
-        <li>
-            {{ project.title }} ({{ project.width }}x{{ project.height }}, {{ project.fps }} fps)
-            — <a href="{% url 'animation:project_editor' project.pk %}">Открыть</a>
-        </li>
-    {% empty %}
-        <li>Проектов пока нет</li>
+<ul class="messages" id="project-messages"{% if not messages %} hidden{% endif %}>
+    {% for message in messages %}
+        <li class="message message--{{ message.tags }}">{{ message }}</li>
     {% endfor %}
 </ul>
+
+<ul class="project-list" id="project-list">
+    {% for project in projects %}
+        <li class="project-item" data-project-id="{{ project.id }}">
+            <div class="project-info">
+                <strong class="project-title">{{ project.title }}</strong>
+                <span class="project-meta">
+                    ({{ project.width }}x{{ project.height }}, {{ project.fps }} fps)
+                </span>
+            </div>
+            <div class="project-actions">
+                <a class="project-action" href="{% url 'animation:project_editor' project.pk %}">
+                    Открыть
+                </a>
+                <button type="button"
+                        class="project-action js-rename-button"
+                        data-project-id="{{ project.id }}"
+                        data-project-title="{{ project.title }}"
+                        data-rename-url="{% url 'animation:project_rename' project.pk %}">
+                    Переименовать
+                </button>
+                <button type="button"
+                        class="project-action project-action--danger js-delete-button"
+                        data-project-title="{{ project.title }}"
+                        data-delete-url="{% url 'animation:project_delete' project.pk %}">
+                    Удалить
+                </button>
+            </div>
+        </li>
+    {% endfor %}
+    <li class="project-empty" id="project-empty"{% if projects %} hidden{% endif %}>
+        Проектов пока нет
+    </li>
+</ul>
+
+<div class="modal" id="create-modal" hidden>
+    <div class="modal__overlay" data-modal-close></div>
+    <div class="modal__content" role="dialog" aria-modal="true" aria-labelledby="create-modal-title">
+        <div class="modal__header">
+            <h3 class="modal__title" id="create-modal-title">Создать новый проект</h3>
+            <button type="button" class="modal__close" data-modal-close aria-label="Закрыть">×</button>
+        </div>
+        <form method="post"
+              action="{% url 'animation:project_create' %}"
+              class="modal__body"
+              id="create-form">
+            {% csrf_token %}
+            <label class="form-field">
+                Название
+                <input type="text"
+                       name="title"
+                       id="create-title-input"
+                       maxlength="200"
+                       placeholder="Новый проект">
+            </label>
+            <label class="form-field">
+                Ширина (px)
+                <input type="number"
+                       name="width"
+                       min="1"
+                       value="1280"
+                       required>
+            </label>
+            <label class="form-field">
+                Высота (px)
+                <input type="number"
+                       name="height"
+                       min="1"
+                       value="720"
+                       required>
+            </label>
+            <label class="form-field">
+                FPS
+                <input type="number"
+                       name="fps"
+                       min="1"
+                       value="12"
+                       required>
+            </label>
+            <p class="form-error" id="create-error" hidden></p>
+            <div class="modal__actions">
+                <button type="submit" class="tool-button">Создать</button>
+                <button type="button" class="project-action" data-modal-close>Отмена</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<div class="modal" id="rename-modal" hidden>
+    <div class="modal__overlay" data-modal-close></div>
+    <div class="modal__content" role="dialog" aria-modal="true" aria-labelledby="rename-modal-title">
+        <div class="modal__header">
+            <h3 class="modal__title" id="rename-modal-title">Переименовать проект</h3>
+            <button type="button" class="modal__close" data-modal-close aria-label="Закрыть">×</button>
+        </div>
+        <form method="post" class="modal__body" id="rename-form">
+            {% csrf_token %}
+            <input type="hidden" name="project_id" id="rename-project-id">
+            <label class="form-field">
+                Новое название
+                <input type="text"
+                       name="new_title"
+                       id="rename-title-input"
+                       maxlength="200"
+                       required>
+            </label>
+            <p class="modal__hint" id="rename-current-title"></p>
+            <p class="form-error" id="rename-error" hidden></p>
+            <div class="modal__actions">
+                <button type="submit" class="tool-button">Сохранить</button>
+                <button type="button" class="project-action" data-modal-close>Отмена</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<div class="modal" id="delete-modal" hidden>
+    <div class="modal__overlay" data-modal-close></div>
+    <div class="modal__content" role="dialog" aria-modal="true" aria-labelledby="delete-modal-title">
+        <div class="modal__header">
+            <h3 class="modal__title" id="delete-modal-title">Удаление проекта</h3>
+            <button type="button" class="modal__close" data-modal-close aria-label="Закрыть">×</button>
+        </div>
+        <form method="post" class="modal__body" id="delete-form">
+            {% csrf_token %}
+            <p class="modal__text" id="delete-modal-text"></p>
+            <p class="form-error" id="delete-error" hidden></p>
+            <div class="modal__actions">
+                <button type="submit" class="project-action project-action--danger">
+                    Удалить
+                </button>
+                <button type="button" class="project-action" data-modal-close>Отмена</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<script>
+    document.addEventListener('DOMContentLoaded', () => {
+        const createModal = document.getElementById('create-modal');
+        const renameModal = document.getElementById('rename-modal');
+        const deleteModal = document.getElementById('delete-modal');
+        const createButton = document.getElementById('create-project-button');
+        const createForm = document.getElementById('create-form');
+        const createTitleInput = document.getElementById('create-title-input');
+        const createError = document.getElementById('create-error');
+        const renameForm = document.getElementById('rename-form');
+        const renameTitleInput = document.getElementById('rename-title-input');
+        const renameProjectId = document.getElementById('rename-project-id');
+        const renameCurrentTitle = document.getElementById('rename-current-title');
+        const renameError = document.getElementById('rename-error');
+        const deleteForm = document.getElementById('delete-form');
+        const deleteModalText = document.getElementById('delete-modal-text');
+        const deleteError = document.getElementById('delete-error');
+        const messagesList = document.getElementById('project-messages');
+        const projectList = document.getElementById('project-list');
+        const emptyState = document.getElementById('project-empty');
+
+        const getCookie = (name) => {
+            if (!document.cookie) return null;
+
+            const cookies = document.cookie.split(';');
+            for (const cookie of cookies) {
+                const trimmed = cookie.trim();
+                if (trimmed.startsWith(`${name}=`)) {
+                    return decodeURIComponent(trimmed.substring(name.length + 1));
+                }
+            }
+
+            return null;
+        };
+
+        const showMessage = (text, type = 'success') => {
+            if (!messagesList) return;
+
+            messagesList.hidden = false;
+            messagesList.innerHTML = '';
+            const item = document.createElement('li');
+            item.className = `message message--${type}`;
+            item.textContent = text;
+            messagesList.appendChild(item);
+        };
+
+        const keepSingleMessage = () => {
+            if (!messagesList) return;
+            const items = Array.from(messagesList.querySelectorAll('.message'));
+            if (items.length <= 1) return;
+            const lastItem = items[items.length - 1];
+            messagesList.innerHTML = '';
+            messagesList.appendChild(lastItem);
+        };
+
+        const showInlineError = (target, text) => {
+            if (!target) return;
+            target.textContent = text;
+            target.hidden = false;
+        };
+
+        const clearInlineError = (target) => {
+            if (!target) return;
+            target.textContent = '';
+            target.hidden = true;
+        };
+
+        const createProjectItem = (project) => {
+            const item = document.createElement('li');
+            item.className = 'project-item';
+            item.dataset.projectId = project.id;
+
+            const info = document.createElement('div');
+            info.className = 'project-info';
+
+            const title = document.createElement('strong');
+            title.className = 'project-title';
+            title.textContent = project.title;
+
+            const meta = document.createElement('span');
+            meta.className = 'project-meta';
+            meta.textContent = `(${project.width}x${project.height}, ${project.fps} fps)`;
+
+            info.append(title, meta);
+
+            const actions = document.createElement('div');
+            actions.className = 'project-actions';
+
+            const openLink = document.createElement('a');
+            openLink.className = 'project-action';
+            openLink.href = project.editor_url;
+            openLink.textContent = 'Открыть';
+
+            const renameButton = document.createElement('button');
+            renameButton.type = 'button';
+            renameButton.className = 'project-action js-rename-button';
+            renameButton.dataset.projectId = project.id;
+            renameButton.dataset.projectTitle = project.title;
+            renameButton.dataset.renameUrl = project.rename_url;
+            renameButton.textContent = 'Переименовать';
+
+            const deleteButton = document.createElement('button');
+            deleteButton.type = 'button';
+            deleteButton.className = 'project-action project-action--danger js-delete-button';
+            deleteButton.dataset.projectTitle = project.title;
+            deleteButton.dataset.deleteUrl = project.delete_url;
+            deleteButton.textContent = 'Удалить';
+
+            actions.append(openLink, renameButton, deleteButton);
+            item.append(info, actions);
+
+            return item;
+        };
+
+        const openModal = (modal) => {
+            if (!modal) return;
+            modal.hidden = false;
+            document.body.classList.add('modal-open');
+        };
+
+        const closeModal = (modal) => {
+            if (!modal) return;
+            modal.hidden = true;
+            document.body.classList.remove('modal-open');
+        };
+
+        const closeAllModals = () => {
+            closeModal(createModal);
+            closeModal(renameModal);
+            closeModal(deleteModal);
+        };
+
+        const handleRenameButtonClick = (button) => {
+            const title = button.dataset.projectTitle || '';
+            const renameUrl = button.dataset.renameUrl || '';
+            const projectId = button.dataset.projectId || '';
+
+            if (renameForm) {
+                renameForm.action = renameUrl;
+            }
+            if (renameTitleInput) {
+                renameTitleInput.value = title;
+                renameTitleInput.focus();
+                renameTitleInput.select();
+            }
+            if (renameProjectId) {
+                renameProjectId.value = projectId;
+            }
+            if (renameCurrentTitle) {
+                renameCurrentTitle.textContent = `Текущее название: ${title}`;
+            }
+            clearInlineError(renameError);
+
+            openModal(renameModal);
+        };
+
+        const handleDeleteButtonClick = (button) => {
+            const title = button.dataset.projectTitle || '';
+            const deleteUrl = button.dataset.deleteUrl || '';
+
+            if (deleteForm) {
+                deleteForm.action = deleteUrl;
+                deleteForm.dataset.projectTitle = title;
+                deleteForm.dataset.projectId = button.closest('.project-item')?.dataset.projectId || '';
+            }
+            if (deleteModalText) {
+                deleteModalText.textContent = `Удалить проект «${title}»? Это действие нельзя отменить.`;
+            }
+            clearInlineError(deleteError);
+
+            openModal(deleteModal);
+        };
+
+        if (createButton) {
+            createButton.addEventListener('click', () => {
+                if (createForm) {
+                    createForm.reset();
+                }
+                if (createTitleInput) {
+                    createTitleInput.focus();
+                }
+                clearInlineError(createError);
+                openModal(createModal);
+            });
+        }
+
+        if (projectList) {
+            projectList.addEventListener('click', (event) => {
+                const renameButton = event.target.closest('.js-rename-button');
+                if (renameButton) {
+                    event.preventDefault();
+                    handleRenameButtonClick(renameButton);
+                    return;
+                }
+
+                const deleteButton = event.target.closest('.js-delete-button');
+                if (deleteButton) {
+                    event.preventDefault();
+                    handleDeleteButtonClick(deleteButton);
+                }
+            });
+        }
+
+        document.querySelectorAll('[data-modal-close]').forEach((button) => {
+            button.addEventListener('click', closeAllModals);
+        });
+
+        document.addEventListener('keydown', (event) => {
+            if (event.key === 'Escape') {
+                closeAllModals();
+            }
+        });
+
+        keepSingleMessage();
+
+        if (createForm) {
+            createForm.addEventListener('submit', async (event) => {
+                event.preventDefault();
+                clearInlineError(createError);
+
+                const formData = new FormData(createForm);
+                const submitButton = createForm.querySelector('button[type="submit"]');
+
+                try {
+                    if (submitButton) {
+                        submitButton.disabled = true;
+                    }
+                    const response = await fetch(createForm.action, {
+                        method: 'POST',
+                        headers: {
+                            'X-CSRFToken': getCookie('csrftoken'),
+                            'X-Requested-With': 'XMLHttpRequest',
+                        },
+                        credentials: 'same-origin',
+                        body: formData,
+                    });
+
+                    const data = await response.json();
+                    if (!response.ok || !data.ok) {
+                        showInlineError(createError, 'Не удалось создать проект.');
+                        return;
+                    }
+
+                    if (data.project && projectList && emptyState) {
+                        const item = createProjectItem(data.project);
+                        projectList.insertBefore(item, emptyState);
+                        emptyState.hidden = true;
+                    }
+
+                    showMessage('Проект создан.', 'success');
+                    closeModal(createModal);
+                } catch (error) {
+                    showInlineError(createError, 'Не удалось создать проект.');
+                } finally {
+                    if (submitButton) {
+                        submitButton.disabled = false;
+                    }
+                }
+            });
+        }
+
+        if (renameForm) {
+            renameForm.addEventListener('submit', async (event) => {
+                event.preventDefault();
+                clearInlineError(renameError);
+
+                const formData = new FormData(renameForm);
+                const projectId = formData.get('project_id');
+                const newTitle = formData.get('new_title');
+                const submitButton = renameForm.querySelector('button[type="submit"]');
+
+                try {
+                    if (submitButton) {
+                        submitButton.disabled = true;
+                    }
+                    const response = await fetch(renameForm.action, {
+                        method: 'POST',
+                        headers: {
+                            'X-CSRFToken': getCookie('csrftoken'),
+                            'X-Requested-With': 'XMLHttpRequest',
+                        },
+                        credentials: 'same-origin',
+                        body: formData,
+                    });
+
+                    const data = await response.json();
+                    if (!response.ok || !data.ok) {
+                        let errorText = 'Не удалось переименовать проект.';
+                        if (data && data.error === 'empty_title') {
+                            errorText = 'Название не может быть пустым.';
+                        }
+                        if (data && data.error === 'invalid_project') {
+                            errorText = 'Некорректный проект.';
+                        }
+                        showInlineError(renameError, errorText);
+                        return;
+                    }
+
+                    const updatedTitle = data.title || newTitle;
+                    const item = document.querySelector(`.project-item[data-project-id="${projectId}"]`);
+                    if (item) {
+                        const titleNode = item.querySelector('.project-title');
+                        if (titleNode) {
+                            titleNode.textContent = updatedTitle;
+                        }
+                        const renameButton = item.querySelector('.js-rename-button');
+                        if (renameButton) {
+                            renameButton.dataset.projectTitle = updatedTitle;
+                        }
+                        const deleteButton = item.querySelector('.js-delete-button');
+                        if (deleteButton) {
+                            deleteButton.dataset.projectTitle = updatedTitle;
+                        }
+                    }
+
+                    showMessage('Название проекта обновлено.', 'success');
+                    closeModal(renameModal);
+                } catch (error) {
+                    showInlineError(renameError, 'Не удалось переименовать проект.');
+                } finally {
+                    if (submitButton) {
+                        submitButton.disabled = false;
+                    }
+                }
+            });
+        }
+
+        if (deleteForm) {
+            deleteForm.addEventListener('submit', async (event) => {
+                event.preventDefault();
+                clearInlineError(deleteError);
+
+                const projectId = deleteForm.dataset.projectId || '';
+                const projectTitle = deleteForm.dataset.projectTitle || '';
+                const submitButton = deleteForm.querySelector('button[type="submit"]');
+
+                try {
+                    if (submitButton) {
+                        submitButton.disabled = true;
+                    }
+                    const response = await fetch(deleteForm.action, {
+                        method: 'POST',
+                        headers: {
+                            'X-CSRFToken': getCookie('csrftoken'),
+                            'X-Requested-With': 'XMLHttpRequest',
+                        },
+                        credentials: 'same-origin',
+                    });
+
+                    const data = await response.json();
+                    if (!response.ok || !data.ok) {
+                        showInlineError(deleteError, 'Не удалось удалить проект.');
+                        return;
+                    }
+
+                    const item = document.querySelector(`.project-item[data-project-id="${projectId}"]`);
+                    if (item) {
+                        item.remove();
+                    }
+
+                    if (projectList && emptyState) {
+                        const hasItems = projectList.querySelector('.project-item');
+                        emptyState.hidden = Boolean(hasItems);
+                    }
+
+                    showMessage(`Проект «${projectTitle}» удалён.`, 'success');
+                    closeModal(deleteModal);
+                } catch (error) {
+                    showInlineError(deleteError, 'Не удалось удалить проект.');
+                } finally {
+                    if (submitButton) {
+                        submitButton.disabled = false;
+                    }
+                }
+            });
+        }
+    });
+</script>
 {% endblock %}

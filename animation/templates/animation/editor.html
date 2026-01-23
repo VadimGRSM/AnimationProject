@@ -4,20 +4,130 @@
 {% block title %}Редактор проекта {{ project.title }}{% endblock %}
 
 {% block content %}
-<div class="editor-root">
+<div class="editor-root"
+     data-project-id="{{ project.id }}"
+     data-project-width="{{ project.width }}"
+     data-project-height="{{ project.height }}"
+     data-project-save-url="{% url 'animation:project_save' project.pk %}"
+     data-frame-save-url-template="{% url 'animation:frame_save' project.pk 0 %}"
+     data-current-frame-preview-url="{{ current_frame_preview_url }}"
+     data-current-frame-updated-at="{{ current_frame_updated_at }}"
+     data-current-frame-index="{{ current_frame_index }}">
+
+    <div class="editor-header">
+        <div class="editor-title">
+            <span class="save-indicator save-indicator--idle"
+                  id="save-indicator"
+                  aria-hidden="true"></span>
+            <h2 class="editor-project-title">{{ project.title }}</h2>
+        </div>
+        <div class="editor-save">
+            <button type="button"
+                    id="save-project-button"
+                    class="tool-button"
+                    disabled>
+                Сохранить проект
+            </button>
+            <span class="save-status" id="save-status" aria-live="polite">
+                Нет изменений
+            </span>
+            <span class="save-last-time" id="last-saved-time"></span>
+        </div>
+    </div>
 
     <div class="editor-toolbar">
         <button type="button"
                 class="tool-button tool-button--active"
-                data-tool="brush">
-            Кисть
+                data-tool="brush"
+                aria-label="Кисть">
+            <img class="tool-icon" src="{% static 'animation/icons/brush.svg' %}" alt="">
         </button>
 
         <button type="button"
                 class="tool-button"
-                data-tool="eraser">
-            Ластик
+                data-tool="eraser"
+                aria-label="Ластик">
+            <img class="tool-icon" src="{% static 'animation/icons/eraser.svg' %}" alt="">
         </button>
+
+        <button type="button"
+                class="tool-button"
+                data-tool="fill"
+                aria-label="Заливка">
+            <img class="tool-icon" src="{% static 'animation/icons/fill.svg' %}" alt="">
+        </button>
+
+        <button type="button"
+                class="tool-button"
+                data-tool="line"
+                aria-label="Линия">
+            <img class="tool-icon" src="{% static 'animation/icons/line.svg' %}" alt="">
+        </button>
+
+        <button type="button"
+                class="tool-button"
+                data-tool="rectangle"
+                aria-label="Прямоугольник">
+            <img class="tool-icon" src="{% static 'animation/icons/rectangle.svg' %}" alt="">
+        </button>
+
+        <button type="button"
+                class="tool-button"
+                data-tool="ellipse"
+                aria-label="Окружность">
+            <img class="tool-icon" src="{% static 'animation/icons/ellipse.svg' %}" alt="">
+        </button>
+
+        <button type="button"
+                class="tool-button"
+                data-tool="pan"
+                aria-label="Панорама">
+            <img class="tool-icon" src="{% static 'animation/icons/hand.svg' %}" alt="">
+        </button>
+
+        <button type="button"
+                class="tool-button"
+                data-tool="select"
+                aria-label="Выделение">
+            <img class="tool-icon" src="{% static 'animation/icons/lasso.svg' %}" alt="">
+        </button>
+
+        <div class="tool-control tool-control--group">
+            <span class="tool-control__label">Режим выделения</span>
+            <button type="button"
+                    class="tool-button tool-button--mode tool-button--active"
+                    data-select-mode="rect"
+                    aria-label="Выделение прямоугольником">
+                <img class="tool-icon" src="{% static 'animation/icons/rectangle.svg' %}" alt="">
+            </button>
+            <button type="button"
+                    class="tool-button tool-button--mode"
+                    data-select-mode="ellipse"
+                    aria-label="Выделение окружностью">
+                <img class="tool-icon" src="{% static 'animation/icons/ellipse.svg' %}" alt="">
+            </button>
+            <button type="button"
+                    class="tool-button tool-button--mode"
+                    data-select-mode="lasso"
+                    aria-label="Выделение лассо">
+                <img class="tool-icon" src="{% static 'animation/icons/lasso.svg' %}" alt="">
+            </button>
+            <button type="button"
+                    class="tool-button tool-button--mode"
+                    data-select-mode="magic"
+                    aria-label="Волшебная палочка">
+                <img class="tool-icon" src="{% static 'animation/icons/wand.svg' %}" alt="">
+            </button>
+        </div>
+
+        <label class="tool-control tool-control--wand">
+            Чувствительность
+            <input type="range"
+                   id="wand-sensitivity"
+                   min="0"
+                   max="255"
+                   value="32">
+        </label>
 
         <label class="tool-control">
             Цвет
@@ -42,16 +152,16 @@
                     width="{{ project.width }}"
                     height="{{ project.height }}">
             </canvas>
+            <canvas id="editor-overlay"
+                    width="{{ project.width }}"
+                    height="{{ project.height }}"
+                    aria-hidden="true">
+            </canvas>
         </div>
     </div>
 
 </div>
 
 {# bootstrap-код и подключение JS #}
-<script>
-    window.ANIM_PROJECT_ID = {{ project.id }};
-    window.ANIM_PROJECT_WIDTH = {{ project.width }};
-    window.ANIM_PROJECT_HEIGHT = {{ project.height }};
-</script>
 <script src="{% static 'animation/editor.js' %}"></script>
 {% endblock %}

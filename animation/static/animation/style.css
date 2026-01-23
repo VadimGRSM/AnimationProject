@@ -18,6 +18,232 @@ header h1 {
     font-size: 20px;
 }
 
+/* Сообщения */
+
+.messages {
+    list-style: none;
+    padding: 0;
+    margin: 12px 0;
+    display: grid;
+    gap: 6px;
+}
+
+.message {
+    padding: 8px 10px;
+    border-radius: 6px;
+    background-color: #e0f2fe;
+    color: #0c4a6e;
+    font-size: 14px;
+}
+
+.message--success {
+    background-color: #d1fae5;
+    color: #065f46;
+}
+
+.message--error {
+    background-color: #fee2e2;
+    color: #991b1b;
+}
+
+/* Список проектов */
+
+.project-list {
+    list-style: none;
+    padding: 0;
+    margin: 16px 0 0;
+    display: grid;
+    gap: 12px;
+}
+
+.project-item {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 12px;
+    background-color: #ffffff;
+    border-radius: 10px;
+    box-shadow: 0 4px 10px rgba(0, 0, 0, 0.06);
+}
+
+.project-info {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+}
+
+.project-meta {
+    color: #6b7280;
+    font-size: 13px;
+}
+
+.project-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.project-action {
+    border: 1px solid #9ca3af;
+    background-color: #f9fafb;
+    padding: 6px 10px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 14px;
+    text-decoration: none;
+    color: inherit;
+    transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.project-action:hover {
+    background-color: #e5e7eb;
+}
+
+.project-action--danger {
+    border-color: #ef4444;
+    color: #b91c1c;
+}
+
+.project-action--danger:hover {
+    background-color: #fee2e2;
+}
+
+.project-action-form {
+    margin: 0;
+}
+
+.project-empty {
+    color: #6b7280;
+    font-size: 14px;
+}
+
+/* Модальные окна */
+
+body.modal-open {
+    overflow: hidden;
+}
+
+.modal {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+}
+
+.modal[hidden] {
+    display: none;
+}
+
+.modal__overlay {
+    position: absolute;
+    inset: 0;
+    background-color: rgba(17, 24, 39, 0.55);
+}
+
+.modal__content {
+    position: relative;
+    z-index: 1;
+    width: min(420px, 90vw);
+    background-color: #ffffff;
+    border-radius: 12px;
+    box-shadow: 0 18px 40px rgba(0, 0, 0, 0.2);
+    padding: 16px;
+    display: grid;
+    gap: 12px;
+}
+
+.modal__header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.modal__title {
+    margin: 0;
+    font-size: 18px;
+}
+
+.modal__close {
+    border: none;
+    background: transparent;
+    font-size: 22px;
+    cursor: pointer;
+    color: #6b7280;
+}
+
+.modal__body {
+    display: grid;
+    gap: 10px;
+}
+
+.modal__text {
+    margin: 0;
+    font-size: 14px;
+    color: #374151;
+}
+
+.modal__hint {
+    margin: 0;
+    font-size: 13px;
+    color: #6b7280;
+}
+
+.modal__actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+/* Форма переименования */
+
+.project-rename-form {
+    margin-top: 12px;
+    padding: 12px;
+    background-color: #ffffff;
+    border-radius: 10px;
+    display: grid;
+    gap: 10px;
+    max-width: 420px;
+    box-shadow: 0 6px 14px rgba(0, 0, 0, 0.08);
+}
+
+.project-current-title {
+    margin: 8px 0 0;
+    color: #374151;
+}
+
+.form-field {
+    display: grid;
+    gap: 6px;
+    font-size: 14px;
+}
+
+.form-field input {
+    padding: 6px 8px;
+    border-radius: 6px;
+    border: 1px solid #9ca3af;
+    font-size: 14px;
+}
+
+.form-actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.form-error {
+    margin: 0;
+    color: #b91c1c;
+    font-size: 13px;
+}
+
 /* Корень редактора */
 
 .editor-root {
@@ -41,16 +267,26 @@ header h1 {
 
 .tool-button {
     border: 1px solid #9ca3af;
-    background-color: #f9fafb;
+    background-color: #ffffff;
     padding: 6px 10px;
     border-radius: 6px;
     cursor: pointer;
     font-size: 14px;
+    color: #111827;
     transition: background-color 0.15s ease, border-color 0.15s ease;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+}
+
+.tool-button:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
 }
 
 .tool-button:hover {
-    background-color: #e5e7eb;
+    background-color: #f3f4f6;
 }
 
 .tool-button--active {
@@ -59,12 +295,126 @@ header h1 {
     border-color: #111827;
 }
 
+.tool-button--active .tool-icon {
+    filter: brightness(0) invert(1);
+}
+
 .tool-control {
     display: inline-flex;
     align-items: center;
     gap: 6px;
     font-size: 14px;
     padding: 4px 8px;
+}
+
+.tool-control--group {
+    flex-wrap: wrap;
+    background-color: #f3f4f6;
+    border: 1px solid #d1d5db;
+    border-radius: 6px;
+}
+
+.tool-control__label {
+    font-size: 12px;
+    color: #4b5563;
+    white-space: nowrap;
+}
+
+.tool-button--mode {
+    padding: 4px 8px;
+    font-size: 13px;
+}
+
+.tool-icon {
+    width: 24px;
+    height: 24px;
+    display: block;
+}
+
+.tool-button--mode .tool-icon {
+    width: 20px;
+    height: 20px;
+}
+
+/* Заголовок редактора */
+
+.editor-header {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.editor-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.editor-project-title {
+    margin: 0;
+    font-size: 18px;
+}
+
+.editor-save {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.save-indicator {
+    width: 10px;
+    height: 10px;
+    border-radius: 999px;
+    background-color: #9ca3af;
+}
+
+.save-indicator--idle {
+    background-color: #9ca3af;
+}
+
+.save-indicator--saved {
+    background-color: #10b981;
+}
+
+.save-indicator--dirty {
+    background-color: #f59e0b;
+}
+
+.save-indicator--saving {
+    background-color: #3b82f6;
+}
+
+.save-indicator--error {
+    background-color: #ef4444;
+}
+
+.save-status {
+    font-size: 13px;
+    color: #374151;
+}
+
+.save-status--dirty {
+    color: #b45309;
+}
+
+.save-status--saving {
+    color: #1d4ed8;
+}
+
+.save-status--saved {
+    color: #059669;
+}
+
+.save-status--error {
+    color: #b91c1c;
+}
+
+.save-last-time {
+    font-size: 12px;
+    color: #6b7280;
 }
 
 /* Основная область редактора */
@@ -81,15 +431,50 @@ header h1 {
     background-color: #d1d5db;
     border-radius: 8px;
     box-shadow: 0 10px 15px rgba(0, 0, 0, 0.08);
+    position: relative;
+    display: inline-block;
+    line-height: 0;
 }
 
 /* Сам Canvas */
 
-#editor-canvas {
+#editor-canvas,
+#editor-overlay {
     display: block;
-    background-color: #ffffff;
-    border-radius: 4px;
-    border: 1px solid #9ca3af;
     /* чтобы на маленьком экране не вылезал */
     max-width: 100%;
+}
+
+#editor-canvas {
+    background-color: #f9fafb;
+    background-image:
+        linear-gradient(45deg, #e5e7eb 25%, transparent 25%),
+        linear-gradient(-45deg, #e5e7eb 25%, transparent 25%),
+        linear-gradient(45deg, transparent 75%, #e5e7eb 75%),
+        linear-gradient(-45deg, transparent 75%, #e5e7eb 75%);
+    background-size: 16px 16px;
+    background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+    border-radius: 4px;
+    border: 1px solid #9ca3af;
+    cursor: crosshair;
+}
+
+#editor-overlay {
+    position: absolute;
+    top: 12px;
+    left: 12px;
+    pointer-events: none;
+    border-radius: 4px;
+}
+
+#editor-canvas.canvas--bucket {
+    cursor: url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http://www.w3.org/2000/svg%27%20width%3D%2724%27%20height%3D%2724%27%20viewBox%3D%270%200%2024%2024%27%3E%3Cpath%20fill%3D%27000%27%20d%3D%27M7%207h10l-2%2012H9L7%207zm-2-2h14v2H5V5zm4-3h6v2H9V2z%27/%3E%3C/svg%3E") 4 20, pointer;
+}
+
+#editor-canvas.canvas--pan {
+    cursor: grab;
+}
+
+#editor-canvas.canvas--pan.canvas--panning {
+    cursor: grabbing;
 }
