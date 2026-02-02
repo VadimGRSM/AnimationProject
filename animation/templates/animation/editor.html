@@ -10,6 +10,15 @@
      data-project-height="{{ project.height }}"
      data-project-save-url="{% url 'animation:project_save' project.pk %}"
      data-frame-save-url-template="{% url 'animation:frame_save' project.pk 0 %}"
+     data-layer-list-url-template="{% url 'animation:frame_layers' project.pk 0 %}"
+     data-layer-reorder-url-template="{% url 'animation:layer_reorder' project.pk 0 %}"
+     data-layer-update-url-template="{% url 'animation:layer_update' project.pk 0 0 %}"
+     data-layer-delete-url-template="{% url 'animation:layer_delete' project.pk 0 0 %}"
+     data-icon-rename="{% static 'animation/icons/edit-layer.svg' %}"
+     data-icon-eye-open="{% static 'animation/icons/eye-open.svg' %}"
+     data-icon-eye-closed="{% static 'animation/icons/eye-closed.svg' %}"
+     data-icon-trash="{% static 'animation/icons/trash.svg' %}"
+     data-icon-plus="{% static 'animation/icons/plus.svg' %}"
      data-current-frame-preview-url="{{ current_frame_preview_url }}"
      data-current-frame-updated-at="{{ current_frame_updated_at }}"
      data-current-frame-index="{{ current_frame_index }}">
@@ -59,6 +68,13 @@
 
         <button type="button"
                 class="tool-button"
+                data-tool="eyedropper"
+                aria-label="Пипетка">
+            <img class="tool-icon" src="{% static 'animation/icons/eyedropper.svg' %}" alt="">
+        </button>
+
+        <button type="button"
+                class="tool-button"
                 data-tool="line"
                 aria-label="Линия">
             <img class="tool-icon" src="{% static 'animation/icons/line.svg' %}" alt="">
@@ -98,13 +114,13 @@
                     class="tool-button tool-button--mode tool-button--active"
                     data-select-mode="rect"
                     aria-label="Выделение прямоугольником">
-                <img class="tool-icon" src="{% static 'animation/icons/rectangle.svg' %}" alt="">
+                <img class="tool-icon" src="{% static 'animation/icons/select-rect.svg' %}" alt="">
             </button>
             <button type="button"
                     class="tool-button tool-button--mode"
                     data-select-mode="ellipse"
                     aria-label="Выделение окружностью">
-                <img class="tool-icon" src="{% static 'animation/icons/ellipse.svg' %}" alt="">
+                <img class="tool-icon" src="{% static 'animation/icons/select-ellipse.svg' %}" alt="">
             </button>
             <button type="button"
                     class="tool-button tool-button--mode"
@@ -157,6 +173,26 @@
                     height="{{ project.height }}"
                     aria-hidden="true">
             </canvas>
+            <div class="eyedropper-zoom" id="eyedropper-zoom" aria-hidden="true">
+                <canvas id="eyedropper-zoom-canvas" width="120" height="120"></canvas>
+            </div>
+
+            <aside class="layers-panel" aria-label="Слои">
+                <div class="layers-panel__header">
+                    <h3 class="layers-panel__title">Слои</h3>
+                    <button type="button"
+                            class="tool-button tool-button--small layers-panel__add"
+                            id="add-layer-button"
+                            aria-label="Добавить слой"
+                            title="Добавить слой">
+                        <img class="tool-icon tool-icon--small"
+                             src="{% static 'animation/icons/plus.svg' %}"
+                             alt="">
+                    </button>
+                </div>
+                <ul class="layers-list" id="layers-list"></ul>
+                <p class="layers-empty" id="layers-empty" hidden>Слои не найдены</p>
+            </aside>
         </div>
     </div>
 

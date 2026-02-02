@@ -31,3 +31,17 @@ class Frame(models.Model):
 
     def __str__(self):
         return f'{self.project.title} — кадр {self.index}'
+
+
+class Layer(models.Model):
+    frame = models.ForeignKey(Frame, on_delete=models.CASCADE, related_name='layers')
+    order = models.PositiveIntegerField(default=1, verbose_name='Порядок слоя')
+    name = models.CharField(max_length=200, verbose_name='Название слоя')
+    visible = models.BooleanField(default=True, verbose_name='Видим')
+    opacity = models.PositiveSmallIntegerField(default=100, verbose_name='Прозрачность (0-100)')
+
+    class Meta:
+        ordering = ['frame', 'order', 'id']
+
+    def __str__(self):
+        return f'{self.frame} — {self.name}'
