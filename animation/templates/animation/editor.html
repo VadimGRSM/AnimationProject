@@ -9,6 +9,11 @@
      data-project-width="{{ project.width }}"
      data-project-height="{{ project.height }}"
      data-project-save-url="{% url 'animation:project_save' project.pk %}"
+     data-frames-list-url="{% url 'animation:frames_list' project.pk %}"
+     data-frame-detail-url-template="{% url 'animation:frame_detail' project.pk 0 %}"
+     data-frame-create-url="{% url 'animation:frame_create' project.pk %}"
+     data-frame-delete-url-template="{% url 'animation:frame_delete' project.pk 0 %}"
+     data-frame-reorder-url="{% url 'animation:frame_reorder' project.pk %}"
      data-frame-save-url-template="{% url 'animation:frame_save' project.pk 0 %}"
      data-layer-list-url-template="{% url 'animation:frame_layers' project.pk 0 %}"
      data-layer-reorder-url-template="{% url 'animation:layer_reorder' project.pk 0 %}"
@@ -194,6 +199,33 @@
                 <p class="layers-empty" id="layers-empty" hidden>Слои не найдены</p>
             </aside>
         </div>
+    </div>
+
+    <div class="timeline-wrapper" aria-label="Таймлайн кадров">
+        <div class="timeline-controls">
+            <button type="button"
+                    class="tool-button tool-button--small"
+                    id="add-frame-button"
+                    title="Добавить кадр"
+                    aria-label="Добавить кадр">
+                +
+            </button>
+            <button type="button"
+                    class="tool-button tool-button--small"
+                    id="duplicate-frame-button"
+                    title="Дублировать кадр"
+                    aria-label="Дублировать кадр">
+                ⧉
+            </button>
+            <button type="button"
+                    class="tool-button tool-button--small"
+                    id="delete-frame-button"
+                    title="Удалить кадр"
+                    aria-label="Удалить кадр">
+                <img class="tool-icon tool-icon--small" src="{% static 'animation/icons/trash.svg' %}" alt="">
+            </button>
+        </div>
+        <div class="timeline-strip" id="timeline-strip" role="list"></div>
     </div>
 
 </div>

@@ -59,9 +59,19 @@ const addLayerButton = document.getElementById('add-layer-button');
 const layersPanel = document.querySelector('.layers-panel');
 const layersPanelHeader = layersPanel ? layersPanel.querySelector('.layers-panel__header') : null;
 
+const timelineStrip = document.getElementById('timeline-strip');
+const addFrameButton = document.getElementById('add-frame-button');
+const duplicateFrameButton = document.getElementById('duplicate-frame-button');
+const deleteFrameButton = document.getElementById('delete-frame-button');
+
 const projectSaveUrl = (editorRoot && editorRoot.dataset.projectSaveUrl)
     || window.ANIM_PROJECT_SAVE_URL
     || '';
+const framesListUrl = (editorRoot && editorRoot.dataset.framesListUrl) || '';
+const frameDetailUrlTemplate = (editorRoot && editorRoot.dataset.frameDetailUrlTemplate) || '';
+const frameCreateUrl = (editorRoot && editorRoot.dataset.frameCreateUrl) || '';
+const frameDeleteUrlTemplate = (editorRoot && editorRoot.dataset.frameDeleteUrlTemplate) || '';
+const frameReorderUrl = (editorRoot && editorRoot.dataset.frameReorderUrl) || '';
 const frameSaveUrlTemplate = (editorRoot && editorRoot.dataset.frameSaveUrlTemplate)
     || window.ANIM_FRAME_SAVE_URL_TEMPLATE
     || '';
@@ -78,10 +88,10 @@ const iconEyeOpen = (editorRoot && editorRoot.dataset.iconEyeOpen) || '';
 const iconEyeClosed = (editorRoot && editorRoot.dataset.iconEyeClosed) || '';
 const iconTrash = (editorRoot && editorRoot.dataset.iconTrash) || '';
 const iconPlus = (editorRoot && editorRoot.dataset.iconPlus) || '';
-const currentFramePreviewUrl = (editorRoot && editorRoot.dataset.currentFramePreviewUrl)
+let currentFramePreviewUrl = (editorRoot && editorRoot.dataset.currentFramePreviewUrl)
     || window.ANIM_CURRENT_FRAME_PREVIEW_URL
     || '';
-const currentFrameUpdatedAt = (editorRoot && editorRoot.dataset.currentFrameUpdatedAt)
+let currentFrameUpdatedAt = (editorRoot && editorRoot.dataset.currentFrameUpdatedAt)
     || window.ANIM_CURRENT_FRAME_UPDATED_AT
     || '';
 
@@ -132,6 +142,14 @@ let selectionScratchCanvas = null;
 let selectionScratchCtx = null;
 let lastDebugAt = 0;
 
+let isTransformingSelection = false;
+let selectionTransform = null;
+let transformClipboard = null;
+let hoverTransformHandle = null;
+let transformHintEl = null;
+let transformCompositeCanvas = null;
+let transformCompositeCtx = null;
+
 let bufferCanvas = null;
 let bufferCtx = null;
 
@@ -159,6 +177,9 @@ const EYEDROPPER_ZOOM_OFFSET = 18;
 const LAYER_PREVIEW_SIZE = 32;
 const DEBUG_COORDS = true;
 const DEBUG_COORDS_THROTTLE_MS = 200;
+const TRANSFORM_HANDLE_SIZE_PX = 10;
+const TRANSFORM_HANDLE_HIT_PX = 16;
+const TRANSFORM_HINT_OFFSET = 14;
 let wandTolerance = wandSensitivityInput
     ? parseInt(wandSensitivityInput.value, 10) || WAND_DEFAULT_TOLERANCE
     : WAND_DEFAULT_TOLERANCE;
@@ -175,6 +196,11 @@ let isAutosaving = false;
 let lastSavedAt = null;
 let autosaveTimerId = null;
 let lastSavedTickerId = null;
+let currentFrameId = null;
+let timelineFrames = [];
+let isSwitchingFrame = false;
+let dragFrameId = null;
+let panStartedByMiddle = false;
 
 const AUTOSAVE_INTERVAL_MS = 30000;
 const LAST_SAVED_TICK_MS = 1000;
@@ -194,6 +220,12 @@ function setTool(toolName) {
     activeTool = null;
     isDrawing = false;
     isPanning = false;
+    if (hasFloatingSelection()) {
+        commitSelectionTransform();
+    }
+    hideTransformHint();
+    setCanvasCursorOverride(null);
+    hoverTransformHandle = null;
     renderOverlay();
 
     toolButtons.forEach((btn) => {
@@ -256,6 +288,43 @@ function rgbToHex(r, g, b) {
     return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
 }
 
+function setCanvasCursorOverride(cursorValue) {
+    if (!canvas) return;
+    canvas.style.cursor = cursorValue || '';
+}
+
+function ensureTransformHintElement() {
+    if (transformHintEl) return transformHintEl;
+    if (!canvasWrapper) return null;
+    const hint = document.createElement('div');
+    hint.className = 'transform-hint';
+    hint.hidden = true;
+    canvasWrapper.appendChild(hint);
+    transformHintEl = hint;
+    return transformHintEl;
+}
+
+function showTransformHint(text, event) {
+    const hint = ensureTransformHintElement();
+    if (!hint) return;
+    hint.textContent = text || '';
+    hint.hidden = false;
+
+    if (!event || !canvasWrapper) return;
+    const wrapperRect = canvasWrapper.getBoundingClientRect();
+    const maxLeft = Math.max(0, wrapperRect.width - 10);
+    const maxTop = Math.max(0, wrapperRect.height - 10);
+    const left = clamp(event.clientX - wrapperRect.left + TRANSFORM_HINT_OFFSET, 8, maxLeft);
+    const top = clamp(event.clientY - wrapperRect.top + TRANSFORM_HINT_OFFSET, 8, maxTop);
+    hint.style.left = `${left}px`;
+    hint.style.top = `${top}px`;
+}
+
+function hideTransformHint() {
+    if (!transformHintEl) return;
+    transformHintEl.hidden = true;
+}
+
 // =======================
 // Работа со слоями
 // =======================
@@ -270,6 +339,33 @@ function fillLayerUrl(template, frameIndex, layerId) {
         result = result.replace('/0/', `/${layerId}/`);
     }
     return result;
+}
+
+// =======================
+// Работа с кадрами (таймлайн)
+// =======================
+
+function fillFrameUrl(template, frameIndex) {
+    if (!template) return '';
+    let result = template;
+    if (typeof frameIndex === 'number') {
+        result = result.replace('/0/', `/${frameIndex}/`);
+    }
+    return result;
+}
+
+function getFrameDetailUrl(index) {
+    return fillFrameUrl(frameDetailUrlTemplate, index);
+}
+
+function getFrameDeleteUrl(index) {
+    return fillFrameUrl(frameDeleteUrlTemplate, index);
+}
+
+function setTimelineControlsDisabled(isDisabled) {
+    if (addFrameButton) addFrameButton.disabled = Boolean(isDisabled);
+    if (duplicateFrameButton) duplicateFrameButton.disabled = Boolean(isDisabled);
+    if (deleteFrameButton) deleteFrameButton.disabled = Boolean(isDisabled);
 }
 
 function getLayerListUrl() {
@@ -406,6 +502,21 @@ function renderLayer(layer) {
     layer.ctx.save();
     layer.ctx.setTransform(scale, 0, 0, scale, offsetX, offsetY);
     layer.ctx.drawImage(layer.bufferCanvas, 0, 0);
+    if (layer.id === activeLayerId
+        && selectionTransform
+        && transformClipboard
+        && transformClipboard.canvas) {
+        const bounds = selectionTransform.currentBounds || selectionTransform.startBounds;
+        if (bounds && bounds.width > 0 && bounds.height > 0) {
+            layer.ctx.drawImage(
+                transformClipboard.canvas,
+                bounds.x,
+                bounds.y,
+                bounds.width,
+                bounds.height,
+            );
+        }
+    }
     layer.ctx.restore();
     updateLayerPreview(layer);
 }
@@ -433,6 +544,9 @@ function updateActiveLayerPointers() {
 
 function setActiveLayer(layerId, options = {}) {
     if (!layerId) return;
+    if (hasFloatingSelection()) {
+        commitSelectionTransform();
+    }
     activeLayerId = layerId;
     updateActiveLayerPointers();
     if (options.clearSelection) {
@@ -885,8 +999,19 @@ function renderOverlay() {
 
     withTransformedContext(overlayCtx, () => {
         const targetSelection = selectionDraft || selection;
-        if (!targetSelection) return;
-        drawSelectionPath(overlayCtx, targetSelection);
+        if (targetSelection) {
+            drawSelectionPath(overlayCtx, targetSelection);
+        }
+
+        if (!selectionDraft && shouldShowSelectionTransformUI()) {
+            const bounds = selectionTransform && selectionTransform.currentBounds
+                ? selectionTransform.currentBounds
+                : getSelectionBounds(selection);
+            const clamped = clampSelectionBounds(bounds);
+            if (clamped && clamped.width > 0 && clamped.height > 0) {
+                drawSelectionTransformControls(overlayCtx, clamped);
+            }
+        }
     }, { clipToFrame: true });
     updateSelectionAnimationState();
 }
@@ -940,6 +1065,65 @@ function syncOverlayPlacement() {
         layer.canvas.style.left = `${canvas.offsetLeft}px`;
         layer.canvas.style.top = `${canvas.offsetTop}px`;
     });
+}
+
+function toPxNumber(value) {
+    if (typeof value !== 'string') return 0;
+    const parsed = parseFloat(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+}
+
+/**
+ * Подгоняем отображаемую высоту canvas под высоту экрана,
+ * чтобы на экране помещались тулбар + таймлайн.
+ */
+function syncResponsiveCanvasSize() {
+    if (!editorRoot || !canvas) return;
+
+    const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 0;
+    if (!viewportHeight) return;
+
+    const rootRect = editorRoot.getBoundingClientRect();
+    const availableFromRootTop = viewportHeight - rootRect.top;
+    if (!Number.isFinite(availableFromRootTop) || availableFromRootTop <= 0) return;
+
+    const rootStyles = window.getComputedStyle(editorRoot);
+    const paddingTop = toPxNumber(rootStyles.paddingTop);
+    const paddingBottom = toPxNumber(rootStyles.paddingBottom);
+    const rowGap = toPxNumber(rootStyles.rowGap || rootStyles.gap);
+
+    const headerEl = editorRoot.querySelector('.editor-header');
+    const toolbarEl = editorRoot.querySelector('.editor-toolbar');
+    const timelineEl = editorRoot.querySelector('.timeline-wrapper');
+
+    const fixedHeight = (headerEl ? headerEl.offsetHeight : 0)
+        + (toolbarEl ? toolbarEl.offsetHeight : 0)
+        + (timelineEl ? timelineEl.offsetHeight : 0);
+
+    const visibleChildren = [...editorRoot.children].filter((el) => !el.hidden);
+    const gapsTotal = rowGap * Math.max(0, visibleChildren.length - 1);
+
+    let availableForMain = availableFromRootTop - paddingTop - paddingBottom - gapsTotal - fixedHeight;
+    if (!Number.isFinite(availableForMain)) return;
+
+    // вычитаем внутренние отступы обертки canvas, чтобы сам canvas мог влезть целиком
+    let wrapperPaddingY = 24;
+    let wrapperBorderY = 0;
+    if (canvasWrapper) {
+        const wrapperStyles = window.getComputedStyle(canvasWrapper);
+        wrapperPaddingY = toPxNumber(wrapperStyles.paddingTop) + toPxNumber(wrapperStyles.paddingBottom);
+        wrapperBorderY = toPxNumber(wrapperStyles.borderTopWidth) + toPxNumber(wrapperStyles.borderBottomWidth);
+    }
+
+    const minCanvasH = 160;
+    const maxCanvasH = Math.max(minCanvasH, Math.floor(availableForMain - wrapperPaddingY - wrapperBorderY));
+    canvas.style.maxHeight = `${maxCanvasH}px`;
+}
+
+function syncEditorLayout() {
+    syncResponsiveCanvasSize();
+    // после изменения размеров даём браузеру пересчитать layout и синхронизируем оверлей/слои
+    requestAnimationFrame(syncOverlayPlacement);
 }
 
 function updateCursor() {
@@ -1410,8 +1594,507 @@ function clampSelectionBounds(bounds) {
     };
 }
 
+function shouldShowSelectionTransformUI() {
+    return currentTool === TOOL_PAN
+        && !isSpacePressed
+        && Boolean(selection)
+        && selection.type !== SELECT_MAGIC;
+}
+
+function getTransformHandleCursor(handleId) {
+    if (!handleId) return null;
+    if (handleId === 'n' || handleId === 's') return 'ns-resize';
+    if (handleId === 'e' || handleId === 'w') return 'ew-resize';
+    if (handleId === 'nw' || handleId === 'se') return 'nwse-resize';
+    if (handleId === 'ne' || handleId === 'sw') return 'nesw-resize';
+    return null;
+}
+
+function getTransformHandleHint(handleId) {
+    if (!handleId) return '';
+    const hints = {
+        nw: 'Растягивание: левый верхний угол',
+        n: 'Растягивание: верхняя грань',
+        ne: 'Растягивание: правый верхний угол',
+        e: 'Растягивание: правая грань',
+        se: 'Растягивание: правый нижний угол',
+        s: 'Растягивание: нижняя грань',
+        sw: 'Растягивание: левый нижний угол',
+        w: 'Растягивание: левая грань',
+    };
+    return hints[handleId] || '';
+}
+
+function getTransformHandles(bounds) {
+    if (!bounds) return [];
+    const left = bounds.x;
+    const top = bounds.y;
+    const right = bounds.x + bounds.width;
+    const bottom = bounds.y + bounds.height;
+    const centerX = bounds.x + bounds.width / 2;
+    const centerY = bounds.y + bounds.height / 2;
+    return [
+        { id: 'nw', x: left, y: top },
+        { id: 'n', x: centerX, y: top },
+        { id: 'ne', x: right, y: top },
+        { id: 'e', x: right, y: centerY },
+        { id: 'se', x: right, y: bottom },
+        { id: 's', x: centerX, y: bottom },
+        { id: 'sw', x: left, y: bottom },
+        { id: 'w', x: left, y: centerY },
+    ];
+}
+
+function getTransformHandleAtPoint(x, y, bounds) {
+    if (!bounds) return null;
+    const normalizedScale = scale || 1;
+    const hitSize = TRANSFORM_HANDLE_HIT_PX / normalizedScale;
+    const half = hitSize / 2;
+
+    for (const handle of getTransformHandles(bounds)) {
+        if (Math.abs(x - handle.x) <= half && Math.abs(y - handle.y) <= half) {
+            return handle.id;
+        }
+    }
+    return null;
+}
+
+function drawSelectionTransformControls(targetCtx, bounds) {
+    if (!targetCtx || !bounds) return;
+    const normalizedScale = scale || 1;
+    const strokeWidth = Math.max(0.5, 1 / normalizedScale);
+    const handleSize = TRANSFORM_HANDLE_SIZE_PX / normalizedScale;
+    const halfHandle = handleSize / 2;
+
+    targetCtx.save();
+    targetCtx.lineWidth = strokeWidth;
+    targetCtx.setLineDash([]);
+    targetCtx.strokeStyle = 'rgba(37, 99, 235, 0.75)';
+    targetCtx.strokeRect(bounds.x, bounds.y, bounds.width, bounds.height);
+
+    for (const handle of getTransformHandles(bounds)) {
+        const isHover = hoverTransformHandle && handle.id === hoverTransformHandle;
+        targetCtx.fillStyle = isHover ? '#2563eb' : '#ffffff';
+        targetCtx.strokeStyle = '#2563eb';
+        targetCtx.beginPath();
+        targetCtx.rect(handle.x - halfHandle, handle.y - halfHandle, handleSize, handleSize);
+        targetCtx.fill();
+        targetCtx.stroke();
+    }
+
+    targetCtx.restore();
+}
+
+function scaleSelectionShape(selectionShape, fromBounds, toBounds) {
+    if (!selectionShape || !fromBounds || !toBounds) return null;
+    if (selectionShape.type === SELECT_MAGIC) return null;
+
+    if (selectionShape.type === SELECT_RECT) {
+        return {
+            type: SELECT_RECT,
+            x: toBounds.x,
+            y: toBounds.y,
+            width: toBounds.width,
+            height: toBounds.height,
+        };
+    }
+
+    if (selectionShape.type === SELECT_ELLIPSE) {
+        return {
+            type: SELECT_ELLIPSE,
+            centerX: toBounds.x + toBounds.width / 2,
+            centerY: toBounds.y + toBounds.height / 2,
+            radiusX: Math.max(0, toBounds.width / 2),
+            radiusY: Math.max(0, toBounds.height / 2),
+        };
+    }
+
+    if (selectionShape.type === SELECT_LASSO) {
+        const points = selectionShape.points || [];
+        if (fromBounds.width <= 0 || fromBounds.height <= 0) {
+            const dx = toBounds.x - fromBounds.x;
+            const dy = toBounds.y - fromBounds.y;
+            return translateSelection(selectionShape, dx, dy);
+        }
+        const nextPoints = points.map((point) => ({
+            x: toBounds.x + ((point.x - fromBounds.x) / fromBounds.width) * toBounds.width,
+            y: toBounds.y + ((point.y - fromBounds.y) / fromBounds.height) * toBounds.height,
+        }));
+        return {
+            type: SELECT_LASSO,
+            points: nextPoints,
+        };
+    }
+
+    return null;
+}
+
+function clampMoveBoundsToCanvas(bounds) {
+    if (!bounds || !bufferCanvas) return bounds;
+    let width = bounds.width;
+    let height = bounds.height;
+    if (width > bufferCanvas.width) width = bufferCanvas.width;
+    if (height > bufferCanvas.height) height = bufferCanvas.height;
+    const x = clamp(bounds.x, 0, Math.max(0, bufferCanvas.width - width));
+    const y = clamp(bounds.y, 0, Math.max(0, bufferCanvas.height - height));
+    return { x, y, width, height };
+}
+
+function getResizedBoundsFromHandle(startBounds, handleId, deltaX, deltaY) {
+    if (!startBounds || !bufferCanvas) return startBounds;
+    const minSize = SELECTION_MIN_SIZE;
+
+    const moveLeft = handleId && handleId.includes('w');
+    const moveRight = handleId && handleId.includes('e');
+    const moveTop = handleId && handleId.includes('n');
+    const moveBottom = handleId && handleId.includes('s');
+
+    let left = startBounds.x;
+    let top = startBounds.y;
+    let right = startBounds.x + startBounds.width;
+    let bottom = startBounds.y + startBounds.height;
+
+    if (moveLeft) left += deltaX;
+    if (moveRight) right += deltaX;
+    if (moveTop) top += deltaY;
+    if (moveBottom) bottom += deltaY;
+
+    if (moveLeft) {
+        left = clamp(left, 0, right - minSize);
+    }
+    if (moveRight) {
+        right = clamp(right, left + minSize, bufferCanvas.width);
+    }
+    if (moveTop) {
+        top = clamp(top, 0, bottom - minSize);
+    }
+    if (moveBottom) {
+        bottom = clamp(bottom, top + minSize, bufferCanvas.height);
+    }
+
+    left = clamp(left, 0, bufferCanvas.width - minSize);
+    top = clamp(top, 0, bufferCanvas.height - minSize);
+    right = clamp(right, left + minSize, bufferCanvas.width);
+    bottom = clamp(bottom, top + minSize, bufferCanvas.height);
+
+    return {
+        x: left,
+        y: top,
+        width: Math.max(minSize, right - left),
+        height: Math.max(minSize, bottom - top),
+    };
+}
+
+function captureSelectionPixels(selectionShape) {
+    if (!selectionShape || !bufferCanvas) return null;
+    const bounds = clampSelectionBounds(getSelectionBounds(selectionShape));
+    if (!bounds || bounds.width <= 0 || bounds.height <= 0) return null;
+
+    const snapshotCanvas = document.createElement('canvas');
+    snapshotCanvas.width = Math.ceil(bounds.width);
+    snapshotCanvas.height = Math.ceil(bounds.height);
+    const snapshotCtx = snapshotCanvas.getContext('2d');
+    if (!snapshotCtx) return null;
+
+    if (selectionShape.type === SELECT_MAGIC && selectionShape.maskCanvas) {
+        snapshotCtx.drawImage(bufferCanvas, -bounds.x, -bounds.y);
+        snapshotCtx.globalCompositeOperation = 'destination-in';
+        snapshotCtx.drawImage(selectionShape.maskCanvas, -bounds.x, -bounds.y);
+        snapshotCtx.globalCompositeOperation = 'source-over';
+    } else {
+        snapshotCtx.save();
+        snapshotCtx.translate(-bounds.x, -bounds.y);
+        appendSelectionPath(snapshotCtx, selectionShape);
+        snapshotCtx.clip();
+        snapshotCtx.drawImage(bufferCanvas, 0, 0);
+        snapshotCtx.restore();
+    }
+
+    return {
+        canvas: snapshotCanvas,
+        bounds,
+    };
+}
+
+function hasFloatingSelection() {
+    return Boolean(selectionTransform && transformClipboard && transformClipboard.canvas);
+}
+
+function getActiveLayerCompositeCanvas() {
+    if (!bufferCanvas) return null;
+    if (!hasFloatingSelection()) return bufferCanvas;
+    if (!transformCompositeCanvas) {
+        transformCompositeCanvas = document.createElement('canvas');
+    }
+    if (transformCompositeCanvas.width !== bufferCanvas.width) {
+        transformCompositeCanvas.width = bufferCanvas.width;
+    }
+    if (transformCompositeCanvas.height !== bufferCanvas.height) {
+        transformCompositeCanvas.height = bufferCanvas.height;
+    }
+    if (!transformCompositeCtx) {
+        transformCompositeCtx = transformCompositeCanvas.getContext('2d');
+    }
+    if (!transformCompositeCtx) {
+        transformCompositeCtx = transformCompositeCanvas.getContext('2d');
+    }
+    if (!transformCompositeCtx) return bufferCanvas;
+
+    transformCompositeCtx.setTransform(1, 0, 0, 1, 0, 0);
+    transformCompositeCtx.clearRect(0, 0, transformCompositeCanvas.width, transformCompositeCanvas.height);
+    transformCompositeCtx.drawImage(bufferCanvas, 0, 0);
+
+    const bounds = selectionTransform.currentBounds || selectionTransform.startBounds;
+    if (bounds && bounds.width > 0 && bounds.height > 0) {
+        transformCompositeCtx.drawImage(
+            transformClipboard.canvas,
+            bounds.x,
+            bounds.y,
+            bounds.width,
+            bounds.height,
+        );
+    }
+    return transformCompositeCanvas;
+}
+
+function resetSelectionTransformState() {
+    isTransformingSelection = false;
+    selectionTransform = null;
+    transformClipboard = null;
+    hoverTransformHandle = null;
+    hideTransformHint();
+    setCanvasCursorOverride(null);
+}
+
+function startSelectionTransform(mode, handleId, startX, startY, event) {
+    if (!selection || !bufferCtx || !bufferCanvas) return false;
+    if (selection.type === SELECT_MAGIC) return false;
+    const bounds = clampSelectionBounds(getSelectionBounds(selection));
+    if (!bounds || bounds.width <= 0 || bounds.height <= 0) return false;
+
+    const snapshot = captureSelectionPixels(selection);
+    if (!snapshot || !snapshot.canvas) return false;
+
+    const selectionClone = cloneSelectionShape(selection);
+    if (!selectionClone) return false;
+
+    transformClipboard = snapshot;
+    selectionTransform = {
+        mode,
+        handleId: handleId || null,
+        startPointerX: startX,
+        startPointerY: startY,
+        startBounds: bounds,
+        currentBounds: bounds,
+        startSelection: selectionClone,
+    };
+
+    isTransformingSelection = true;
+    const didClear = clearSelectionContent();
+    if (!didClear) {
+        resetSelectionTransformState();
+        renderScene();
+        renderOverlay();
+        return false;
+    }
+
+    hideTransformHint();
+    if (mode === 'resize' && handleId) {
+        setCanvasCursorOverride(getTransformHandleCursor(handleId));
+    } else {
+        setCanvasCursorOverride('move');
+    }
+    renderOverlay();
+    return true;
+}
+
+function startFloatingSelectionTransform(mode, handleId, startX, startY) {
+    if (!hasFloatingSelection()) return false;
+    if (!selection || selection.type === SELECT_MAGIC) return false;
+    const bounds = selectionTransform.currentBounds || clampSelectionBounds(getSelectionBounds(selection));
+    const clamped = clampSelectionBounds(bounds);
+    if (!clamped || clamped.width <= 0 || clamped.height <= 0) return false;
+    const selectionClone = cloneSelectionShape(selection);
+    if (!selectionClone) return false;
+
+    selectionTransform.mode = mode;
+    selectionTransform.handleId = handleId || null;
+    selectionTransform.startPointerX = startX;
+    selectionTransform.startPointerY = startY;
+    selectionTransform.startBounds = clamped;
+    selectionTransform.currentBounds = clamped;
+    selectionTransform.startSelection = selectionClone;
+
+    isTransformingSelection = true;
+    hideTransformHint();
+    if (mode === 'resize' && handleId) {
+        setCanvasCursorOverride(getTransformHandleCursor(handleId));
+    } else {
+        setCanvasCursorOverride('move');
+    }
+    renderOverlay();
+    return true;
+}
+
+function tryStartSelectionTransformAt(x, y, event) {
+    if (!shouldShowSelectionTransformUI()) return false;
+    if (!selection || selection.type === SELECT_MAGIC) return false;
+    const bounds = hasFloatingSelection()
+        ? (selectionTransform.currentBounds || clampSelectionBounds(getSelectionBounds(selection)))
+        : clampSelectionBounds(getSelectionBounds(selection));
+    if (!bounds || bounds.width <= 0 || bounds.height <= 0) return false;
+
+    const handleId = getTransformHandleAtPoint(x, y, bounds);
+    if (handleId) {
+        return hasFloatingSelection()
+            ? startFloatingSelectionTransform('resize', handleId, x, y)
+            : startSelectionTransform('resize', handleId, x, y, event);
+    }
+    if (isPointInSelection(x, y, selection)) {
+        return hasFloatingSelection()
+            ? startFloatingSelectionTransform('move', null, x, y)
+            : startSelectionTransform('move', null, x, y, event);
+    }
+    return false;
+}
+
+function updateSelectionTransform(event) {
+    if (!isTransformingSelection || !selectionTransform) return;
+    const { x, y } = getCanvasCoords(event);
+    lastPointerX = x;
+    lastPointerY = y;
+
+    const dx = x - selectionTransform.startPointerX;
+    const dy = y - selectionTransform.startPointerY;
+
+    let nextBounds = selectionTransform.startBounds;
+    let nextSelection = null;
+
+    if (selectionTransform.mode === 'move') {
+        const moved = {
+            x: selectionTransform.startBounds.x + dx,
+            y: selectionTransform.startBounds.y + dy,
+            width: selectionTransform.startBounds.width,
+            height: selectionTransform.startBounds.height,
+        };
+        nextBounds = clampMoveBoundsToCanvas(moved);
+        const appliedDx = nextBounds.x - selectionTransform.startBounds.x;
+        const appliedDy = nextBounds.y - selectionTransform.startBounds.y;
+        nextSelection = translateSelection(selectionTransform.startSelection, appliedDx, appliedDy);
+    } else if (selectionTransform.mode === 'resize') {
+        nextBounds = getResizedBoundsFromHandle(
+            selectionTransform.startBounds,
+            selectionTransform.handleId,
+            dx,
+            dy,
+        );
+        nextSelection = scaleSelectionShape(selectionTransform.startSelection, selectionTransform.startBounds, nextBounds);
+    }
+
+    if (nextSelection) {
+        selection = nextSelection;
+    }
+    selectionTransform.currentBounds = nextBounds;
+    if (activeLayer) {
+        renderLayer(activeLayer);
+    }
+    renderOverlay();
+}
+
+function commitSelectionTransform() {
+    if (!selectionTransform || !transformClipboard || !transformClipboard.canvas) {
+        resetSelectionTransformState();
+        renderScene();
+        renderOverlay();
+        return;
+    }
+    isTransformingSelection = false;
+
+    if (!bufferCtx || !bufferCanvas) {
+        resetSelectionTransformState();
+        renderScene();
+        renderOverlay();
+        return;
+    }
+
+    const bounds = selectionTransform.currentBounds || selectionTransform.startBounds;
+    if (!bounds || bounds.width <= 0 || bounds.height <= 0) {
+        resetSelectionTransformState();
+        renderScene();
+        renderOverlay();
+        return;
+    }
+
+    bufferCtx.save();
+    bufferCtx.globalCompositeOperation = 'source-over';
+    bufferCtx.drawImage(
+        transformClipboard.canvas,
+        bounds.x,
+        bounds.y,
+        bounds.width,
+        bounds.height,
+    );
+    bufferCtx.restore();
+
+    resetSelectionTransformState();
+    renderScene();
+    renderOverlay();
+}
+
+function updateSelectionTransformHover(event, x, y) {
+    if (isTransformingSelection) return;
+    if (!shouldShowSelectionTransformUI() || selectionDraft || !selection) {
+        if (hoverTransformHandle) {
+            hoverTransformHandle = null;
+            renderOverlay();
+        }
+        hideTransformHint();
+        setCanvasCursorOverride(null);
+        return;
+    }
+
+    const bounds = hasFloatingSelection()
+        ? (selectionTransform.currentBounds || clampSelectionBounds(getSelectionBounds(selection)))
+        : clampSelectionBounds(getSelectionBounds(selection));
+    if (!bounds || bounds.width <= 0 || bounds.height <= 0) {
+        hideTransformHint();
+        setCanvasCursorOverride(null);
+        return;
+    }
+
+    const handleId = getTransformHandleAtPoint(x, y, bounds);
+    if (handleId) {
+        const cursor = getTransformHandleCursor(handleId);
+        setCanvasCursorOverride(cursor);
+        showTransformHint(getTransformHandleHint(handleId), event);
+        if (hoverTransformHandle !== handleId) {
+            hoverTransformHandle = handleId;
+            renderOverlay();
+        }
+        return;
+    }
+
+    if (isPointInSelection(x, y, selection)) {
+        setCanvasCursorOverride('move');
+        showTransformHint('Перемещение: потяните выделение мышью', event);
+        if (hoverTransformHandle) {
+            hoverTransformHandle = null;
+            renderOverlay();
+        }
+        return;
+    }
+
+    if (hoverTransformHandle) {
+        hoverTransformHandle = null;
+        renderOverlay();
+    }
+    hideTransformHint();
+    setCanvasCursorOverride(null);
+}
+
 function copySelectionToClipboard() {
     if (!selection || !bufferCanvas) return false;
+    const sourceCanvas = hasFloatingSelection() ? (getActiveLayerCompositeCanvas() || bufferCanvas) : bufferCanvas;
     const bounds = getSelectionBounds(selection);
     const clampedBounds = clampSelectionBounds(bounds);
     if (!clampedBounds || clampedBounds.width <= 0 || clampedBounds.height <= 0) {
@@ -1434,7 +2117,7 @@ function copySelectionToClipboard() {
         clipboardCtx.translate(-clampedBounds.x, -clampedBounds.y);
         appendSelectionPath(clipboardCtx, selection);
         clipboardCtx.clip();
-        clipboardCtx.drawImage(bufferCanvas, 0, 0);
+        clipboardCtx.drawImage(sourceCanvas, 0, 0);
         clipboardCtx.restore();
     }
 
@@ -1471,12 +2154,21 @@ function clearSelectionContent() {
 function cutSelectionToClipboard() {
     const didCopy = copySelectionToClipboard();
     if (!didCopy) return false;
+    if (hasFloatingSelection()) {
+        resetSelectionTransformState();
+        renderScene();
+        renderOverlay();
+        return true;
+    }
     clearSelectionContent();
     return true;
 }
 
 function pasteSelectionFromClipboard() {
     if (!selectionClipboard || !bufferCtx || !bufferCanvas) return false;
+    if (hasFloatingSelection()) {
+        commitSelectionTransform();
+    }
     const clipboardCanvas = selectionClipboard.canvas;
     if (!clipboardCanvas) return false;
 
@@ -1561,10 +2253,16 @@ function isPointInSelection(x, y, selectionShape) {
 }
 
 function clearSelection() {
+    if (hasFloatingSelection()) {
+        commitSelectionTransform();
+    }
     selection = null;
     selectionDraft = null;
     isSelecting = false;
     lassoPoints = [];
+    hideTransformHint();
+    setCanvasCursorOverride(null);
+    hoverTransformHandle = null;
     renderOverlay();
     updateSelectionAnimationState();
 }
@@ -1679,7 +2377,7 @@ function startSelectionAnimation() {
             selectionAnimationId = null;
             return;
         }
-        if (!isDrawing && !isSelecting && !isPanning) {
+        if (!isDrawing && !isSelecting && !isPanning && !isTransformingSelection) {
             selectionDashOffset -= SELECTION_DASH_SPEED;
             renderOverlay();
         }
@@ -2138,6 +2836,423 @@ function normalizeAssetUrl(url) {
     }
 }
 
+function getTimelineFrameById(frameId) {
+    return timelineFrames.find((frame) => frame.id === frameId) || null;
+}
+
+function getTimelineFrameByIndex(frameIndex) {
+    return timelineFrames.find((frame) => frame.index === frameIndex) || null;
+}
+
+function syncCurrentFrameIdFromTimeline() {
+    if (currentFrameId) return;
+    const found = getTimelineFrameByIndex(currentFrameIndex);
+    if (found) {
+        currentFrameId = found.id;
+    }
+}
+
+function renderTimelineFrames() {
+    if (!timelineStrip) return;
+
+    const previousScroll = timelineStrip.scrollLeft;
+    timelineStrip.innerHTML = '';
+
+    timelineFrames.forEach((frame) => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'timeline-frame';
+        if (frame.index === currentFrameIndex) {
+            button.classList.add('timeline-frame--active');
+        }
+        button.dataset.frameId = String(frame.id);
+        button.dataset.frameIndex = String(frame.index);
+        button.draggable = true;
+        button.title = `Кадр ${frame.index}`;
+
+        const number = document.createElement('span');
+        number.className = 'timeline-frame__number';
+        number.textContent = String(frame.index);
+        button.appendChild(number);
+
+        if (frame.preview_url) {
+            const img = document.createElement('img');
+            img.className = 'timeline-frame__img';
+            img.alt = `Кадр ${frame.index}`;
+            img.src = normalizeAssetUrl(frame.preview_url);
+            img.onerror = () => {
+                img.remove();
+                if (!button.querySelector('.timeline-frame__placeholder')) {
+                    const placeholder = document.createElement('span');
+                    placeholder.className = 'timeline-frame__placeholder';
+                    placeholder.textContent = String(frame.index);
+                    button.appendChild(placeholder);
+                }
+            };
+            button.appendChild(img);
+        } else {
+            const placeholder = document.createElement('span');
+            placeholder.className = 'timeline-frame__placeholder';
+            placeholder.textContent = String(frame.index);
+            button.appendChild(placeholder);
+        }
+
+        timelineStrip.appendChild(button);
+    });
+
+    timelineStrip.scrollLeft = previousScroll;
+    setTimelineControlsDisabled(isSwitchingFrame || isSaving || isAutosaving);
+    if (deleteFrameButton) {
+        deleteFrameButton.disabled = Boolean(isSwitchingFrame || isSaving || isAutosaving);
+    }
+}
+
+function setActiveTimelineIndex(frameIndex) {
+    if (!timelineStrip) return;
+    timelineStrip.querySelectorAll('.timeline-frame').forEach((el) => {
+        const idx = Number(el.dataset.frameIndex);
+        if (idx === frameIndex) {
+            el.classList.add('timeline-frame--active');
+        } else {
+            el.classList.remove('timeline-frame--active');
+        }
+    });
+}
+
+function updateTimelineFramePreview(framePayload) {
+    if (!framePayload) return;
+
+    const frameId = Number(framePayload.id);
+    const frameIndex = Number(framePayload.index);
+    const previewUrl = framePayload.preview_url || '';
+    const updatedAt = framePayload.updated_at || '';
+
+    const stored = Number.isFinite(frameId) ? getTimelineFrameById(frameId) : null;
+    const storedByIndex = stored || (Number.isFinite(frameIndex) ? getTimelineFrameByIndex(frameIndex) : null);
+    if (storedByIndex) {
+        storedByIndex.preview_url = previewUrl || storedByIndex.preview_url || '';
+        storedByIndex.updated_at = updatedAt || storedByIndex.updated_at || '';
+        if (Number.isFinite(frameIndex) && frameIndex > 0) {
+            storedByIndex.index = frameIndex;
+        }
+    }
+
+    if (!timelineStrip) return;
+    const selector = Number.isFinite(frameId) ? `.timeline-frame[data-frame-id="${frameId}"]` : null;
+    const el = selector ? timelineStrip.querySelector(selector) : null;
+    if (!el) {
+        renderTimelineFrames();
+        return;
+    }
+
+    if (Number.isFinite(frameIndex) && frameIndex > 0) {
+        el.dataset.frameIndex = String(frameIndex);
+        const badge = el.querySelector('.timeline-frame__number');
+        if (badge) badge.textContent = String(frameIndex);
+    }
+
+    if (previewUrl) {
+        const normalized = normalizeAssetUrl(previewUrl);
+        const cacheBusted = `${normalized}${normalized.includes('?') ? '&' : '?'}v=${Date.now()}`;
+        let img = el.querySelector('img.timeline-frame__img');
+        if (!img) {
+            img = document.createElement('img');
+            img.className = 'timeline-frame__img';
+            img.alt = `Кадр ${frameIndex || ''}`.trim();
+            const placeholder = el.querySelector('.timeline-frame__placeholder');
+            if (placeholder) placeholder.remove();
+            el.appendChild(img);
+        }
+        img.src = cacheBusted;
+        img.onerror = () => {
+            img.remove();
+            if (!el.querySelector('.timeline-frame__placeholder')) {
+                const placeholder = document.createElement('span');
+                placeholder.className = 'timeline-frame__placeholder';
+                placeholder.textContent = String(frameIndex || '');
+                el.appendChild(placeholder);
+            }
+        };
+    }
+}
+
+async function loadTimelineFrames() {
+    if (!framesListUrl) return;
+    try {
+        const response = await fetch(framesListUrl, { credentials: 'same-origin' });
+        const data = await response.json();
+        if (!response.ok || !data || !data.ok) {
+            throw new Error('Не удалось загрузить кадры.');
+        }
+        timelineFrames = Array.isArray(data.frames) ? data.frames : [];
+        syncCurrentFrameIdFromTimeline();
+        renderTimelineFrames();
+    } catch (error) {
+        console.error('Ошибка загрузки таймлайна', error);
+    }
+}
+
+async function loadFrameByIndex(targetIndex) {
+    const index = Number(targetIndex);
+    if (!Number.isFinite(index) || index <= 0) return false;
+
+    const url = getFrameDetailUrl(index);
+    if (!url) return false;
+
+    isSwitchingFrame = true;
+    setTimelineControlsDisabled(true);
+
+    try {
+        const response = await fetch(url, { credentials: 'same-origin' });
+        const data = await response.json();
+        if (!response.ok || !data || !data.ok) {
+            throw new Error('Не удалось загрузить кадр.');
+        }
+
+        currentFrameIndex = index;
+        currentFrameId = data.frame && data.frame.id ? Number(data.frame.id) : currentFrameId;
+
+        const hasPersistedData = Boolean(data.frame && (data.frame.preview_url || data.frame.content_json));
+        currentFramePreviewUrl = (data.frame && data.frame.preview_url) ? data.frame.preview_url : '';
+        currentFrameUpdatedAt = hasPersistedData && data.frame && data.frame.updated_at ? data.frame.updated_at : '';
+
+        didInitBackground = false;
+        clearSelection();
+        hasUnsavedChanges = false;
+        lastSavedAt = null;
+
+        if (Array.isArray(data.layers)) {
+            mergeLayerList(data.layers);
+        } else {
+            await loadLayers();
+        }
+
+        initSaveState();
+        hydrateSavedFrame();
+        fillBackgroundLayerIfNeeded();
+
+        setActiveTimelineIndex(currentFrameIndex);
+        updateSaveButtonState();
+        return true;
+    } catch (error) {
+        console.error('Ошибка загрузки кадра', error);
+        setSaveStatus('Не удалось загрузить кадр', 'error');
+        setSaveIndicator('error');
+        return false;
+    } finally {
+        isSwitchingFrame = false;
+        setTimelineControlsDisabled(false);
+        renderTimelineFrames();
+    }
+}
+
+async function switchToFrameIndex(targetIndex) {
+    const index = Number(targetIndex);
+    if (!Number.isFinite(index) || index <= 0) return;
+    if (index === currentFrameIndex) return;
+    if (isSwitchingFrame) return;
+
+    setTimelineControlsDisabled(true);
+    const savedOk = await saveCurrentFrame();
+    if (!savedOk && hasUnsavedChanges) {
+        setTimelineControlsDisabled(false);
+        return;
+    }
+    await loadFrameByIndex(index);
+}
+
+async function createFrameOnServer(options = {}) {
+    if (!frameCreateUrl) return;
+    if (isSwitchingFrame) return;
+
+    setTimelineControlsDisabled(true);
+
+    const shouldDuplicate = Boolean(options.duplicate);
+    const savedOk = await saveCurrentFrame();
+    if (!savedOk && hasUnsavedChanges) {
+        setTimelineControlsDisabled(false);
+        return;
+    }
+
+    try {
+        const payload = shouldDuplicate ? { duplicate_from_index: currentFrameIndex } : {};
+        const response = await fetch(frameCreateUrl, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRFToken': getCsrfToken(),
+            },
+            credentials: 'same-origin',
+            body: JSON.stringify(payload),
+        });
+        const data = await response.json();
+        if (!response.ok || !data || !data.ok) {
+            throw new Error('Не удалось создать кадр.');
+        }
+
+        timelineFrames = Array.isArray(data.frames) ? data.frames : timelineFrames;
+        currentFrameIndex = Number(data.active_index) || currentFrameIndex;
+        currentFrameId = data.frame && data.frame.id ? Number(data.frame.id) : currentFrameId;
+        renderTimelineFrames();
+        await loadFrameByIndex(currentFrameIndex);
+    } catch (error) {
+        console.error('Ошибка создания кадра', error);
+        setSaveStatus('Не удалось создать кадр', 'error');
+        setSaveIndicator('error');
+    } finally {
+        setTimelineControlsDisabled(false);
+    }
+}
+
+async function deleteCurrentFrameOnServer() {
+    if (isSwitchingFrame) return;
+    const deleteUrl = getFrameDeleteUrl(currentFrameIndex);
+    if (!deleteUrl) return;
+
+    const confirmDelete = window.confirm(`Удалить кадр ${currentFrameIndex}?`);
+    if (!confirmDelete) return;
+
+    setTimelineControlsDisabled(true);
+
+    const savedOk = await saveCurrentFrame();
+    if (!savedOk && hasUnsavedChanges) {
+        setTimelineControlsDisabled(false);
+        return;
+    }
+
+    try {
+        const response = await fetch(deleteUrl, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRFToken': getCsrfToken(),
+            },
+            credentials: 'same-origin',
+            body: JSON.stringify({}),
+        });
+        const data = await response.json();
+        if (!response.ok || !data || !data.ok) {
+            throw new Error('Не удалось удалить кадр.');
+        }
+
+        timelineFrames = Array.isArray(data.frames) ? data.frames : [];
+        const nextIndex = Number(data.active_index) || 1;
+        currentFrameId = null;
+        renderTimelineFrames();
+        await loadFrameByIndex(nextIndex);
+    } catch (error) {
+        console.error('Ошибка удаления кадра', error);
+        setSaveStatus('Не удалось удалить кадр', 'error');
+        setSaveIndicator('error');
+    } finally {
+        setTimelineControlsDisabled(false);
+    }
+}
+
+async function saveFrameOrder(orderedIds) {
+    if (!frameReorderUrl) return;
+    if (!Array.isArray(orderedIds) || orderedIds.length < 2) return;
+
+    try {
+        const response = await fetch(frameReorderUrl, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRFToken': getCsrfToken(),
+            },
+            credentials: 'same-origin',
+            body: JSON.stringify({ ordered_ids: orderedIds }),
+        });
+        const data = await response.json();
+        if (!response.ok || !data || !data.ok) {
+            throw new Error('Не удалось сохранить порядок кадров.');
+        }
+
+        const activeId = currentFrameId;
+        timelineFrames = Array.isArray(data.frames) ? data.frames : timelineFrames;
+        if (activeId) {
+            const activeFrame = getTimelineFrameById(activeId);
+            if (activeFrame) {
+                currentFrameIndex = activeFrame.index;
+            }
+        }
+        renderTimelineFrames();
+        setActiveTimelineIndex(currentFrameIndex);
+    } catch (error) {
+        console.error('Ошибка сохранения порядка кадров', error);
+    }
+}
+
+function bindTimelineEvents() {
+    if (addFrameButton) {
+        addFrameButton.addEventListener('click', () => {
+            createFrameOnServer({ duplicate: false });
+        });
+    }
+
+    if (duplicateFrameButton) {
+        duplicateFrameButton.addEventListener('click', () => {
+            createFrameOnServer({ duplicate: true });
+        });
+    }
+
+    if (deleteFrameButton) {
+        deleteFrameButton.addEventListener('click', () => {
+            deleteCurrentFrameOnServer();
+        });
+    }
+
+    if (!timelineStrip) return;
+
+    timelineStrip.addEventListener('click', (event) => {
+        const item = event.target.closest('.timeline-frame');
+        if (!item) return;
+        const index = Number(item.dataset.frameIndex);
+        if (!Number.isFinite(index) || index <= 0) return;
+        switchToFrameIndex(index);
+    });
+
+    timelineStrip.addEventListener('dragstart', (event) => {
+        const item = event.target.closest('.timeline-frame');
+        if (!item) return;
+        dragFrameId = Number(item.dataset.frameId);
+        item.classList.add('is-dragging');
+        if (event.dataTransfer) {
+            event.dataTransfer.effectAllowed = 'move';
+        }
+    });
+
+    timelineStrip.addEventListener('dragend', (event) => {
+        const item = event.target.closest('.timeline-frame');
+        if (item) {
+            item.classList.remove('is-dragging');
+        }
+        dragFrameId = null;
+    });
+
+    timelineStrip.addEventListener('dragover', (event) => {
+        event.preventDefault();
+        const dragging = timelineStrip.querySelector('.timeline-frame.is-dragging');
+        const target = event.target.closest('.timeline-frame');
+        if (!dragging || !target || dragging === target) return;
+        const rect = target.getBoundingClientRect();
+        const shouldInsertBefore = event.clientX < rect.left + rect.width / 2;
+        if (shouldInsertBefore) {
+            timelineStrip.insertBefore(dragging, target);
+        } else {
+            timelineStrip.insertBefore(dragging, target.nextSibling);
+        }
+    });
+
+    timelineStrip.addEventListener('drop', (event) => {
+        event.preventDefault();
+        const orderedIds = [...timelineStrip.querySelectorAll('.timeline-frame')]
+            .map((item) => Number(item.dataset.frameId))
+            .filter((value) => Number.isFinite(value));
+        saveFrameOrder(orderedIds);
+    });
+}
+
 function flattenLayers() {
     if (!canvas || !layers.length) return null;
     if (!flattenCanvas) {
@@ -2164,10 +3279,15 @@ function flattenLayers() {
         return a.id - b.id;
     });
 
+    const activeCompositeCanvas = hasFloatingSelection() ? getActiveLayerCompositeCanvas() : null;
     ordered.forEach((layer) => {
-        if (!layer.visible || !layer.bufferCanvas) return;
+        if (!layer.visible) return;
+        const sourceCanvas = (activeCompositeCanvas && layer.id === activeLayerId)
+            ? activeCompositeCanvas
+            : layer.bufferCanvas;
+        if (!sourceCanvas) return;
         flattenCtx.globalAlpha = clamp(layer.opacity, 0, 100) / 100;
-        flattenCtx.drawImage(layer.bufferCanvas, 0, 0);
+        flattenCtx.drawImage(sourceCanvas, 0, 0);
     });
     flattenCtx.globalAlpha = 1;
     return flattenCanvas.toDataURL('image/png');
@@ -2227,10 +3347,9 @@ function hydrateSavedFrame() {
  * Собираем данные текущего кадра для сохранения.
  */
 function getCurrentFramePayload() {
-    if (activeLayer && activeLayer.bufferCanvas) {
-        return {
-            image_data: activeLayer.bufferCanvas.toDataURL('image/png'),
-        };
+    const flattened = flattenLayers();
+    if (flattened) {
+        return { image_data: flattened };
     }
     return null;
 }
@@ -2242,23 +3361,24 @@ async function saveCurrentFrame(options = {}) {
     if (!frameSaveUrlTemplate) {
         setSaveStatus('Не найден адрес сохранения кадра', 'error');
         setSaveIndicator('error');
-        return;
+        return false;
     }
 
-    if (isSaving || isAutosaving || !hasUnsavedChanges) return;
+    if (isSaving || isAutosaving) return false;
+    if (!hasUnsavedChanges) return true;
 
     const saveUrl = getFrameSaveUrl(currentFrameIndex);
     if (!saveUrl) {
         setSaveStatus('Не найден адрес сохранения кадра', 'error');
         setSaveIndicator('error');
-        return;
+        return false;
     }
 
     const payload = getCurrentFramePayload();
     if (!payload) {
         setSaveStatus('Нет данных для сохранения', 'error');
         setSaveIndicator('error');
-        return;
+        return false;
     }
 
     const isAuto = Boolean(options.isAuto);
@@ -2297,9 +3417,15 @@ async function saveCurrentFrame(options = {}) {
 
         hasUnsavedChanges = false;
         lastSavedAt = new Date();
+        if (data.frame) {
+            currentFramePreviewUrl = data.frame.preview_url || currentFramePreviewUrl || '';
+            currentFrameUpdatedAt = data.frame.updated_at || currentFrameUpdatedAt || '';
+            updateTimelineFramePreview(data.frame);
+        }
         setSaveStatus('Сохранено', 'saved');
         setSaveIndicator('saved');
         updateLastSavedLabel();
+        return true;
     } catch (error) {
         console.error('Ошибка сохранения кадра', error);
         let errorText = 'Не удалось сохранить кадр.';
@@ -2311,6 +3437,7 @@ async function saveCurrentFrame(options = {}) {
         }
         setSaveStatus(errorText, 'error');
         setSaveIndicator('error');
+        return false;
     } finally {
         if (isAuto) {
             isAutosaving = false;
@@ -2336,11 +3463,15 @@ function isTextInputElement(element) {
 
 function startPan(event) {
     isPanning = true;
+    panStartedByMiddle = Boolean(event && event.button === 1);
     panStartX = event.clientX;
     panStartY = event.clientY;
     panStartOffsetX = offsetX;
     panStartOffsetY = offsetY;
     hideEyedropperZoom();
+    hideTransformHint();
+    setCanvasCursorOverride(null);
+    hoverTransformHandle = null;
     updateCursor();
 }
 
@@ -2358,12 +3489,34 @@ function updatePan(event) {
 function stopPan() {
     if (!isPanning) return;
     isPanning = false;
+    panStartedByMiddle = false;
     updateCursor();
 }
 
 function handlePointerDown(event) {
+    // Средняя кнопка мыши (колёсико): временная панорама без смены инструмента.
+    if (event.button === 1) {
+        event.preventDefault();
+        if (isTransformingSelection) return;
+        startPan(event);
+        return;
+    }
+
     if (event.button !== 0) return;
-    if (isSpacePressed || currentTool === TOOL_PAN) {
+    if (isTransformingSelection) return;
+    if (isSpacePressed) {
+        startPan(event);
+        return;
+    }
+    if (currentTool === TOOL_PAN) {
+        if (bufferCtx && bufferCanvas) {
+            const { x, y } = getCanvasCoords(event);
+            lastPointerX = x;
+            lastPointerY = y;
+            if (tryStartSelectionTransformAt(x, y, event)) {
+                return;
+            }
+        }
         startPan(event);
         return;
     }
@@ -2415,6 +3568,10 @@ function handlePointerDown(event) {
 }
 
 function handlePointerMove(event) {
+    if (isTransformingSelection) {
+        updateSelectionTransform(event);
+        return;
+    }
     if (isPanning) {
         updatePan(event);
         return;
@@ -2454,12 +3611,33 @@ function handlePointerMove(event) {
         return;
     }
 
-    if (!isDrawing) return;
+    if (!isDrawing) {
+        updateSelectionTransformHover(event, x, y);
+        return;
+    }
     continueDrawing(x, y);
 }
 
 function handlePointerUp(event) {
+    if (isTransformingSelection) {
+        isTransformingSelection = false;
+        hideTransformHint();
+        setCanvasCursorOverride(null);
+        hoverTransformHandle = null;
+        renderScene();
+        renderOverlay();
+        return;
+    }
     if (isPanning) {
+        // Если панорама запущена средней кнопкой, останавливаем только при её отпускании.
+        if (panStartedByMiddle) {
+            const buttons = typeof event.buttons === 'number' ? event.buttons : 0;
+            const middleStillDown = (buttons & 4) === 4;
+            if (event.button === 1 || !middleStillDown) {
+                stopPan();
+            }
+            return;
+        }
         stopPan();
         return;
     }
@@ -2508,15 +3686,18 @@ function handlePointerUp(event) {
 
 function handlePointerLeave() {
     hideEyedropperZoom();
+    hideTransformHint();
+    setCanvasCursorOverride(null);
+    hoverTransformHandle = null;
 }
 
 function handleWindowPointerMove(event) {
-    if (!isDrawing && !isSelecting && !isPanning) return;
+    if (!isDrawing && !isSelecting && !isPanning && !isTransformingSelection) return;
     handlePointerMove(event);
 }
 
 function handleCanvasDoubleClick(event) {
-    if (!selection || isSelecting || isPanning) return;
+    if (!selection || isSelecting || isPanning || isTransformingSelection) return;
     const { x, y } = getCanvasCoords(event);
     if (!isPointInSelection(x, y, selection)) {
         clearSelection();
@@ -2553,6 +3734,99 @@ function handleWheel(event) {
     });
 }
 
+function pasteExternalImage(image, options = {}) {
+    if (!image || !bufferCtx || !bufferCanvas) return false;
+
+    let centerX = bufferCanvas.width / 2;
+    let centerY = bufferCanvas.height / 2;
+    if (Number.isFinite(lastPointerX)) centerX = lastPointerX;
+    if (Number.isFinite(lastPointerY)) centerY = lastPointerY;
+
+    const naturalWidth = image.naturalWidth || image.width || 0;
+    const naturalHeight = image.naturalHeight || image.height || 0;
+    if (!naturalWidth || !naturalHeight) return false;
+
+    const fitScale = Math.min(
+        1,
+        bufferCanvas.width / naturalWidth,
+        bufferCanvas.height / naturalHeight,
+    );
+    const drawWidth = naturalWidth * fitScale;
+    const drawHeight = naturalHeight * fitScale;
+
+    const pasteX = centerX - drawWidth / 2;
+    const pasteY = centerY - drawHeight / 2;
+
+    if (selection && selection.type === SELECT_MAGIC && selection.maskCanvas) {
+        if (!ensureSelectionScratchCanvas()) return false;
+        clearCanvas(selectionScratchCtx, selectionScratchCanvas);
+        selectionScratchCtx.drawImage(image, pasteX, pasteY, drawWidth, drawHeight);
+        selectionScratchCtx.globalCompositeOperation = 'destination-in';
+        selectionScratchCtx.drawImage(selection.maskCanvas, 0, 0);
+        selectionScratchCtx.globalCompositeOperation = 'source-over';
+        bufferCtx.drawImage(selectionScratchCanvas, 0, 0);
+    } else {
+        bufferCtx.save();
+        if (selection) {
+            appendSelectionPath(bufferCtx, selection);
+            bufferCtx.clip();
+        }
+        bufferCtx.drawImage(image, pasteX, pasteY, drawWidth, drawHeight);
+        bufferCtx.restore();
+    }
+
+    renderScene();
+    markUnsavedChanges();
+
+    const shouldSelectPasted = options.selectPasted !== false;
+    if (shouldSelectPasted && !selection) {
+        selection = buildRectSelection(pasteX, pasteY, pasteX + drawWidth, pasteY + drawHeight);
+        selectionDashOffset = 0;
+        updateSelectionAnimationState();
+    }
+    renderOverlay();
+    return true;
+}
+
+function pasteImageFile(file) {
+    if (!file) return;
+    const url = URL.createObjectURL(file);
+    const image = new Image();
+    image.onload = () => {
+        URL.revokeObjectURL(url);
+        pasteExternalImage(image, { selectPasted: true });
+    };
+    image.onerror = () => {
+        URL.revokeObjectURL(url);
+        console.warn('Не удалось вставить изображение из буфера обмена.');
+    };
+    image.src = url;
+}
+
+function handlePaste(event) {
+    if (!event) return;
+    if (isTextInputElement(event.target)) return;
+    if (!bufferCtx || !bufferCanvas) return;
+
+    const data = event.clipboardData;
+    const items = data && data.items ? [...data.items] : [];
+
+    const imageItem = items.find((item) => item.kind === 'file' && item.type && item.type.startsWith('image/'));
+    if (imageItem) {
+        const file = imageItem.getAsFile();
+        if (file) {
+            event.preventDefault();
+            pasteImageFile(file);
+        }
+        return;
+    }
+
+    if (selectionClipboard) {
+        event.preventDefault();
+        pasteSelectionFromClipboard();
+    }
+}
+
 function handleKeyDown(event) {
     const isCtrl = event.ctrlKey || event.metaKey;
     if (isCtrl && event.code === 'KeyC') {
@@ -2566,13 +3840,6 @@ function handleKeyDown(event) {
         if (!isTextInputElement(event.target)) {
             event.preventDefault();
             cutSelectionToClipboard();
-        }
-        return;
-    }
-    if (isCtrl && event.code === 'KeyV') {
-        if (!isTextInputElement(event.target)) {
-            event.preventDefault();
-            pasteSelectionFromClipboard();
         }
         return;
     }
@@ -2624,6 +3891,7 @@ function bindCanvasEvents() {
     window.addEventListener('mousemove', handleWindowPointerMove);
     window.addEventListener('keydown', handleKeyDown);
     window.addEventListener('keyup', handleKeyUp);
+    document.addEventListener('paste', handlePaste);
 }
 
 // =======================
@@ -2955,6 +4223,9 @@ async function initEditor() {
 
     syncCanvasSizes();
     await loadLayers();
+    bindTimelineEvents();
+    await loadTimelineFrames();
+    syncEditorLayout();
     fillBackgroundLayerIfNeeded();
 
     // устанавливаем стартовые значения
@@ -2971,7 +4242,7 @@ async function initEditor() {
     initSaveState();
     hydrateSavedFrame();
     startLastSavedTicker();
-    window.addEventListener('resize', syncOverlayPlacement);
+    window.addEventListener('resize', syncEditorLayout);
 }
 
 // Запускаем после загрузки скрипта

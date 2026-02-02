@@ -1,21 +1,54 @@
 /* Общие стили */
 
+*,
+*::before,
+*::after {
+    box-sizing: border-box;
+}
+
+html,
+body {
+    height: 100%;
+}
+
 body {
     margin: 0;
     font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     background-color: #f3f4f6;
     color: #111827;
+    min-height: 100%;
+    display: flex;
+    flex-direction: column;
 }
 
 header {
     padding: 10px 16px;
     background-color: #111827;
     color: #f9fafb;
+    flex: 0 0 auto;
 }
 
 header h1 {
     margin: 0;
     font-size: 20px;
+}
+
+header p {
+    margin: 6px 0 0;
+    font-size: 13px;
+}
+
+header hr {
+    margin: 8px 0 0;
+    border: none;
+    border-top: 1px solid rgba(249, 250, 251, 0.18);
+}
+
+main {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
 }
 
 /* Сообщения */
@@ -250,7 +283,9 @@ body.modal-open {
     display: flex;
     flex-direction: column;
     gap: 8px;
-    padding: 12px 16px 24px;
+    padding: 12px 16px 12px;
+    flex: 1 1 auto;
+    min-height: 0;
 }
 
 /* Панель инструментов */
@@ -425,12 +460,14 @@ body.modal-open {
 /* Основная область редактора */
 
 .editor-main {
-    margin-top: 8px;
+    margin-top: 0;
     display: flex;
     justify-content: center;
-    align-items: flex-start;
+    align-items: center;
     gap: 16px;
     flex-wrap: wrap;
+    flex: 1 1 auto;
+    min-height: 0;
 }
 
 .canvas-wrapper {
@@ -454,6 +491,10 @@ body.modal-open {
 }
 
 #editor-canvas {
+    /* по умолчанию немного ужимаем по высоте, а точное значение выставит JS */
+    max-height: 70vh;
+    width: auto;
+    height: auto;
     background-color: #f9fafb;
     background-image:
         linear-gradient(45deg, #e5e7eb 25%, transparent 25%),
@@ -755,4 +796,156 @@ body.modal-open {
 .layer-rename .layer-action {
     padding: 0;
     font-size: 13px;
+}
+
+.transform-hint {
+    position: absolute;
+    z-index: 1200;
+    pointer-events: none;
+    padding: 6px 10px;
+    border-radius: 10px;
+    background-color: rgba(17, 24, 39, 0.92);
+    color: #f9fafb;
+    font-size: 12px;
+    line-height: 1.25;
+    box-shadow: 0 10px 22px rgba(0, 0, 0, 0.22);
+    max-width: min(280px, 70vw);
+    white-space: nowrap;
+}
+
+/* Таймлайн кадров */
+
+.timeline-wrapper {
+    margin-top: 10px;
+    padding: 8px 10px;
+    background-color: #e5e7eb;
+    border-radius: 10px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    max-width: 100%;
+}
+
+.timeline-controls {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex: 0 0 auto;
+}
+
+.timeline-strip {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding: 4px;
+    flex: 1 1 auto;
+    scroll-snap-type: x proximity;
+}
+
+.timeline-frame {
+    position: relative;
+    width: 104px;
+    height: 70px;
+    border-radius: 10px;
+    border: 1px solid #9ca3af;
+    background-color: #ffffff;
+    cursor: pointer;
+    padding: 0;
+    overflow: hidden;
+    display: grid;
+    place-items: center;
+    scroll-snap-align: start;
+}
+
+.timeline-frame:hover {
+    background-color: #f3f4f6;
+}
+
+.timeline-frame--active {
+    border-color: #2563eb;
+    box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.22);
+}
+
+.timeline-frame.is-dragging {
+    opacity: 0.6;
+}
+
+.timeline-frame__img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+}
+
+.timeline-frame__number {
+    position: absolute;
+    left: 6px;
+    top: 6px;
+    font-size: 12px;
+    padding: 2px 7px;
+    border-radius: 999px;
+    background-color: rgba(17, 24, 39, 0.78);
+    color: #f9fafb;
+    line-height: 1.2;
+}
+
+.timeline-frame__placeholder {
+    font-weight: 700;
+    font-size: 18px;
+    color: #6b7280;
+    user-select: none;
+}
+
+@media (max-height: 760px) {
+    .editor-root {
+        padding: 10px 12px 10px;
+        gap: 6px;
+    }
+
+    .editor-toolbar {
+        padding: 6px 8px;
+        gap: 6px;
+    }
+
+    .tool-icon {
+        width: 22px;
+        height: 22px;
+    }
+
+    .timeline-wrapper {
+        padding: 6px 8px;
+        gap: 8px;
+    }
+
+    .timeline-strip {
+        gap: 8px;
+    }
+
+    .timeline-frame {
+        width: 96px;
+        height: 60px;
+        border-radius: 9px;
+    }
+}
+
+@media (max-height: 680px) {
+    header {
+        padding: 8px 12px;
+    }
+
+    header h1 {
+        font-size: 18px;
+    }
+
+    .timeline-frame {
+        width: 88px;
+        height: 54px;
+        border-radius: 8px;
+    }
+
+    .timeline-frame__placeholder {
+        font-size: 16px;
+    }
 }
