@@ -58,6 +58,9 @@ const layersEmpty = document.getElementById('layers-empty');
 const addLayerButton = document.getElementById('add-layer-button');
 const layersPanel = document.querySelector('.layers-panel');
 const layersPanelHeader = layersPanel ? layersPanel.querySelector('.layers-panel__header') : null;
+const historyPanel = document.querySelector('.history-panel');
+const historyList = document.getElementById('history-list');
+const historyEmpty = document.getElementById('history-empty');
 
 const timelineStrip = document.getElementById('timeline-strip');
 const addFrameButton = document.getElementById('add-frame-button');
@@ -206,6 +209,17 @@ const AUTOSAVE_INTERVAL_MS = 30000;
 const LAST_SAVED_TICK_MS = 1000;
 
 // =======================
+// История действий
+// =======================
+
+const HISTORY_LIMIT = 50;
+const frameHistories = new Map();
+let isHistoryApplying = false;
+let didDrawStroke = false;
+let lastDrawTool = null;
+let historyPending = null;
+
+// =======================
 // Функции установки параметров
 // =======================
 
@@ -323,6 +337,330 @@ function showTransformHint(text, event) {
 function hideTransformHint() {
     if (!transformHintEl) return;
     transformHintEl.hidden = true;
+}
+
+// =======================
+// История действий
+// =======================
+
+function getHistoryKey() {
+    const indexKey = `index:${currentFrameIndex}`;
+    if (!currentFrameId) return indexKey;
+    const idKey = `frame:${currentFrameId}`;
+    if (frameHistories.has(indexKey) && !frameHistories.has(idKey)) {
+        const stored = frameHistories.get(indexKey);
+        stored.key = idKey;
+        frameHistories.set(idKey, stored);
+        frameHistories.delete(indexKey);
+    }
+    return idKey;
+}
+
+function getFrameHistory() {
+    const key = getHistoryKey();
+    if (!frameHistories.has(key)) {
+        frameHistories.set(key, {
+            key,
+            entries: [],
+            position: 0,
+            baselineLabel: 'Старт кадра',
+            isTrimmed: false,
+        });
+    }
+    return frameHistories.get(key);
+}
+
+function getToolHistoryLabel(toolName) {
+    if (toolName === TOOL_BRUSH) return 'Кисть';
+    if (toolName === TOOL_ERASER) return 'Ластик';
+    if (toolName === TOOL_FILL) return 'Заливка';
+    if (toolName === TOOL_LINE) return 'Линия';
+    if (toolName === TOOL_RECTANGLE) return 'Прямоугольник';
+    if (toolName === TOOL_ELLIPSE) return 'Окружность';
+    return 'Действие';
+}
+
+function captureLayerImage(layer) {
+    if (!layer || !layer.bufferCtx || !layer.bufferCanvas) return null;
+    try {
+        return layer.bufferCtx.getImageData(0, 0, layer.bufferCanvas.width, layer.bufferCanvas.height);
+    } catch (error) {
+        console.warn('Не удалось сохранить слой для истории', error);
+        return null;
+    }
+}
+
+function captureFullSnapshot() {
+    if (!canvas || !layers.length) return null;
+    const snapshotLayers = layers.map((layer) => {
+        ensureLayerCanvases(layer);
+        return {
+            id: layer.id,
+            name: layer.name,
+            order: layer.order,
+            visible: layer.visible,
+            opacity: layer.opacity,
+            imageData: captureLayerImage(layer),
+        };
+    });
+    return {
+        activeLayerId,
+        layers: snapshotLayers,
+    };
+}
+
+function ensureHistoryBaseline() {
+    getFrameHistory();
+    updateHistoryPanel();
+}
+
+function cancelPendingHistory() {
+    historyPending = null;
+}
+
+function beginLayerHistory(label) {
+    if (isHistoryApplying) return;
+    if (historyPending) {
+        cancelPendingHistory();
+    }
+    if (!canvas || !layers.length) return;
+    const layer = getLayerById(activeLayerId);
+    if (!layer) return;
+    ensureLayerCanvases(layer);
+    const beforeImage = captureLayerImage(layer);
+    if (!beforeImage) return;
+    historyPending = {
+        type: 'layer',
+        label: label || 'Действие',
+        layerId: layer.id,
+        beforeImage,
+    };
+}
+
+function commitLayerHistory() {
+    if (!historyPending || historyPending.type !== 'layer') return;
+    const layer = getLayerById(historyPending.layerId);
+    if (!layer) {
+        historyPending = null;
+        return;
+    }
+    ensureLayerCanvases(layer);
+    const afterImage = captureLayerImage(layer);
+    if (!afterImage || !historyPending.beforeImage) {
+        historyPending = null;
+        return;
+    }
+    pushHistoryEntry({
+        type: 'layer',
+        label: historyPending.label,
+        createdAt: Date.now(),
+        layerId: historyPending.layerId,
+        beforeImage: historyPending.beforeImage,
+        afterImage,
+    });
+    historyPending = null;
+}
+
+function beginFullHistory(label) {
+    if (isHistoryApplying) return;
+    cancelPendingHistory();
+    const beforeSnapshot = captureFullSnapshot();
+    if (!beforeSnapshot) return;
+    historyPending = {
+        type: 'full',
+        label: label || 'Действие',
+        beforeSnapshot,
+    };
+}
+
+function commitFullHistory() {
+    if (!historyPending || historyPending.type !== 'full') return;
+    const afterSnapshot = captureFullSnapshot();
+    if (!afterSnapshot || !historyPending.beforeSnapshot) {
+        historyPending = null;
+        return;
+    }
+    pushHistoryEntry({
+        type: 'full',
+        label: historyPending.label,
+        createdAt: Date.now(),
+        beforeSnapshot: historyPending.beforeSnapshot,
+        afterSnapshot,
+    });
+    historyPending = null;
+}
+
+function pushHistoryEntry(entry) {
+    if (isHistoryApplying) return;
+    if (!entry) return;
+    const history = getFrameHistory();
+    if (history.position < history.entries.length) {
+        history.entries = history.entries.slice(0, history.position);
+    }
+    history.entries.push(entry);
+    history.position = history.entries.length;
+
+    if (history.entries.length > HISTORY_LIMIT) {
+        const overflow = history.entries.length - HISTORY_LIMIT;
+        history.entries.splice(0, overflow);
+        history.position = Math.max(0, history.position - overflow);
+        history.baselineLabel = 'Начало истории';
+        history.isTrimmed = true;
+    }
+
+    updateHistoryPanel();
+}
+
+function updateHistoryPanel() {
+    if (!historyPanel || !historyList || !historyEmpty) return;
+    const history = getFrameHistory();
+    if (!history || !history.entries.length) {
+        historyList.innerHTML = '';
+        historyEmpty.hidden = false;
+        return;
+    }
+    historyEmpty.hidden = true;
+    historyList.innerHTML = '';
+
+    const rows = [
+        {
+            label: history.baselineLabel || 'Старт кадра',
+            isBaseline: true,
+            index: -1,
+        },
+        ...history.entries.map((entry, index) => ({
+            label: entry.label || 'Действие',
+            isBaseline: false,
+            index,
+        })),
+    ];
+
+    for (let i = rows.length - 1; i >= 0; i -= 1) {
+        const row = rows[i];
+        const item = document.createElement('li');
+        item.className = 'history-item';
+        const isCurrent = row.isBaseline
+            ? history.position === 0
+            : row.index === history.position - 1;
+        const isFuture = !row.isBaseline && row.index >= history.position;
+        if (isCurrent) {
+            item.classList.add('history-item--current');
+        } else if (isFuture) {
+            item.classList.add('history-item--future');
+        }
+        item.textContent = row.label || 'Действие';
+        historyList.appendChild(item);
+    }
+}
+
+function discardSelectionState() {
+    selection = null;
+    selectionDraft = null;
+    isSelecting = false;
+    lassoPoints = [];
+    resetSelectionTransformState();
+    renderOverlay();
+    updateSelectionAnimationState();
+}
+
+function applyFullSnapshot(snapshot) {
+    if (!snapshot || !Array.isArray(snapshot.layers)) return;
+    isHistoryApplying = true;
+    discardSelectionState();
+
+    const layerPayloads = snapshot.layers.map((layer) => ({
+        id: layer.id,
+        name: layer.name,
+        order: layer.order,
+        visible: layer.visible,
+        opacity: layer.opacity,
+    }));
+    mergeLayerList(layerPayloads);
+
+    snapshot.layers.forEach((layerSnapshot) => {
+        const layer = getLayerById(layerSnapshot.id);
+        if (!layer) return;
+        ensureLayerCanvases(layer);
+        if (!layer.bufferCtx || !layer.bufferCanvas) return;
+        clearCanvas(layer.bufferCtx, layer.bufferCanvas);
+        if (layerSnapshot.imageData) {
+            try {
+                layer.bufferCtx.putImageData(layerSnapshot.imageData, 0, 0);
+            } catch (error) {
+                console.warn('Не удалось восстановить слой из истории', error);
+            }
+        }
+    });
+
+    const nextActive = snapshot.activeLayerId && getLayerById(snapshot.activeLayerId)
+        ? snapshot.activeLayerId
+        : (layers.length ? layers[layers.length - 1].id : null);
+    activeLayerId = nextActive;
+    updateActiveLayerPointers();
+    applyAllLayerStyles();
+    renderLayerList();
+    renderScene();
+    renderOverlay();
+    syncOverlayPlacement();
+    isHistoryApplying = false;
+}
+
+function applyLayerEntry(entry, direction) {
+    if (!entry || entry.type !== 'layer') return;
+    const imageData = direction === 'undo' ? entry.beforeImage : entry.afterImage;
+    if (!imageData) return;
+    const layer = getLayerById(entry.layerId);
+    if (!layer) return;
+    isHistoryApplying = true;
+    discardSelectionState();
+    ensureLayerCanvases(layer);
+    if (layer.bufferCtx && layer.bufferCanvas) {
+        try {
+            layer.bufferCtx.putImageData(imageData, 0, 0);
+        } catch (error) {
+            console.warn('Не удалось восстановить слой из истории', error);
+        }
+    }
+    activeLayerId = layer.id;
+    updateActiveLayerPointers();
+    applyAllLayerStyles();
+    renderLayerList();
+    renderScene();
+    renderOverlay();
+    syncOverlayPlacement();
+    isHistoryApplying = false;
+}
+
+function applyHistoryEntry(entry, direction) {
+    if (!entry) return;
+    if (entry.type === 'full') {
+        const snapshot = direction === 'undo' ? entry.beforeSnapshot : entry.afterSnapshot;
+        applyFullSnapshot(snapshot);
+        return;
+    }
+    if (entry.type === 'layer') {
+        applyLayerEntry(entry, direction);
+    }
+}
+
+function undoHistory() {
+    const history = getFrameHistory();
+    if (!history || history.position <= 0) return;
+    const entry = history.entries[history.position - 1];
+    applyHistoryEntry(entry, 'undo');
+    history.position -= 1;
+    markUnsavedChanges();
+    updateHistoryPanel();
+}
+
+function redoHistory() {
+    const history = getFrameHistory();
+    if (!history || history.position >= history.entries.length) return;
+    const entry = history.entries[history.position];
+    applyHistoryEntry(entry, 'redo');
+    history.position += 1;
+    markUnsavedChanges();
+    updateHistoryPanel();
 }
 
 // =======================
@@ -797,11 +1135,13 @@ function fillBackgroundLayerIfNeeded() {
     backgroundLayer.bufferCtx.fillRect(0, 0, backgroundLayer.bufferCanvas.width, backgroundLayer.bufferCanvas.height);
     renderScene();
     didInitBackground = true;
+    ensureHistoryBaseline();
 }
 
 async function createLayer() {
     const listUrl = getLayerListUrl();
     if (!listUrl) return;
+    beginFullHistory('Слой: добавить');
     try {
         const response = await fetch(listUrl, {
             method: 'POST',
@@ -820,7 +1160,9 @@ async function createLayer() {
         applyAllLayerStyles();
         setActiveLayer(layer.id);
         renderScene();
+        commitFullHistory();
     } catch (error) {
+        cancelPendingHistory();
         console.error('Ошибка создания слоя', error);
     }
 }
@@ -852,6 +1194,7 @@ async function updateLayer(layerId, updates) {
 async function deleteLayer(layerId) {
     const url = getLayerDeleteUrl(layerId);
     if (!url) return;
+    beginFullHistory('Слой: удалить');
     try {
         const response = await fetch(url, {
             method: 'POST',
@@ -867,7 +1210,9 @@ async function deleteLayer(layerId) {
             throw new Error('Не удалось удалить слой.');
         }
         mergeLayerList(data.layers || []);
+        commitFullHistory();
     } catch (error) {
+        cancelPendingHistory();
         console.error('Ошибка удаления слоя', error);
     }
 }
@@ -890,7 +1235,9 @@ async function saveLayerOrder(orderedIds) {
             throw new Error('Не удалось сохранить порядок слоёв.');
         }
         mergeLayerList(data.layers || []);
+        commitFullHistory();
     } catch (error) {
+        cancelPendingHistory();
         console.error('Ошибка сохранения порядка слоёв', error);
     }
 }
@@ -1149,7 +1496,13 @@ function startDrawing(x, y, toolName) {
     startX = x;
     startY = y;
 
+    if (toolName === TOOL_BRUSH || toolName === TOOL_ERASER || isShapeTool(toolName)) {
+        beginLayerHistory(getToolHistoryLabel(toolName));
+    }
+
     if (toolName === TOOL_BRUSH || toolName === TOOL_ERASER) {
+        didDrawStroke = true;
+        lastDrawTool = toolName;
         markUnsavedChanges();
         drawStrokeSegment(x, y, x, y, toolName);
     }
@@ -1184,6 +1537,11 @@ function continueDrawing(x, y) {
  */
 function stopDrawing() {
     isDrawing = false;
+    if (didDrawStroke && (lastDrawTool === TOOL_BRUSH || lastDrawTool === TOOL_ERASER)) {
+        commitLayerHistory();
+    }
+    didDrawStroke = false;
+    lastDrawTool = null;
     activeTool = null;
 }
 
@@ -1263,6 +1621,7 @@ function commitShape() {
     if (!bufferCtx || !bufferCanvas || !ctx || !canvas) return;
     if (startX === lastX && startY === lastY) {
         renderOverlay();
+        cancelPendingHistory();
         return;
     }
     markUnsavedChanges();
@@ -1287,6 +1646,7 @@ function commitShape() {
     }
 
     renderOverlay();
+    commitLayerHistory();
 }
 
 function normalizeRect(fromX, fromY, toX, toY) {
@@ -1890,8 +2250,10 @@ function startSelectionTransform(mode, handleId, startX, startY, event) {
     };
 
     isTransformingSelection = true;
+    beginLayerHistory('Трансформация выделения');
     const didClear = clearSelectionContent();
     if (!didClear) {
+        cancelPendingHistory();
         resetSelectionTransformState();
         renderScene();
         renderOverlay();
@@ -2036,6 +2398,9 @@ function commitSelectionTransform() {
     );
     bufferCtx.restore();
 
+    markUnsavedChanges();
+    commitLayerHistory();
+
     resetSelectionTransformState();
     renderScene();
     renderOverlay();
@@ -2160,7 +2525,13 @@ function cutSelectionToClipboard() {
         renderOverlay();
         return true;
     }
-    clearSelectionContent();
+    beginLayerHistory('Вырезать');
+    const didClear = clearSelectionContent();
+    if (didClear) {
+        commitLayerHistory();
+    } else {
+        cancelPendingHistory();
+    }
     return true;
 }
 
@@ -2171,6 +2542,7 @@ function pasteSelectionFromClipboard() {
     }
     const clipboardCanvas = selectionClipboard.canvas;
     if (!clipboardCanvas) return false;
+    beginLayerHistory('Вставка');
 
     let pasteX = Number.isFinite(lastPointerX) ? lastPointerX : selectionClipboard.originX;
     let pasteY = Number.isFinite(lastPointerY) ? lastPointerY : selectionClipboard.originY;
@@ -2182,7 +2554,10 @@ function pasteSelectionFromClipboard() {
     const pastedSelection = translateSelection(selectionClipboard.selection, deltaX, deltaY);
 
     if (selection && selection.type === SELECT_MAGIC && selection.maskCanvas) {
-        if (!ensureSelectionScratchCanvas()) return false;
+        if (!ensureSelectionScratchCanvas()) {
+            cancelPendingHistory();
+            return false;
+        }
         clearCanvas(selectionScratchCtx, selectionScratchCanvas);
         selectionScratchCtx.drawImage(clipboardCanvas, pasteX, pasteY);
         selectionScratchCtx.globalCompositeOperation = 'destination-in';
@@ -2206,6 +2581,7 @@ function pasteSelectionFromClipboard() {
         selectionDashOffset = 0;
     }
     renderOverlay();
+    commitLayerHistory();
     return true;
 }
 
@@ -3018,6 +3394,7 @@ async function loadFrameByIndex(targetIndex) {
 
         didInitBackground = false;
         clearSelection();
+        cancelPendingHistory();
         hasUnsavedChanges = false;
         lastSavedAt = null;
 
@@ -3033,6 +3410,7 @@ async function loadFrameByIndex(targetIndex) {
 
         setActiveTimelineIndex(currentFrameIndex);
         updateSaveButtonState();
+        updateHistoryPanel();
         return true;
     } catch (error) {
         console.error('Ошибка загрузки кадра', error);
@@ -3334,11 +3712,13 @@ function hydrateSavedFrame() {
         setSaveStatus('Сохранено', 'saved');
         updateLastSavedLabel();
         updateSaveButtonState();
+        ensureHistoryBaseline();
     };
     image.onerror = () => {
         console.warn('Не удалось загрузить сохраненный кадр');
         setSaveIndicator('error');
         setSaveStatus('Не удалось загрузить сохраненный кадр', 'error');
+        ensureHistoryBaseline();
     };
     image.src = normalizeAssetUrl(currentFramePreviewUrl);
 }
@@ -3555,9 +3935,13 @@ function handlePointerDown(event) {
     }
 
     if (currentTool === TOOL_FILL) {
+        beginLayerHistory(getToolHistoryLabel(TOOL_FILL));
         const didFill = floodFill(x, y);
         if (didFill) {
             markUnsavedChanges();
+            commitLayerHistory();
+        } else {
+            cancelPendingHistory();
         }
         return;
     }
@@ -3746,6 +4130,8 @@ function pasteExternalImage(image, options = {}) {
     const naturalHeight = image.naturalHeight || image.height || 0;
     if (!naturalWidth || !naturalHeight) return false;
 
+    beginLayerHistory('Вставка изображения');
+
     const fitScale = Math.min(
         1,
         bufferCanvas.width / naturalWidth,
@@ -3758,7 +4144,10 @@ function pasteExternalImage(image, options = {}) {
     const pasteY = centerY - drawHeight / 2;
 
     if (selection && selection.type === SELECT_MAGIC && selection.maskCanvas) {
-        if (!ensureSelectionScratchCanvas()) return false;
+        if (!ensureSelectionScratchCanvas()) {
+            cancelPendingHistory();
+            return false;
+        }
         clearCanvas(selectionScratchCtx, selectionScratchCanvas);
         selectionScratchCtx.drawImage(image, pasteX, pasteY, drawWidth, drawHeight);
         selectionScratchCtx.globalCompositeOperation = 'destination-in';
@@ -3785,6 +4174,7 @@ function pasteExternalImage(image, options = {}) {
         updateSelectionAnimationState();
     }
     renderOverlay();
+    commitLayerHistory();
     return true;
 }
 
@@ -3829,6 +4219,24 @@ function handlePaste(event) {
 
 function handleKeyDown(event) {
     const isCtrl = event.ctrlKey || event.metaKey;
+    if (isCtrl && event.code === 'KeyZ') {
+        if (!isTextInputElement(event.target)) {
+            event.preventDefault();
+            if (event.shiftKey) {
+                redoHistory();
+            } else {
+                undoHistory();
+            }
+        }
+        return;
+    }
+    if (isCtrl && event.code === 'KeyY') {
+        if (!isTextInputElement(event.target)) {
+            event.preventDefault();
+            redoHistory();
+        }
+        return;
+    }
     if (isCtrl && event.code === 'KeyC') {
         if (!isTextInputElement(event.target)) {
             event.preventDefault();
@@ -3959,6 +4367,7 @@ function bindLayerEvents() {
     layersList.addEventListener('pointerdown', (event) => {
         if (event.target.matches('input[type="range"]')) {
             isOpacityDragging = true;
+            beginFullHistory('Слой: прозрачность');
         }
     });
 
@@ -3973,11 +4382,16 @@ function bindLayerEvents() {
 
         if (action === 'toggle-visibility') {
             const nextVisible = !layer.visible;
+            const historyLabel = nextVisible ? 'Слой: показать' : 'Слой: скрыть';
+            beginFullHistory(historyLabel);
             const updated = await updateLayer(layerId, { visible: nextVisible });
             if (updated) {
                 layer.visible = updated.visible;
                 applyLayerStyles(layer);
                 renderLayerList();
+                commitFullHistory();
+            } else {
+                cancelPendingHistory();
             }
             return;
         }
@@ -4005,11 +4419,15 @@ function bindLayerEvents() {
             const input = item.querySelector('[data-action="rename-input"]');
             const value = input ? input.value.trim() : '';
             if (!value) return;
+            beginFullHistory('Слой: переименовать');
             const updated = await updateLayer(layerId, { name: value });
             if (updated) {
                 layer.name = updated.name;
                 layer.isRenaming = false;
                 renderLayerList();
+                commitFullHistory();
+            } else {
+                cancelPendingHistory();
             }
             return;
         }
@@ -4050,6 +4468,9 @@ function bindLayerEvents() {
         if (updated) {
             layer.opacity = updated.opacity;
             applyLayerStyles(layer);
+            commitFullHistory();
+        } else {
+            cancelPendingHistory();
         }
     });
 
@@ -4100,6 +4521,7 @@ function bindLayerEvents() {
 
     layersList.addEventListener('drop', (event) => {
         event.preventDefault();
+        beginFullHistory('Слой: порядок');
         const orderedIds = [...layersList.querySelectorAll('.layer-item')]
             .map((item) => Number(item.dataset.layerId))
             .filter((value) => Number.isFinite(value));
