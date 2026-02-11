@@ -3,12 +3,12 @@
 {% block title %}Мои проекты{% endblock %}
 
 {% block content %}
-<h2>Мои проекты</h2>
+<h2 data-i18n="my_projects">Мои проекты</h2>
 
 <button type="button"
         class="project-action"
         id="create-project-button">
-    Создать новый проект
+    <span data-i18n="create_new_project">Создать новый проект</span>
 </button>
 
 <ul class="messages" id="project-messages"{% if not messages %} hidden{% endif %}>
@@ -28,26 +28,26 @@
             </div>
             <div class="project-actions">
                 <a class="project-action" href="{% url 'animation:project_editor' project.pk %}">
-                    Открыть
+                    <span data-i18n="open">Открыть</span>
                 </a>
                 <button type="button"
                         class="project-action js-rename-button"
                         data-project-id="{{ project.id }}"
                         data-project-title="{{ project.title }}"
                         data-rename-url="{% url 'animation:project_rename' project.pk %}">
-                    Переименовать
+                    <span data-i18n="rename">Переименовать</span>
                 </button>
                 <button type="button"
                         class="project-action project-action--danger js-delete-button"
                         data-project-title="{{ project.title }}"
                         data-delete-url="{% url 'animation:project_delete' project.pk %}">
-                    Удалить
+                    <span data-i18n="delete">Удалить</span>
                 </button>
             </div>
         </li>
     {% endfor %}
     <li class="project-empty" id="project-empty"{% if projects %} hidden{% endif %}>
-        Проектов пока нет
+        <span data-i18n="no_projects_yet">Проектов пока нет</span>
     </li>
 </ul>
 
@@ -55,8 +55,8 @@
     <div class="modal__overlay" data-modal-close></div>
     <div class="modal__content" role="dialog" aria-modal="true" aria-labelledby="create-modal-title">
         <div class="modal__header">
-            <h3 class="modal__title" id="create-modal-title">Создать новый проект</h3>
-            <button type="button" class="modal__close" data-modal-close aria-label="Закрыть">×</button>
+            <h3 class="modal__title" id="create-modal-title" data-i18n="create_new_project">Создать новый проект</h3>
+            <button type="button" class="modal__close" data-modal-close aria-label="Закрыть" data-i18n-attr="aria-label:close">×</button>
         </div>
         <form method="post"
               action="{% url 'animation:project_create' %}"
@@ -64,15 +64,16 @@
               id="create-form">
             {% csrf_token %}
             <label class="form-field">
-                Название
+                <span data-i18n="title">Название</span>
                 <input type="text"
                        name="title"
                        id="create-title-input"
                        maxlength="200"
-                       placeholder="Новый проект">
+                       placeholder="Новый проект"
+                       data-i18n-attr="placeholder:new_project">
             </label>
             <label class="form-field">
-                Ширина (px)
+                <span data-i18n="width_px">Ширина (px)</span>
                 <input type="number"
                        name="width"
                        min="1"
@@ -80,7 +81,7 @@
                        required>
             </label>
             <label class="form-field">
-                Высота (px)
+                <span data-i18n="height_px">Высота (px)</span>
                 <input type="number"
                        name="height"
                        min="1"
@@ -88,7 +89,7 @@
                        required>
             </label>
             <label class="form-field">
-                FPS
+                <span data-i18n="fps">FPS</span>
                 <input type="number"
                        name="fps"
                        min="1"
@@ -97,8 +98,8 @@
             </label>
             <p class="form-error" id="create-error" hidden></p>
             <div class="modal__actions">
-                <button type="submit" class="tool-button">Создать</button>
-                <button type="button" class="project-action" data-modal-close>Отмена</button>
+                <button type="submit" class="tool-button" data-i18n="create">Создать</button>
+                <button type="button" class="project-action" data-modal-close data-i18n="cancel">Отмена</button>
             </div>
         </form>
     </div>
@@ -108,14 +109,14 @@
     <div class="modal__overlay" data-modal-close></div>
     <div class="modal__content" role="dialog" aria-modal="true" aria-labelledby="rename-modal-title">
         <div class="modal__header">
-            <h3 class="modal__title" id="rename-modal-title">Переименовать проект</h3>
-            <button type="button" class="modal__close" data-modal-close aria-label="Закрыть">×</button>
+            <h3 class="modal__title" id="rename-modal-title" data-i18n="rename">Переименовать</h3>
+            <button type="button" class="modal__close" data-modal-close aria-label="Закрыть" data-i18n-attr="aria-label:close">×</button>
         </div>
         <form method="post" class="modal__body" id="rename-form">
             {% csrf_token %}
             <input type="hidden" name="project_id" id="rename-project-id">
             <label class="form-field">
-                Новое название
+                <span data-i18n="new_title">Новое название</span>
                 <input type="text"
                        name="new_title"
                        id="rename-title-input"
@@ -125,8 +126,8 @@
             <p class="modal__hint" id="rename-current-title"></p>
             <p class="form-error" id="rename-error" hidden></p>
             <div class="modal__actions">
-                <button type="submit" class="tool-button">Сохранить</button>
-                <button type="button" class="project-action" data-modal-close>Отмена</button>
+                <button type="submit" class="tool-button" data-i18n="save">Сохранить</button>
+                <button type="button" class="project-action" data-modal-close data-i18n="cancel">Отмена</button>
             </div>
         </form>
     </div>
@@ -136,8 +137,8 @@
     <div class="modal__overlay" data-modal-close></div>
     <div class="modal__content" role="dialog" aria-modal="true" aria-labelledby="delete-modal-title">
         <div class="modal__header">
-            <h3 class="modal__title" id="delete-modal-title">Удаление проекта</h3>
-            <button type="button" class="modal__close" data-modal-close aria-label="Закрыть">×</button>
+            <h3 class="modal__title" id="delete-modal-title" data-i18n="delete_project">Удаление проекта</h3>
+            <button type="button" class="modal__close" data-modal-close aria-label="Закрыть" data-i18n-attr="aria-label:close">×</button>
         </div>
         <form method="post" class="modal__body" id="delete-form">
             {% csrf_token %}
@@ -145,9 +146,9 @@
             <p class="form-error" id="delete-error" hidden></p>
             <div class="modal__actions">
                 <button type="submit" class="project-action project-action--danger">
-                    Удалить
+                    <span data-i18n="delete">Удалить</span>
                 </button>
-                <button type="button" class="project-action" data-modal-close>Отмена</button>
+                <button type="button" class="project-action" data-modal-close data-i18n="cancel">Отмена</button>
             </div>
         </form>
     </div>
@@ -244,7 +245,7 @@
             const openLink = document.createElement('a');
             openLink.className = 'project-action';
             openLink.href = project.editor_url;
-            openLink.textContent = 'Открыть';
+            openLink.textContent = t('open');
 
             const renameButton = document.createElement('button');
             renameButton.type = 'button';
@@ -252,14 +253,14 @@
             renameButton.dataset.projectId = project.id;
             renameButton.dataset.projectTitle = project.title;
             renameButton.dataset.renameUrl = project.rename_url;
-            renameButton.textContent = 'Переименовать';
+            renameButton.textContent = t('rename');
 
             const deleteButton = document.createElement('button');
             deleteButton.type = 'button';
             deleteButton.className = 'project-action project-action--danger js-delete-button';
             deleteButton.dataset.projectTitle = project.title;
             deleteButton.dataset.deleteUrl = project.delete_url;
-            deleteButton.textContent = 'Удалить';
+            deleteButton.textContent = t('delete');
 
             actions.append(openLink, renameButton, deleteButton);
             item.append(info, actions);
@@ -302,7 +303,7 @@
                 renameProjectId.value = projectId;
             }
             if (renameCurrentTitle) {
-                renameCurrentTitle.textContent = `Текущее название: ${title}`;
+                renameCurrentTitle.textContent = t('project_current_title', { title });
             }
             clearInlineError(renameError);
 
@@ -319,7 +320,7 @@
                 deleteForm.dataset.projectId = button.closest('.project-item')?.dataset.projectId || '';
             }
             if (deleteModalText) {
-                deleteModalText.textContent = `Удалить проект «${title}»? Это действие нельзя отменить.`;
+                deleteModalText.textContent = t('delete_project_confirm', { title });
             }
             clearInlineError(deleteError);
 
@@ -392,7 +393,7 @@
 
                     const data = await response.json();
                     if (!response.ok || !data.ok) {
-                        showInlineError(createError, 'Не удалось создать проект.');
+                        showInlineError(createError, t('could_not_create_the_project'));
                         return;
                     }
 
@@ -402,10 +403,10 @@
                         emptyState.hidden = true;
                     }
 
-                    showMessage('Проект создан.', 'success');
+                    showMessage(t('project_created'), 'success');
                     closeModal(createModal);
                 } catch (error) {
-                    showInlineError(createError, 'Не удалось создать проект.');
+                    showInlineError(createError, t('could_not_create_the_project'));
                 } finally {
                     if (submitButton) {
                         submitButton.disabled = false;
@@ -440,12 +441,12 @@
 
                     const data = await response.json();
                     if (!response.ok || !data.ok) {
-                        let errorText = 'Не удалось переименовать проект.';
+                        let errorText = t('could_not_rename_the_project');
                         if (data && data.error === 'empty_title') {
-                            errorText = 'Название не может быть пустым.';
+                            errorText = t('title_cannot_be_empty');
                         }
                         if (data && data.error === 'invalid_project') {
-                            errorText = 'Некорректный проект.';
+                            errorText = t('invalid_project');
                         }
                         showInlineError(renameError, errorText);
                         return;
@@ -468,10 +469,10 @@
                         }
                     }
 
-                    showMessage('Название проекта обновлено.', 'success');
+                    showMessage(t('project_title_updated'), 'success');
                     closeModal(renameModal);
                 } catch (error) {
-                    showInlineError(renameError, 'Не удалось переименовать проект.');
+                    showInlineError(renameError, t('could_not_rename_the_project'));
                 } finally {
                     if (submitButton) {
                         submitButton.disabled = false;
@@ -504,7 +505,7 @@
 
                     const data = await response.json();
                     if (!response.ok || !data.ok) {
-                        showInlineError(deleteError, 'Не удалось удалить проект.');
+                        showInlineError(deleteError, t('could_not_delete_the_project'));
                         return;
                     }
 
@@ -518,10 +519,10 @@
                         emptyState.hidden = Boolean(hasItems);
                     }
 
-                    showMessage(`Проект «${projectTitle}» удалён.`, 'success');
+                    showMessage(t('project_title_deleted', { title: projectTitle }), 'success');
                     closeModal(deleteModal);
                 } catch (error) {
-                    showInlineError(deleteError, 'Не удалось удалить проект.');
+                    showInlineError(deleteError, t('could_not_delete_the_project'));
                 } finally {
                     if (submitButton) {
                         submitButton.disabled = false;

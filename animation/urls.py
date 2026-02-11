@@ -28,4 +28,10 @@ urlpatterns = [
         views.layer_delete,
         name='layer_delete',
     ),
+    path('api/project/<int:pk>/export/', views.project_export, name='project_export'),
+    path(
+        'api/project/<int:pk>/export/download/<str:token>/',
+        views.project_export_download,
+        name='project_export_download',
+    ),
 ]

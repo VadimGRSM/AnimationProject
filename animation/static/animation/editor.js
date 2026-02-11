@@ -38,18 +38,41 @@ const canvas = document.getElementById('editor-canvas');
 let ctx = null;
 const overlayCanvas = document.getElementById('editor-overlay');
 const overlayCtx = overlayCanvas ? overlayCanvas.getContext('2d') : null;
+const onionPrevCanvas = document.getElementById('editor-onion-prev');
+const onionPrevCtx = onionPrevCanvas ? onionPrevCanvas.getContext('2d') : null;
+const onionNextCanvas = document.getElementById('editor-onion-next');
+const onionNextCtx = onionNextCanvas ? onionNextCanvas.getContext('2d') : null;
 
 const toolbar = document.querySelector('.editor-toolbar');
 const canvasWrapper = document.querySelector('.canvas-wrapper');
+const editorMain = document.querySelector('.editor-main');
 const toolButtons = document.querySelectorAll('.tool-button[data-tool]');
 const selectionModeButtons = document.querySelectorAll('[data-select-mode]');
 const wandSensitivityInput = document.getElementById('wand-sensitivity');
 const colorInput = document.getElementById('color-picker');
 const sizeInput = document.getElementById('brush-size');
 const saveButton = document.getElementById('save-project-button');
+const exportButton = document.getElementById('export-project-button');
 const saveStatus = document.getElementById('save-status');
 const saveIndicator = document.getElementById('save-indicator');
 const lastSavedLabel = document.getElementById('last-saved-time');
+
+const exportModal = document.getElementById('export-modal');
+const exportModalCloseButton = document.getElementById('export-modal-close');
+const exportCancelButton = document.getElementById('export-cancel-button');
+const exportConfirmButton = document.getElementById('export-confirm-button');
+const exportResolutionSelect = document.getElementById('export-resolution');
+const exportFpsInput = document.getElementById('export-fps');
+const exportGifOptions = document.getElementById('export-gif-options');
+const exportGifInfiniteCheckbox = document.getElementById('export-gif-infinite');
+const exportGifLoopCountInput = document.getElementById('export-gif-loop-count');
+const exportErrorLabel = document.getElementById('export-error');
+const exportProgress = document.getElementById('export-progress');
+const exportResult = document.getElementById('export-result');
+const exportDownloadLink = document.getElementById('export-download-link');
+const exportFormatInputs = exportModal
+    ? exportModal.querySelectorAll('input[name="export-format"]')
+    : [];
 const eyedropperZoom = document.getElementById('eyedropper-zoom');
 const eyedropperZoomCanvas = document.getElementById('eyedropper-zoom-canvas');
 const eyedropperZoomCtx = eyedropperZoomCanvas ? eyedropperZoomCanvas.getContext('2d') : null;
@@ -59,16 +82,36 @@ const addLayerButton = document.getElementById('add-layer-button');
 const layersPanel = document.querySelector('.layers-panel');
 const layersPanelHeader = layersPanel ? layersPanel.querySelector('.layers-panel__header') : null;
 const historyPanel = document.querySelector('.history-panel');
+const historyPanelHeader = historyPanel ? historyPanel.querySelector('.history-panel__header') : null;
 const historyList = document.getElementById('history-list');
 const historyEmpty = document.getElementById('history-empty');
+
+const editorProjectId = (editorRoot && editorRoot.dataset.projectId) || 'unknown';
+const PANEL_POSITION_STORAGE_PREFIX = `anim.editor.${editorProjectId}.panelPosition.`;
 
 const timelineStrip = document.getElementById('timeline-strip');
 const addFrameButton = document.getElementById('add-frame-button');
 const duplicateFrameButton = document.getElementById('duplicate-frame-button');
 const deleteFrameButton = document.getElementById('delete-frame-button');
+const onionToggleButton = document.getElementById('onion-skin-toggle');
+const onionPanel = document.getElementById('onion-skin-panel');
+const onionPanelHeader = onionPanel ? onionPanel.querySelector('.onion-panel__header') : null;
+const onionCloseButton = document.getElementById('onion-skin-close');
+const onionCountInput = document.getElementById('onion-skin-count');
+const onionCountValueLabel = document.getElementById('onion-skin-count-value');
+const onionOpacityPrevInput = document.getElementById('onion-skin-opacity-prev');
+const onionOpacityPrevValueLabel = document.getElementById('onion-skin-opacity-prev-value');
+const onionOpacityNextInput = document.getElementById('onion-skin-opacity-next');
+const onionOpacityNextValueLabel = document.getElementById('onion-skin-opacity-next-value');
+const onionModePrevInput = document.getElementById('onion-skin-mode-prev');
+const onionModeNextInput = document.getElementById('onion-skin-mode-next');
+const onionModeBothInput = document.getElementById('onion-skin-mode-both');
 
 const projectSaveUrl = (editorRoot && editorRoot.dataset.projectSaveUrl)
     || window.ANIM_PROJECT_SAVE_URL
+    || '';
+const projectExportUrl = (editorRoot && editorRoot.dataset.projectExportUrl)
+    || window.ANIM_PROJECT_EXPORT_URL
     || '';
 const framesListUrl = (editorRoot && editorRoot.dataset.framesListUrl) || '';
 const frameDetailUrlTemplate = (editorRoot && editorRoot.dataset.frameDetailUrlTemplate) || '';
@@ -97,6 +140,11 @@ let currentFramePreviewUrl = (editorRoot && editorRoot.dataset.currentFramePrevi
 let currentFrameUpdatedAt = (editorRoot && editorRoot.dataset.currentFrameUpdatedAt)
     || window.ANIM_CURRENT_FRAME_UPDATED_AT
     || '';
+const projectFps = (() => {
+    const raw = editorRoot ? editorRoot.dataset.projectFps : null;
+    const parsed = parseInt(raw, 10);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : 12;
+})();
 
 // =======================
 // Состояние рисования
@@ -120,6 +168,9 @@ let didInitBackground = false;
 let isDraggingLayersPanel = false;
 let layersPanelOffsetX = 0;
 let layersPanelOffsetY = 0;
+let isDraggingHistoryPanel = false;
+let historyPanelOffsetX = 0;
+let historyPanelOffsetY = 0;
 let isOpacityDragging = false;
 
 let isDrawing = false;
@@ -128,6 +179,7 @@ let lastX = 0;
 let lastY = 0;
 let startX = 0;
 let startY = 0;
+let pendingCanvasStartFromOutside = null;
 
 let isSelecting = false;
 let selectionMode = SELECT_RECT;
@@ -204,6 +256,24 @@ let timelineFrames = [];
 let isSwitchingFrame = false;
 let dragFrameId = null;
 let panStartedByMiddle = false;
+let isExporting = false;
+
+// =======================
+// Onion-Skin (соседние кадры)
+// =======================
+
+const ONION_SKIN_STORAGE_KEY = `anim.editor.${editorProjectId}.onionSkin`;
+let onionEnabled = false;
+let onionFrameCount = 2;
+let onionOpacityPrev = 35;
+let onionOpacityNext = 35;
+let onionMode = 'both'; // prev | next | both
+let onionSuppressed = false;
+const onionFrameCache = new Map();
+let onionRenderRequestId = null;
+let isDraggingOnionPanel = false;
+let onionPanelOffsetX = 0;
+let onionPanelOffsetY = 0;
 
 const AUTOSAVE_INTERVAL_MS = 30000;
 const LAST_SAVED_TICK_MS = 1000;
@@ -213,11 +283,36 @@ const LAST_SAVED_TICK_MS = 1000;
 // =======================
 
 const HISTORY_LIMIT = 50;
+const HISTORY_VISIBLE_ACTIONS = 5;
+const LAYERS_VISIBLE_COUNT = 3;
 const frameHistories = new Map();
 let isHistoryApplying = false;
 let didDrawStroke = false;
 let lastDrawTool = null;
 let historyPending = null;
+
+const LEGACY_HISTORY_LABEL_KEYS = {
+    'Старт кадра': 'frame_start',
+    'Начало истории': 'history_start',
+    'Действие': 'action',
+    'Кисть': 'brush',
+    'Ластик': 'eraser',
+    'Заливка': 'fill',
+    'Линия': 'line',
+    'Прямоугольник': 'rectangle',
+    'Окружность': 'ellipse',
+    'Слой: добавить': 'layer_add',
+    'Слой: удалить': 'layer_delete',
+    'Слой: прозрачность': 'layer_opacity_action',
+    'Слой: показать': 'layer_show_action',
+    'Слой: скрыть': 'layer_hide_action',
+    'Слой: переименовать': 'layer_rename_action',
+    'Слой: порядок': 'layer_order',
+    'Трансформация выделения': 'selection_transform',
+    'Вырезать': 'cut',
+    'Вставка': 'paste',
+    'Вставка изображения': 'paste_image',
+};
 
 // =======================
 // Функции установки параметров
@@ -363,7 +458,7 @@ function getFrameHistory() {
             key,
             entries: [],
             position: 0,
-            baselineLabel: 'Старт кадра',
+            baselineLabel: 'frame_start',
             isTrimmed: false,
         });
     }
@@ -371,13 +466,18 @@ function getFrameHistory() {
 }
 
 function getToolHistoryLabel(toolName) {
-    if (toolName === TOOL_BRUSH) return 'Кисть';
-    if (toolName === TOOL_ERASER) return 'Ластик';
-    if (toolName === TOOL_FILL) return 'Заливка';
-    if (toolName === TOOL_LINE) return 'Линия';
-    if (toolName === TOOL_RECTANGLE) return 'Прямоугольник';
-    if (toolName === TOOL_ELLIPSE) return 'Окружность';
-    return 'Действие';
+    if (toolName === TOOL_BRUSH) return 'brush';
+    if (toolName === TOOL_ERASER) return 'eraser';
+    if (toolName === TOOL_FILL) return 'fill';
+    if (toolName === TOOL_LINE) return 'line';
+    if (toolName === TOOL_RECTANGLE) return 'rectangle';
+    if (toolName === TOOL_ELLIPSE) return 'ellipse';
+    return 'action';
+}
+
+function resolveHistoryLabelKey(label) {
+    if (!label) return 'action';
+    return LEGACY_HISTORY_LABEL_KEYS[label] || label;
 }
 
 function captureLayerImage(layer) {
@@ -431,7 +531,7 @@ function beginLayerHistory(label) {
     if (!beforeImage) return;
     historyPending = {
         type: 'layer',
-        label: label || 'Действие',
+        label: label || 'action',
         layerId: layer.id,
         beforeImage,
     };
@@ -468,7 +568,7 @@ function beginFullHistory(label) {
     if (!beforeSnapshot) return;
     historyPending = {
         type: 'full',
-        label: label || 'Действие',
+        label: label || 'action',
         beforeSnapshot,
     };
 }
@@ -504,7 +604,7 @@ function pushHistoryEntry(entry) {
         const overflow = history.entries.length - HISTORY_LIMIT;
         history.entries.splice(0, overflow);
         history.position = Math.max(0, history.position - overflow);
-        history.baselineLabel = 'Начало истории';
+        history.baselineLabel = 'history_start';
         history.isTrimmed = true;
     }
 
@@ -524,21 +624,22 @@ function updateHistoryPanel() {
 
     const rows = [
         {
-            label: history.baselineLabel || 'Старт кадра',
+            label: resolveHistoryLabelKey(history.baselineLabel || 'frame_start'),
             isBaseline: true,
             index: -1,
         },
         ...history.entries.map((entry, index) => ({
-            label: entry.label || 'Действие',
+            label: resolveHistoryLabelKey(entry.label || 'action'),
             isBaseline: false,
             index,
         })),
     ];
 
-    for (let i = rows.length - 1; i >= 0; i -= 1) {
+    for (let i = 0; i < rows.length; i += 1) {
         const row = rows[i];
         const item = document.createElement('li');
         item.className = 'history-item';
+        item.dataset.historyPosition = String(row.isBaseline ? 0 : row.index + 1);
         const isCurrent = row.isBaseline
             ? history.position === 0
             : row.index === history.position - 1;
@@ -548,9 +649,12 @@ function updateHistoryPanel() {
         } else if (isFuture) {
             item.classList.add('history-item--future');
         }
-        item.textContent = row.label || 'Действие';
+        item.textContent = t(row.label || 'action');
         historyList.appendChild(item);
     }
+
+    // ограничиваем видимую высоту (5 действий + базовая строка) и включаем скролл внутри списка
+    applyListMaxVisibleHeight(historyList, '.history-item', HISTORY_VISIBLE_ACTIONS + 1);
 }
 
 function discardSelectionState() {
@@ -661,6 +765,43 @@ function redoHistory() {
     history.position += 1;
     markUnsavedChanges();
     updateHistoryPanel();
+}
+
+function jumpToHistoryPosition(targetPosition) {
+    if (isHistoryApplying) return;
+    const history = getFrameHistory();
+    if (!history) return;
+    const nextPosition = clamp(Number(targetPosition) || 0, 0, history.entries.length);
+    if (nextPosition === history.position) return;
+
+    if (nextPosition < history.position) {
+        while (history.position > nextPosition) {
+            const entry = history.entries[history.position - 1];
+            applyHistoryEntry(entry, 'undo');
+            history.position -= 1;
+        }
+    } else {
+        while (history.position < nextPosition) {
+            const entry = history.entries[history.position];
+            applyHistoryEntry(entry, 'redo');
+            history.position += 1;
+        }
+    }
+
+    markUnsavedChanges();
+    updateHistoryPanel();
+}
+
+function bindHistoryEvents() {
+    if (!historyList) return;
+    historyList.addEventListener('click', (event) => {
+        const item = event.target.closest('.history-item');
+        if (!item) return;
+        const raw = item.dataset.historyPosition;
+        const nextPosition = Number(raw);
+        if (!Number.isFinite(nextPosition)) return;
+        jumpToHistoryPosition(nextPosition);
+    });
 }
 
 // =======================
@@ -944,7 +1085,7 @@ function renderLayerList() {
 
         const opacityWrap = document.createElement('label');
         opacityWrap.className = 'layer-opacity';
-        opacityWrap.innerHTML = '<span>Прозрачность</span>';
+        opacityWrap.innerHTML = `<span>${t('opacity')}</span>`;
         const opacityInput = document.createElement('input');
         opacityInput.type = 'range';
         opacityInput.min = '0';
@@ -960,7 +1101,7 @@ function renderLayerList() {
         visibilityButton.type = 'button';
         visibilityButton.className = 'layer-visibility';
         visibilityButton.dataset.action = 'toggle-visibility';
-        visibilityButton.title = layer.visible ? 'Скрыть слой' : 'Показать слой';
+        visibilityButton.title = layer.visible ? t('hide_layer') : t('show_layer');
         visibilityButton.setAttribute('aria-label', visibilityButton.title);
         if (!layer.visible) {
             visibilityButton.classList.add('is-hidden');
@@ -975,7 +1116,7 @@ function renderLayerList() {
         renameButton.type = 'button';
         renameButton.className = 'layer-action';
         renameButton.dataset.action = 'rename';
-        renameButton.title = 'Переименовать слой';
+        renameButton.title = t('rename_layer');
         renameButton.setAttribute('aria-label', renameButton.title);
         const renameIcon = document.createElement('img');
         renameIcon.className = 'layer-icon';
@@ -986,7 +1127,7 @@ function renderLayerList() {
         deleteButton.type = 'button';
         deleteButton.className = 'layer-action layer-action--danger';
         deleteButton.dataset.action = 'delete';
-        deleteButton.title = 'Удалить слой';
+        deleteButton.title = t('delete_layer');
         deleteButton.setAttribute('aria-label', deleteButton.title);
         const deleteIcon = document.createElement('img');
         deleteIcon.className = 'layer-icon';
@@ -1011,12 +1152,12 @@ function renderLayerList() {
         saveRename.type = 'button';
         saveRename.className = 'layer-action';
         saveRename.dataset.action = 'rename-save';
-        saveRename.textContent = 'Сохранить';
+        saveRename.textContent = t('save');
         const cancelRename = document.createElement('button');
         cancelRename.type = 'button';
         cancelRename.className = 'layer-action';
         cancelRename.dataset.action = 'rename-cancel';
-        cancelRename.textContent = 'Отмена';
+        cancelRename.textContent = t('cancel');
         renameActions.appendChild(saveRename);
         renameActions.appendChild(cancelRename);
         renameBlock.appendChild(renameInput);
@@ -1035,6 +1176,7 @@ function renderLayerList() {
         layersList.appendChild(item);
     });
     updateLayersEmptyState();
+    applyListMaxVisibleHeight(layersList, '.layer-item', LAYERS_VISIBLE_COUNT);
 }
 
 
@@ -1141,7 +1283,7 @@ function fillBackgroundLayerIfNeeded() {
 async function createLayer() {
     const listUrl = getLayerListUrl();
     if (!listUrl) return;
-    beginFullHistory('Слой: добавить');
+    beginFullHistory('layer_add');
     try {
         const response = await fetch(listUrl, {
             method: 'POST',
@@ -1194,7 +1336,7 @@ async function updateLayer(layerId, updates) {
 async function deleteLayer(layerId) {
     const url = getLayerDeleteUrl(layerId);
     if (!url) return;
-    beginFullHistory('Слой: удалить');
+    beginFullHistory('layer_delete');
     try {
         const response = await fetch(url, {
             method: 'POST',
@@ -1382,12 +1524,22 @@ function renderFrameOutline() {
 function renderScene() {
     if (!layers.length) return;
     renderAllLayers();
+    renderOnionSkin();
 }
 
 function syncCanvasSizes() {
     if (!canvas) return;
     const width = canvas.width;
     const height = canvas.height;
+
+    if (onionPrevCanvas) {
+        onionPrevCanvas.width = width;
+        onionPrevCanvas.height = height;
+    }
+    if (onionNextCanvas) {
+        onionNextCanvas.width = width;
+        onionNextCanvas.height = height;
+    }
 
     if (overlayCanvas) {
         overlayCanvas.width = width;
@@ -1401,6 +1553,18 @@ function syncCanvasSizes() {
 function syncOverlayPlacement() {
     if (!overlayCanvas || !canvas) return;
     const rect = canvas.getBoundingClientRect();
+    if (onionPrevCanvas) {
+        onionPrevCanvas.style.width = `${rect.width}px`;
+        onionPrevCanvas.style.height = `${rect.height}px`;
+        onionPrevCanvas.style.left = `${canvas.offsetLeft}px`;
+        onionPrevCanvas.style.top = `${canvas.offsetTop}px`;
+    }
+    if (onionNextCanvas) {
+        onionNextCanvas.style.width = `${rect.width}px`;
+        onionNextCanvas.style.height = `${rect.height}px`;
+        onionNextCanvas.style.left = `${canvas.offsetLeft}px`;
+        onionNextCanvas.style.top = `${canvas.offsetTop}px`;
+    }
     overlayCanvas.style.width = `${rect.width}px`;
     overlayCanvas.style.height = `${rect.height}px`;
     overlayCanvas.style.left = `${canvas.offsetLeft}px`;
@@ -1418,6 +1582,40 @@ function toPxNumber(value) {
     if (typeof value !== 'string') return 0;
     const parsed = parseFloat(value);
     return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function getListGapPx(listEl) {
+    if (!listEl) return 0;
+    const styles = window.getComputedStyle(listEl);
+    return toPxNumber(styles.rowGap || styles.gap);
+}
+
+function applyListMaxVisibleHeight(listEl, itemSelector, maxVisible) {
+    if (!listEl) return;
+    const maxCount = Number(maxVisible);
+    if (!Number.isFinite(maxCount) || maxCount <= 0) return;
+
+    const items = itemSelector
+        ? [...listEl.querySelectorAll(itemSelector)]
+        : [...listEl.children];
+
+    if (!items.length || items.length <= maxCount) {
+        listEl.style.maxHeight = '';
+        listEl.style.overflowY = '';
+        return;
+    }
+
+    const gap = getListGapPx(listEl);
+    const count = Math.min(maxCount, items.length);
+    let height = 0;
+    for (let i = 0; i < count; i += 1) {
+        height += items[i].offsetHeight || 0;
+    }
+    height += gap * Math.max(0, count - 1);
+    if (!Number.isFinite(height) || height <= 0) return;
+
+    listEl.style.maxHeight = `${Math.ceil(height)}px`;
+    listEl.style.overflowY = 'auto';
 }
 
 /**
@@ -1470,7 +1668,10 @@ function syncResponsiveCanvasSize() {
 function syncEditorLayout() {
     syncResponsiveCanvasSize();
     // после изменения размеров даём браузеру пересчитать layout и синхронизируем оверлей/слои
-    requestAnimationFrame(syncOverlayPlacement);
+    requestAnimationFrame(() => {
+        syncOverlayPlacement();
+        hydratePanelPositions();
+    });
 }
 
 function updateCursor() {
@@ -2250,7 +2451,7 @@ function startSelectionTransform(mode, handleId, startX, startY, event) {
     };
 
     isTransformingSelection = true;
-    beginLayerHistory('Трансформация выделения');
+    beginLayerHistory('selection_transform');
     const didClear = clearSelectionContent();
     if (!didClear) {
         cancelPendingHistory();
@@ -2525,7 +2726,7 @@ function cutSelectionToClipboard() {
         renderOverlay();
         return true;
     }
-    beginLayerHistory('Вырезать');
+    beginLayerHistory('cut');
     const didClear = clearSelectionContent();
     if (didClear) {
         commitLayerHistory();
@@ -2542,7 +2743,7 @@ function pasteSelectionFromClipboard() {
     }
     const clipboardCanvas = selectionClipboard.canvas;
     if (!clipboardCanvas) return false;
-    beginLayerHistory('Вставка');
+    beginLayerHistory('paste');
 
     let pasteX = Number.isFinite(lastPointerX) ? lastPointerX : selectionClipboard.originX;
     let pasteY = Number.isFinite(lastPointerY) ? lastPointerY : selectionClipboard.originY;
@@ -2859,7 +3060,13 @@ function getCanvasRawCoords(event) {
         scaleX,
         scaleY,
     } = getCanvasMetrics();
-    const hasOffset = typeof event.offsetX === 'number' && typeof event.offsetY === 'number';
+    // `offsetX/offsetY` корректны только когда target — сам canvas.
+    // При drag за пределами canvas события приходят с target=document/body/etc,
+    // и offsetX/offsetY начинают "прыгать" -> фигуры/выделение ведут себя странно.
+    const isCanvasEventTarget = event && (event.target === canvas || event.currentTarget === canvas);
+    const hasOffset = isCanvasEventTarget
+        && typeof event.offsetX === 'number'
+        && typeof event.offsetY === 'number';
     const rawX = hasOffset ? event.offsetX : event.clientX - rect.left - borderLeft;
     const rawY = hasOffset ? event.offsetY : event.clientY - rect.top - borderTop;
     const x = rawX * scaleX;
@@ -3228,6 +3435,605 @@ function syncCurrentFrameIdFromTimeline() {
     }
 }
 
+function coerceIntInRange(value, minValue, maxValue, fallbackValue) {
+    const parsed = parseInt(value, 10);
+    if (!Number.isFinite(parsed)) return fallbackValue;
+    return clamp(parsed, minValue, maxValue);
+}
+
+function coerceOnionMode(value) {
+    if (value === 'prev' || value === 'next' || value === 'both') return value;
+    return 'both';
+}
+
+function loadOnionSkinSettings() {
+    try {
+        const raw = window.localStorage.getItem(ONION_SKIN_STORAGE_KEY);
+        if (!raw) return;
+        const parsed = JSON.parse(raw);
+        if (!parsed || typeof parsed !== 'object') return;
+
+        onionFrameCount = coerceIntInRange(parsed.frameCount, 1, 3, onionFrameCount);
+        onionOpacityPrev = coerceIntInRange(parsed.opacityPrev, 0, 100, onionOpacityPrev);
+        onionOpacityNext = coerceIntInRange(parsed.opacityNext, 0, 100, onionOpacityNext);
+        onionMode = coerceOnionMode(parsed.mode);
+    } catch (error) {
+        // localStorage может быть недоступен (private mode / блокировки) — не падаем
+    }
+}
+
+function storeOnionSkinSettings() {
+    try {
+        window.localStorage.setItem(ONION_SKIN_STORAGE_KEY, JSON.stringify({
+            frameCount: onionFrameCount,
+            opacityPrev: onionOpacityPrev,
+            opacityNext: onionOpacityNext,
+            mode: onionMode,
+        }));
+    } catch (error) {
+        // localStorage может быть недоступен — не падаем
+    }
+}
+
+function updateOnionSkinValueLabels() {
+    if (onionCountValueLabel) {
+        onionCountValueLabel.textContent = String(onionFrameCount);
+    }
+    if (onionOpacityPrevValueLabel) {
+        onionOpacityPrevValueLabel.textContent = `${onionOpacityPrev}%`;
+    }
+    if (onionOpacityNextValueLabel) {
+        onionOpacityNextValueLabel.textContent = `${onionOpacityNext}%`;
+    }
+}
+
+function clearOnionCanvases() {
+    if (onionPrevCtx && onionPrevCanvas) {
+        clearCanvas(onionPrevCtx, onionPrevCanvas);
+    }
+    if (onionNextCtx && onionNextCanvas) {
+        clearCanvas(onionNextCtx, onionNextCanvas);
+    }
+}
+
+function shouldShowOnionPrev() {
+    return onionEnabled
+        && !onionSuppressed
+        && (onionMode === 'prev' || onionMode === 'both');
+}
+
+function shouldShowOnionNext() {
+    return onionEnabled
+        && !onionSuppressed
+        && (onionMode === 'next' || onionMode === 'both');
+}
+
+function syncOnionCanvasVisibility() {
+    const showPrev = shouldShowOnionPrev();
+    const showNext = shouldShowOnionNext();
+
+    if (onionPrevCanvas) {
+        onionPrevCanvas.hidden = !showPrev;
+        if (!showPrev && onionPrevCtx) {
+            clearCanvas(onionPrevCtx, onionPrevCanvas);
+        }
+    }
+
+    if (onionNextCanvas) {
+        onionNextCanvas.hidden = !showNext;
+        if (!showNext && onionNextCtx) {
+            clearCanvas(onionNextCtx, onionNextCanvas);
+        }
+    }
+}
+
+function syncOnionUI() {
+    if (onionToggleButton) {
+        onionToggleButton.classList.toggle('tool-button--active', onionEnabled);
+    }
+    if (onionPanel) {
+        onionPanel.hidden = !onionEnabled;
+    }
+    if (onionCountInput) {
+        onionCountInput.value = String(onionFrameCount);
+    }
+    if (onionOpacityPrevInput) {
+        onionOpacityPrevInput.value = String(onionOpacityPrev);
+    }
+    if (onionOpacityNextInput) {
+        onionOpacityNextInput.value = String(onionOpacityNext);
+    }
+    if (onionModePrevInput) {
+        onionModePrevInput.checked = onionMode === 'prev';
+    }
+    if (onionModeNextInput) {
+        onionModeNextInput.checked = onionMode === 'next';
+    }
+    if (onionModeBothInput) {
+        onionModeBothInput.checked = onionMode === 'both';
+    }
+    updateOnionSkinValueLabels();
+    syncOnionCanvasVisibility();
+}
+
+function startOnionPanelDrag(event) {
+    if (!event) return;
+    if (!onionPanel || !onionPanelHeader || !editorMain) return;
+    if (onionPanel.hidden) return;
+    if (event.button !== 0) return;
+    if (event.target && event.target.closest && event.target.closest('button')) return;
+    event.preventDefault();
+
+    const mainRect = editorMain.getBoundingClientRect();
+    const panelRect = onionPanel.getBoundingClientRect();
+
+    onionPanelOffsetX = event.clientX - panelRect.left;
+    onionPanelOffsetY = event.clientY - panelRect.top;
+
+    const left = panelRect.left - mainRect.left;
+    const top = panelRect.top - mainRect.top;
+
+    onionPanel.style.left = `${Math.round(left)}px`;
+    onionPanel.style.top = `${Math.round(top)}px`;
+    onionPanel.style.right = 'auto';
+    onionPanel.style.bottom = 'auto';
+    onionPanel.style.transform = 'none';
+
+    isDraggingOnionPanel = true;
+    onionPanel.classList.add('is-dragging');
+}
+
+function updateOnionPanelDrag(event) {
+    if (!event) return;
+    if (!isDraggingOnionPanel) return;
+    if (!onionPanel || !editorMain) return;
+
+    const mainRect = editorMain.getBoundingClientRect();
+    const panelWidth = onionPanel.offsetWidth || 0;
+    const panelHeight = onionPanel.offsetHeight || 0;
+
+    const maxLeft = Math.max(0, mainRect.width - panelWidth);
+    const maxTop = Math.max(0, mainRect.height - panelHeight);
+
+    const nextLeft = clamp(event.clientX - mainRect.left - onionPanelOffsetX, 0, maxLeft);
+    const nextTop = clamp(event.clientY - mainRect.top - onionPanelOffsetY, 0, maxTop);
+
+    onionPanel.style.left = `${Math.round(nextLeft)}px`;
+    onionPanel.style.top = `${Math.round(nextTop)}px`;
+}
+
+function stopOnionPanelDrag() {
+    if (!isDraggingOnionPanel) return;
+    isDraggingOnionPanel = false;
+    if (onionPanel) {
+        onionPanel.classList.remove('is-dragging');
+        savePanelPosition('onion', onionPanel);
+    }
+}
+
+function bindOnionPanelDrag() {
+    if (!onionPanelHeader) return;
+    onionPanelHeader.addEventListener('mousedown', startOnionPanelDrag);
+    window.addEventListener('mousemove', updateOnionPanelDrag);
+    window.addEventListener('mouseup', stopOnionPanelDrag);
+}
+
+function positionOnionPanelOnOpen() {
+    if (!onionPanel || !editorMain || !canvas) return;
+
+    const storedPos = normalizeLoadedPanelPosition(loadPanelPosition('onion'));
+    if (storedPos && storedPos.position) {
+        applyPanelPosition(onionPanel, storedPos.position);
+        onionPanel.style.transform = 'none';
+        if (storedPos.didMigrate) {
+            storePanelPosition('onion', storedPos.position);
+        }
+        return;
+    }
+
+    const mainRect = editorMain.getBoundingClientRect();
+    const canvasRect = canvas.getBoundingClientRect();
+    const panelWidth = onionPanel.offsetWidth || 0;
+    const panelHeight = onionPanel.offsetHeight || 0;
+    const centerX = (canvasRect.left - mainRect.left) + canvasRect.width / 2;
+    const centerY = (canvasRect.top - mainRect.top) + canvasRect.height / 2;
+    const targetLeft = centerX - panelWidth / 2;
+    const targetTop = centerY - panelHeight / 2;
+
+    applyPanelPosition(onionPanel, { left: targetLeft, top: targetTop });
+    onionPanel.style.transform = 'none';
+}
+
+function setOnionSuppressed(nextSuppressed) {
+    const normalized = Boolean(nextSuppressed);
+    if (onionSuppressed === normalized) return;
+    onionSuppressed = normalized;
+    syncOnionCanvasVisibility();
+    if (onionSuppressed) {
+        clearOnionCanvases();
+    } else {
+        prefetchOnionFramesForCurrent();
+        requestOnionSkinRender();
+    }
+}
+
+function setOnionEnabled(nextEnabled) {
+    onionEnabled = Boolean(nextEnabled);
+    if (!onionEnabled) {
+        stopOnionPanelDrag();
+        clearOnionCanvases();
+    } else {
+        // на всякий случай синхронизируем размещение, т.к. canvases могут быть скрыты/показаны
+        syncOverlayPlacement();
+    }
+    if (onionEnabled && onionPanel) {
+        // скрываем визуально, но оставляем в layout, чтобы корректно измерить размеры
+        onionPanel.style.visibility = 'hidden';
+    }
+    syncOnionUI();
+    storeOnionSkinSettings();
+    if (onionEnabled) {
+        positionOnionPanelOnOpen();
+        if (onionPanel) {
+            onionPanel.style.visibility = '';
+        }
+        prefetchOnionFramesForCurrent();
+        requestOnionSkinRender();
+    } else if (onionPanel) {
+        onionPanel.style.visibility = '';
+    }
+}
+
+function getOnionNeighborFrameIndices() {
+    const count = clamp(Number(onionFrameCount) || 1, 1, 3);
+    const prev = [];
+    const next = [];
+
+    for (let step = 1; step <= count; step += 1) {
+        const prevIndex = currentFrameIndex - step;
+        const nextIndex = currentFrameIndex + step;
+        if (prevIndex > 0 && getTimelineFrameByIndex(prevIndex)) {
+            prev.push(prevIndex);
+        }
+        if (getTimelineFrameByIndex(nextIndex)) {
+            next.push(nextIndex);
+        }
+    }
+    return { prev, next };
+}
+
+function buildOnionPreviewImageUrl(previewUrl, updatedAt) {
+    const normalized = normalizeAssetUrl(previewUrl);
+    if (!normalized) return '';
+    const token = updatedAt ? encodeURIComponent(updatedAt) : '0';
+    return `${normalized}${normalized.includes('?') ? '&' : '?'}v=${token}`;
+}
+
+function getOnionCacheEntry(frameIndex) {
+    const index = Number(frameIndex);
+    if (!Number.isFinite(index) || index <= 0) return null;
+    const existing = onionFrameCache.get(index);
+    if (existing) return existing;
+
+    const entry = {
+        index,
+        previewUrl: '',
+        updatedAt: '',
+        didFetchDetail: false,
+        detailPromise: null,
+        image: null,
+        imageUrl: '',
+        imagePromise: null,
+    };
+    onionFrameCache.set(index, entry);
+    return entry;
+}
+
+async function fetchOnionFrameDetail(frameIndex) {
+    const url = getFrameDetailUrl(frameIndex);
+    if (!url) return null;
+    try {
+        const response = await fetch(url, { credentials: 'same-origin' });
+        const data = await response.json();
+        if (!response.ok || !data || !data.ok) {
+            return null;
+        }
+        return data.frame || null;
+    } catch (error) {
+        return null;
+    }
+}
+
+function shouldRefetchOnionDetail(entry, hint) {
+    if (!entry) return true;
+    // Если в таймлайне уже есть превью — этого достаточно для onion-skin,
+    // не тратим лишний запрос на detail.
+    if (hint && hint.previewUrl) return false;
+    if (!entry.didFetchDetail) return true;
+    return false;
+}
+
+function ensureOnionFrameImage(frameIndex) {
+    const entry = getOnionCacheEntry(frameIndex);
+    if (!entry) return;
+
+    const timelineFrame = getTimelineFrameByIndex(entry.index);
+    const hint = {
+        previewUrl: timelineFrame && timelineFrame.preview_url ? timelineFrame.preview_url : '',
+        updatedAt: timelineFrame && timelineFrame.updated_at ? timelineFrame.updated_at : '',
+    };
+
+    // Подтягиваем значения из таймлайна (быстрее, чем API).
+    // Если они меняются — сбрасываем изображение, чтобы перезагрузить.
+    if (hint.previewUrl && hint.previewUrl !== entry.previewUrl) {
+        entry.previewUrl = hint.previewUrl;
+        entry.image = null;
+        entry.imagePromise = null;
+        entry.imageUrl = '';
+    }
+    if (hint.updatedAt && hint.updatedAt !== entry.updatedAt) {
+        entry.updatedAt = hint.updatedAt;
+        entry.image = null;
+        entry.imagePromise = null;
+        entry.imageUrl = '';
+    }
+
+    if (shouldRefetchOnionDetail(entry, hint)) {
+        if (entry.detailPromise) return;
+        entry.detailPromise = fetchOnionFrameDetail(entry.index)
+            .then((frame) => {
+                if (frame) {
+                    entry.previewUrl = frame.preview_url || entry.previewUrl || '';
+                    entry.updatedAt = frame.updated_at || entry.updatedAt || '';
+                }
+                return frame;
+            })
+            .catch(() => null)
+            .finally(() => {
+                entry.didFetchDetail = true;
+                entry.detailPromise = null;
+            });
+        entry.detailPromise.then(() => {
+            // после получения detail пробуем догрузить изображение
+            ensureOnionFrameImage(entry.index);
+        });
+        return;
+    }
+
+    if (!entry.previewUrl) {
+        entry.image = null;
+        entry.imageUrl = '';
+        requestOnionSkinRender();
+        return;
+    }
+
+    const desiredUrl = buildOnionPreviewImageUrl(entry.previewUrl, entry.updatedAt);
+    if (!desiredUrl) return;
+
+    if (entry.image
+        && entry.imageUrl === desiredUrl
+        && entry.image.complete
+        && entry.image.naturalWidth > 0) {
+        return;
+    }
+    if (entry.imagePromise && entry.imageUrl === desiredUrl) {
+        return;
+    }
+
+    const expectedUrl = desiredUrl;
+    entry.imageUrl = expectedUrl;
+    entry.imagePromise = new Promise((resolve) => {
+        const img = new Image();
+        img.decoding = 'async';
+        img.onload = () => {
+            if (entry.imageUrl !== expectedUrl) {
+                resolve(false);
+                return;
+            }
+            entry.image = img;
+            entry.imagePromise = null;
+            resolve(true);
+            requestOnionSkinRender();
+        };
+        img.onerror = () => {
+            if (entry.imageUrl !== expectedUrl) {
+                resolve(false);
+                return;
+            }
+            entry.image = null;
+            entry.imagePromise = null;
+            resolve(false);
+            requestOnionSkinRender();
+        };
+        img.src = expectedUrl;
+    });
+}
+
+function resetOnionFrameCache(options = {}) {
+    onionFrameCache.clear();
+    if (options.clearCanvas !== false) {
+        clearOnionCanvases();
+    }
+}
+
+function prefetchOnionFramesForCurrent() {
+    if (!onionEnabled || onionSuppressed) return;
+    const { prev, next } = getOnionNeighborFrameIndices();
+
+    if (shouldShowOnionPrev()) {
+        prev.forEach((index) => ensureOnionFrameImage(index));
+    }
+    if (shouldShowOnionNext()) {
+        next.forEach((index) => ensureOnionFrameImage(index));
+    }
+}
+
+function requestOnionSkinRender() {
+    if (!onionEnabled || onionSuppressed) return;
+    if (onionRenderRequestId) return;
+    onionRenderRequestId = requestAnimationFrame(() => {
+        onionRenderRequestId = null;
+        renderOnionSkin();
+    });
+}
+
+function drawOnionFrames(targetCtx, indices, opacityPercent) {
+    if (!targetCtx) return;
+    const alpha = clamp(Number(opacityPercent) || 0, 0, 100) / 100;
+    if (!alpha) return;
+
+    targetCtx.save();
+    targetCtx.setTransform(scale, 0, 0, scale, offsetX, offsetY);
+    targetCtx.globalAlpha = alpha;
+
+    indices.forEach((frameIndex) => {
+        const entry = onionFrameCache.get(frameIndex);
+        const img = entry && entry.image ? entry.image : null;
+        if (!img || !img.complete || img.naturalWidth <= 0) return;
+        targetCtx.drawImage(img, 0, 0);
+    });
+
+    targetCtx.restore();
+}
+
+function renderOnionSkin() {
+    if (!onionEnabled || onionSuppressed) return;
+    if (!onionPrevCanvas && !onionNextCanvas) return;
+
+    const { prev, next } = getOnionNeighborFrameIndices();
+    const prevOrder = [...prev].reverse(); // дальние → ближние
+    const nextOrder = [...next].reverse(); // дальние → ближние
+
+    if (shouldShowOnionPrev() && onionPrevCtx && onionPrevCanvas && !onionPrevCanvas.hidden) {
+        clearCanvas(onionPrevCtx, onionPrevCanvas);
+        drawOnionFrames(onionPrevCtx, prevOrder, onionOpacityPrev);
+    }
+
+    if (shouldShowOnionNext() && onionNextCtx && onionNextCanvas && !onionNextCanvas.hidden) {
+        clearCanvas(onionNextCtx, onionNextCanvas);
+        drawOnionFrames(onionNextCtx, nextOrder, onionOpacityNext);
+    }
+}
+
+function onionSkinNotifyFrameUpdated(framePayload) {
+    if (!framePayload) return;
+    const frameIndex = Number(framePayload.index);
+    if (!Number.isFinite(frameIndex) || frameIndex <= 0) return;
+
+    const entry = getOnionCacheEntry(frameIndex);
+    if (!entry) return;
+
+    const nextPreview = framePayload.preview_url || '';
+    const nextUpdatedAt = framePayload.updated_at || '';
+
+    const didChange = (nextPreview && nextPreview !== entry.previewUrl)
+        || (nextUpdatedAt && nextUpdatedAt !== entry.updatedAt);
+
+    if (nextPreview) entry.previewUrl = nextPreview;
+    if (nextUpdatedAt) entry.updatedAt = nextUpdatedAt;
+    if (didChange) {
+        entry.image = null;
+        entry.imagePromise = null;
+        entry.imageUrl = '';
+    }
+    entry.didFetchDetail = true;
+
+    if (onionEnabled && !onionSuppressed) {
+        ensureOnionFrameImage(frameIndex);
+        requestOnionSkinRender();
+    }
+}
+
+function bindOnionSkinEvents() {
+    if (!onionToggleButton) return;
+
+    onionToggleButton.addEventListener('click', () => {
+        setOnionEnabled(!onionEnabled);
+    });
+
+    if (onionCloseButton) {
+        onionCloseButton.addEventListener('click', () => {
+            setOnionEnabled(false);
+        });
+    }
+
+    if (onionCountInput) {
+        onionCountInput.addEventListener('input', () => {
+            onionFrameCount = coerceIntInRange(onionCountInput.value, 1, 3, onionFrameCount);
+            updateOnionSkinValueLabels();
+            storeOnionSkinSettings();
+            prefetchOnionFramesForCurrent();
+            requestOnionSkinRender();
+        });
+    }
+
+    if (onionOpacityPrevInput) {
+        onionOpacityPrevInput.addEventListener('input', () => {
+            onionOpacityPrev = coerceIntInRange(onionOpacityPrevInput.value, 0, 100, onionOpacityPrev);
+            updateOnionSkinValueLabels();
+            storeOnionSkinSettings();
+            requestOnionSkinRender();
+        });
+    }
+
+    if (onionOpacityNextInput) {
+        onionOpacityNextInput.addEventListener('input', () => {
+            onionOpacityNext = coerceIntInRange(onionOpacityNextInput.value, 0, 100, onionOpacityNext);
+            updateOnionSkinValueLabels();
+            storeOnionSkinSettings();
+            requestOnionSkinRender();
+        });
+    }
+
+    if (onionModePrevInput) {
+        onionModePrevInput.addEventListener('change', () => {
+            if (!onionModePrevInput.checked) return;
+            onionMode = 'prev';
+            syncOnionUI();
+            storeOnionSkinSettings();
+            prefetchOnionFramesForCurrent();
+            requestOnionSkinRender();
+        });
+    }
+    if (onionModeNextInput) {
+        onionModeNextInput.addEventListener('change', () => {
+            if (!onionModeNextInput.checked) return;
+            onionMode = 'next';
+            syncOnionUI();
+            storeOnionSkinSettings();
+            prefetchOnionFramesForCurrent();
+            requestOnionSkinRender();
+        });
+    }
+    if (onionModeBothInput) {
+        onionModeBothInput.addEventListener('change', () => {
+            if (!onionModeBothInput.checked) return;
+            onionMode = 'both';
+            syncOnionUI();
+            storeOnionSkinSettings();
+            prefetchOnionFramesForCurrent();
+            requestOnionSkinRender();
+        });
+    }
+
+    // Поддержка "playback": пока в проекте нет явного плеера, но слушаем события на будущее.
+    window.addEventListener('anim-playback-start', () => setOnionSuppressed(true));
+    window.addEventListener('anim-playback-stop', () => setOnionSuppressed(false));
+    window.addEventListener('anim-playback', (event) => {
+        const playing = Boolean(event && event.detail && event.detail.playing);
+        setOnionSuppressed(playing);
+    });
+}
+
+function initOnionSkin() {
+    if (!onionToggleButton || !onionPanel) return;
+    loadOnionSkinSettings();
+    onionEnabled = false;
+    syncOnionUI();
+    bindOnionSkinEvents();
+    bindOnionPanelDrag();
+}
+
 function renderTimelineFrames() {
     if (!timelineStrip) return;
 
@@ -3350,6 +4156,8 @@ function updateTimelineFramePreview(framePayload) {
             }
         };
     }
+
+    onionSkinNotifyFrameUpdated(framePayload);
 }
 
 async function loadTimelineFrames() {
@@ -3411,6 +4219,8 @@ async function loadFrameByIndex(targetIndex) {
         setActiveTimelineIndex(currentFrameIndex);
         updateSaveButtonState();
         updateHistoryPanel();
+        prefetchOnionFramesForCurrent();
+        requestOnionSkinRender();
         return true;
     } catch (error) {
         console.error('Ошибка загрузки кадра', error);
@@ -3516,6 +4326,7 @@ async function deleteCurrentFrameOnServer() {
         timelineFrames = Array.isArray(data.frames) ? data.frames : [];
         const nextIndex = Number(data.active_index) || 1;
         currentFrameId = null;
+        resetOnionFrameCache();
         renderTimelineFrames();
         await loadFrameByIndex(nextIndex);
     } catch (error) {
@@ -3554,8 +4365,11 @@ async function saveFrameOrder(orderedIds) {
                 currentFrameIndex = activeFrame.index;
             }
         }
+        resetOnionFrameCache();
         renderTimelineFrames();
         setActiveTimelineIndex(currentFrameIndex);
+        prefetchOnionFramesForCurrent();
+        requestOnionSkinRender();
     } catch (error) {
         console.error('Ошибка сохранения порядка кадров', error);
     }
@@ -4003,6 +4817,7 @@ function handlePointerMove(event) {
 }
 
 function handlePointerUp(event) {
+    pendingCanvasStartFromOutside = null;
     if (isTransformingSelection) {
         isTransformingSelection = false;
         hideTransformHint();
@@ -4075,8 +4890,75 @@ function handlePointerLeave() {
     hoverTransformHandle = null;
 }
 
+function handleWindowPointerDown(event) {
+    if (!event) return;
+    if (event.button !== 0) return;
+
+    const target = event.target && event.target.nodeType === 1
+        ? event.target
+        : (event.target && event.target.parentElement ? event.target.parentElement : null);
+    const startedOnCanvas = Boolean(target && target === canvas);
+
+    // Если нажали прямо на canvas — обычный обработчик mousedown на canvas всё сделает сам.
+    if (startedOnCanvas) {
+        pendingCanvasStartFromOutside = { allow: false };
+        return;
+    }
+
+    const startedInsideEditor = Boolean(editorRoot && target && editorRoot.contains(target));
+    const startedInsideCanvasWrapper = Boolean(canvasWrapper && target && canvasWrapper.contains(target));
+
+    const startedOnOverlayPanel = Boolean(
+        (layersPanel && target && layersPanel.contains(target))
+        || (historyPanel && target && historyPanel.contains(target))
+        || (onionPanel && target && onionPanel.contains(target)),
+    );
+
+    const startedOnInteractive = Boolean(
+        (target && isTextInputElement(target))
+        || (target && target.closest && target.closest('button, a, input, select, textarea, [role="button"]'))
+        || (target && target.closest && target.closest('.editor-toolbar, .timeline-wrapper, .editor-header')),
+    );
+
+    const allowStart = !startedOnOverlayPanel
+        && !startedOnInteractive
+        && (startedInsideCanvasWrapper || !startedInsideEditor);
+
+    pendingCanvasStartFromOutside = { allow: allowStart };
+}
+
+function tryStartCanvasInteractionFromOutside(event) {
+    if (!event || !canvas) return false;
+    if (isDrawing || isSelecting || isPanning || isTransformingSelection) return false;
+    if (isDraggingLayersPanel || isDraggingHistoryPanel || isDraggingOnionPanel || isOpacityDragging) return false;
+
+    const buttons = typeof event.buttons === 'number' ? event.buttons : 0;
+    const leftDown = (buttons & 1) === 1;
+    if (!leftDown) {
+        pendingCanvasStartFromOutside = null;
+        return false;
+    }
+
+    // Если mousedown был внутри окна и мы точно знаем, что он был на UI — не стартуем.
+    // Если mousedown не поймали (например, старт за пределами окна) — разрешаем.
+    if (pendingCanvasStartFromOutside && pendingCanvasStartFromOutside.allow !== true) {
+        return false;
+    }
+
+    // Стартуем только если под курсором реально canvas (не панель onion/layers/history).
+    const topEl = document.elementFromPoint(event.clientX, event.clientY);
+    if (topEl !== canvas) return false;
+
+    pendingCanvasStartFromOutside = null;
+    handlePointerDown(event);
+    return true;
+}
+
 function handleWindowPointerMove(event) {
-    if (!isDrawing && !isSelecting && !isPanning && !isTransformingSelection) return;
+    if (!isDrawing && !isSelecting && !isPanning && !isTransformingSelection) {
+        tryStartCanvasInteractionFromOutside(event);
+        return;
+    }
     handlePointerMove(event);
 }
 
@@ -4130,7 +5012,7 @@ function pasteExternalImage(image, options = {}) {
     const naturalHeight = image.naturalHeight || image.height || 0;
     if (!naturalWidth || !naturalHeight) return false;
 
-    beginLayerHistory('Вставка изображения');
+    beginLayerHistory('paste_image');
 
     const fitScale = Math.min(
         1,
@@ -4218,6 +5100,14 @@ function handlePaste(event) {
 }
 
 function handleKeyDown(event) {
+    if (isExportModalOpen()) {
+        if (event.code === 'Escape') {
+            event.preventDefault();
+            closeExportModal();
+        }
+        return;
+    }
+
     const isCtrl = event.ctrlKey || event.metaKey;
     if (isCtrl && event.code === 'KeyZ') {
         if (!isTextInputElement(event.target)) {
@@ -4297,6 +5187,7 @@ function bindCanvasEvents() {
 
     window.addEventListener('mouseup', handlePointerUp);
     window.addEventListener('mousemove', handleWindowPointerMove);
+    window.addEventListener('mousedown', handleWindowPointerDown, true);
     window.addEventListener('keydown', handleKeyDown);
     window.addEventListener('keyup', handleKeyUp);
     document.addEventListener('paste', handlePaste);
@@ -4367,7 +5258,7 @@ function bindLayerEvents() {
     layersList.addEventListener('pointerdown', (event) => {
         if (event.target.matches('input[type="range"]')) {
             isOpacityDragging = true;
-            beginFullHistory('Слой: прозрачность');
+            beginFullHistory('layer_opacity_action');
         }
     });
 
@@ -4382,7 +5273,7 @@ function bindLayerEvents() {
 
         if (action === 'toggle-visibility') {
             const nextVisible = !layer.visible;
-            const historyLabel = nextVisible ? 'Слой: показать' : 'Слой: скрыть';
+            const historyLabel = nextVisible ? 'layer_show_action' : 'layer_hide_action';
             beginFullHistory(historyLabel);
             const updated = await updateLayer(layerId, { visible: nextVisible });
             if (updated) {
@@ -4419,7 +5310,7 @@ function bindLayerEvents() {
             const input = item.querySelector('[data-action="rename-input"]');
             const value = input ? input.value.trim() : '';
             if (!value) return;
-            beginFullHistory('Слой: переименовать');
+            beginFullHistory('layer_rename_action');
             const updated = await updateLayer(layerId, { name: value });
             if (updated) {
                 layer.name = updated.name;
@@ -4521,7 +5412,7 @@ function bindLayerEvents() {
 
     layersList.addEventListener('drop', (event) => {
         event.preventDefault();
-        beginFullHistory('Слой: порядок');
+        beginFullHistory('layer_order');
         const orderedIds = [...layersList.querySelectorAll('.layer-item')]
             .map((item) => Number(item.dataset.layerId))
             .filter((value) => Number.isFinite(value));
@@ -4547,19 +5438,128 @@ function bindLayerEvents() {
     });
 }
 
+function getPanelPositionStorageKey(panelName) {
+    const safeName = (typeof panelName === 'string' && panelName.trim())
+        ? panelName.trim()
+        : 'panel';
+    return `${PANEL_POSITION_STORAGE_PREFIX}${safeName}`;
+}
+
+const PANEL_POSITION_CONTAINER = 'editor-main';
+
+function loadPanelPosition(panelName) {
+    try {
+        const raw = window.localStorage.getItem(getPanelPositionStorageKey(panelName));
+        if (!raw) return null;
+        const parsed = JSON.parse(raw);
+        if (!parsed || typeof parsed !== 'object') return null;
+        const left = Number(parsed.left);
+        const top = Number(parsed.top);
+        const container = typeof parsed.container === 'string' ? parsed.container : null;
+        if (!Number.isFinite(left) || !Number.isFinite(top)) return null;
+        return { left, top, container };
+    } catch (error) {
+        return null;
+    }
+}
+
+function storePanelPosition(panelName, position) {
+    if (!position) return;
+    try {
+        window.localStorage.setItem(getPanelPositionStorageKey(panelName), JSON.stringify({
+            left: Math.round(position.left),
+            top: Math.round(position.top),
+            container: PANEL_POSITION_CONTAINER,
+        }));
+    } catch (error) {
+        // localStorage может быть недоступен (private mode / блокировки) — не падаем
+    }
+}
+
+function normalizeLoadedPanelPosition(position) {
+    if (!position) return { position: null, didMigrate: false };
+    if (position.container === PANEL_POSITION_CONTAINER) {
+        return { position: { left: position.left, top: position.top }, didMigrate: false };
+    }
+    // Легаси-значения (до расширения области drag): были относительно `.canvas-wrapper`.
+    if (!editorMain || !canvasWrapper) {
+        return { position: { left: position.left, top: position.top }, didMigrate: false };
+    }
+    const mainRect = editorMain.getBoundingClientRect();
+    const wrapperRect = canvasWrapper.getBoundingClientRect();
+    const migrated = {
+        left: (wrapperRect.left - mainRect.left) + position.left,
+        top: (wrapperRect.top - mainRect.top) + position.top,
+    };
+    return { position: migrated, didMigrate: true };
+}
+
+function getPanelPositionRelativeToMain(panelEl) {
+    if (!panelEl || !editorMain) return null;
+    const mainRect = editorMain.getBoundingClientRect();
+    const panelRect = panelEl.getBoundingClientRect();
+    const left = panelRect.left - mainRect.left;
+    const top = panelRect.top - mainRect.top;
+    if (!Number.isFinite(left) || !Number.isFinite(top)) return null;
+    return { left, top };
+}
+
+function savePanelPosition(panelName, panelEl) {
+    const position = getPanelPositionRelativeToMain(panelEl);
+    if (!position) return;
+    storePanelPosition(panelName, position);
+}
+
+function applyPanelPosition(panelEl, position) {
+    if (!panelEl || !editorMain || !position) return;
+    const mainRect = editorMain.getBoundingClientRect();
+    const panelWidth = panelEl.offsetWidth;
+    const panelHeight = panelEl.offsetHeight;
+    const maxLeft = Math.max(0, mainRect.width - panelWidth);
+    const maxTop = Math.max(0, mainRect.height - panelHeight);
+    const nextLeft = clamp(position.left, 0, maxLeft);
+    const nextTop = clamp(position.top, 0, maxTop);
+    panelEl.style.left = `${nextLeft}px`;
+    panelEl.style.top = `${nextTop}px`;
+    panelEl.style.right = 'auto';
+    panelEl.style.bottom = 'auto';
+}
+
+function hydratePanelPositions() {
+    if (!editorMain) return;
+
+    const storedLayersPos = loadPanelPosition('layers');
+    const normalizedLayers = normalizeLoadedPanelPosition(storedLayersPos);
+    if (layersPanel && normalizedLayers.position) {
+        applyPanelPosition(layersPanel, normalizedLayers.position);
+        if (normalizedLayers.didMigrate) {
+            storePanelPosition('layers', normalizedLayers.position);
+        }
+    }
+
+    const storedHistoryPos = loadPanelPosition('history');
+    const normalizedHistory = normalizeLoadedPanelPosition(storedHistoryPos);
+    if (historyPanel && normalizedHistory.position) {
+        applyPanelPosition(historyPanel, normalizedHistory.position);
+        if (normalizedHistory.didMigrate) {
+            storePanelPosition('history', normalizedHistory.position);
+        }
+    }
+}
+
 function startLayersPanelDrag(event) {
-    if (!layersPanel || !layersPanelHeader || !canvasWrapper) return;
+    if (!layersPanel || !layersPanelHeader || !editorMain) return;
     if (event.button !== 0) return;
     if (event.target.closest('button')) return;
     event.preventDefault();
 
-    const wrapperRect = canvasWrapper.getBoundingClientRect();
+    const mainRect = editorMain.getBoundingClientRect();
     const panelRect = layersPanel.getBoundingClientRect();
     layersPanelOffsetX = event.clientX - panelRect.left;
     layersPanelOffsetY = event.clientY - panelRect.top;
 
-    const left = panelRect.left - wrapperRect.left;
-    const top = panelRect.top - wrapperRect.top;
+    const left = panelRect.left - mainRect.left;
+    const top = panelRect.top - mainRect.top;
     layersPanel.style.left = `${left}px`;
     layersPanel.style.top = `${top}px`;
     layersPanel.style.right = 'auto';
@@ -4568,14 +5568,14 @@ function startLayersPanelDrag(event) {
 }
 
 function updateLayersPanelDrag(event) {
-    if (!isDraggingLayersPanel || !layersPanel || !canvasWrapper) return;
-    const wrapperRect = canvasWrapper.getBoundingClientRect();
+    if (!isDraggingLayersPanel || !layersPanel || !editorMain) return;
+    const mainRect = editorMain.getBoundingClientRect();
     const panelWidth = layersPanel.offsetWidth;
     const panelHeight = layersPanel.offsetHeight;
-    const maxLeft = Math.max(0, wrapperRect.width - panelWidth);
-    const maxTop = Math.max(0, wrapperRect.height - panelHeight);
-    const nextLeft = clamp(event.clientX - wrapperRect.left - layersPanelOffsetX, 0, maxLeft);
-    const nextTop = clamp(event.clientY - wrapperRect.top - layersPanelOffsetY, 0, maxTop);
+    const maxLeft = Math.max(0, mainRect.width - panelWidth);
+    const maxTop = Math.max(0, mainRect.height - panelHeight);
+    const nextLeft = clamp(event.clientX - mainRect.left - layersPanelOffsetX, 0, maxLeft);
+    const nextTop = clamp(event.clientY - mainRect.top - layersPanelOffsetY, 0, maxTop);
     layersPanel.style.left = `${nextLeft}px`;
     layersPanel.style.top = `${nextTop}px`;
 }
@@ -4583,6 +5583,7 @@ function updateLayersPanelDrag(event) {
 function stopLayersPanelDrag() {
     if (!isDraggingLayersPanel) return;
     isDraggingLayersPanel = false;
+    savePanelPosition('layers', layersPanel);
 }
 
 function bindLayersPanelDrag() {
@@ -4590,6 +5591,52 @@ function bindLayersPanelDrag() {
     layersPanelHeader.addEventListener('mousedown', startLayersPanelDrag);
     window.addEventListener('mousemove', updateLayersPanelDrag);
     window.addEventListener('mouseup', stopLayersPanelDrag);
+}
+
+function startHistoryPanelDrag(event) {
+    if (!historyPanel || !historyPanelHeader || !editorMain) return;
+    if (event.button !== 0) return;
+    if (event.target.closest('button')) return;
+    event.preventDefault();
+
+    const mainRect = editorMain.getBoundingClientRect();
+    const panelRect = historyPanel.getBoundingClientRect();
+    historyPanelOffsetX = event.clientX - panelRect.left;
+    historyPanelOffsetY = event.clientY - panelRect.top;
+
+    const left = panelRect.left - mainRect.left;
+    const top = panelRect.top - mainRect.top;
+    historyPanel.style.left = `${left}px`;
+    historyPanel.style.top = `${top}px`;
+    historyPanel.style.right = 'auto';
+    historyPanel.style.bottom = 'auto';
+    isDraggingHistoryPanel = true;
+}
+
+function updateHistoryPanelDrag(event) {
+    if (!isDraggingHistoryPanel || !historyPanel || !editorMain) return;
+    const mainRect = editorMain.getBoundingClientRect();
+    const panelWidth = historyPanel.offsetWidth;
+    const panelHeight = historyPanel.offsetHeight;
+    const maxLeft = Math.max(0, mainRect.width - panelWidth);
+    const maxTop = Math.max(0, mainRect.height - panelHeight);
+    const nextLeft = clamp(event.clientX - mainRect.left - historyPanelOffsetX, 0, maxLeft);
+    const nextTop = clamp(event.clientY - mainRect.top - historyPanelOffsetY, 0, maxTop);
+    historyPanel.style.left = `${nextLeft}px`;
+    historyPanel.style.top = `${nextTop}px`;
+}
+
+function stopHistoryPanelDrag() {
+    if (!isDraggingHistoryPanel) return;
+    isDraggingHistoryPanel = false;
+    savePanelPosition('history', historyPanel);
+}
+
+function bindHistoryPanelDrag() {
+    if (!historyPanelHeader) return;
+    historyPanelHeader.addEventListener('mousedown', startHistoryPanelDrag);
+    window.addEventListener('mousemove', updateHistoryPanelDrag);
+    window.addEventListener('mouseup', stopHistoryPanelDrag);
 }
 
 // =======================
@@ -4602,6 +5649,293 @@ function bindSaveEvents() {
     saveButton.addEventListener('click', () => {
         saveCurrentFrame();
     });
+}
+
+// =======================
+// Экспорт (модалка)
+// =======================
+
+function isExportModalOpen() {
+    return Boolean(exportModal && !exportModal.hidden);
+}
+
+function setExportError(message) {
+    if (!exportErrorLabel) return;
+    const text = typeof message === 'string' ? message.trim() : '';
+    if (!text) {
+        exportErrorLabel.textContent = '';
+        exportErrorLabel.hidden = true;
+        return;
+    }
+    exportErrorLabel.textContent = text;
+    exportErrorLabel.hidden = false;
+}
+
+function setExportProgressVisible(visible) {
+    if (!exportProgress) return;
+    exportProgress.hidden = !visible;
+}
+
+function setExportResult(downloadUrl, filename) {
+    if (exportResult) {
+        exportResult.hidden = !downloadUrl;
+    }
+    if (exportDownloadLink) {
+        exportDownloadLink.href = downloadUrl || '#';
+        exportDownloadLink.download = filename || '';
+    }
+}
+
+function setExportControlsDisabled(disabled) {
+    if (exportConfirmButton) exportConfirmButton.disabled = disabled;
+    if (exportCancelButton) exportCancelButton.disabled = disabled;
+    if (exportModalCloseButton) exportModalCloseButton.disabled = disabled;
+    if (exportResolutionSelect) exportResolutionSelect.disabled = disabled;
+    if (exportFpsInput) exportFpsInput.disabled = disabled;
+
+    if (exportFormatInputs && exportFormatInputs.forEach) {
+        exportFormatInputs.forEach((input) => {
+            if (input) input.disabled = disabled;
+        });
+    }
+
+    if (exportGifInfiniteCheckbox) exportGifInfiniteCheckbox.disabled = disabled;
+    if (exportGifLoopCountInput) {
+        const infinite = exportGifInfiniteCheckbox ? exportGifInfiniteCheckbox.checked : true;
+        exportGifLoopCountInput.disabled = disabled || infinite;
+    }
+}
+
+function getSelectedExportFormat() {
+    if (exportFormatInputs && exportFormatInputs.length) {
+        for (const input of exportFormatInputs) {
+            if (input && input.checked) {
+                return input.value;
+            }
+        }
+    }
+    return 'png_zip';
+}
+
+function syncGifLoopControls() {
+    if (!exportGifLoopCountInput) return;
+    const isGif = getSelectedExportFormat() === 'gif';
+    if (!isGif) {
+        exportGifLoopCountInput.disabled = true;
+        return;
+    }
+
+    const infinite = exportGifInfiniteCheckbox ? exportGifInfiniteCheckbox.checked : true;
+    exportGifLoopCountInput.disabled = infinite;
+    if (infinite) {
+        exportGifLoopCountInput.value = '0';
+    }
+}
+
+function updateExportOptionsVisibility() {
+    const isGif = getSelectedExportFormat() === 'gif';
+    if (exportGifOptions) {
+        exportGifOptions.hidden = !isGif;
+    }
+    syncGifLoopControls();
+}
+
+function resetExportModalUi() {
+    setExportError('');
+    setExportProgressVisible(false);
+    setExportResult('', '');
+    setExportControlsDisabled(false);
+    updateExportOptionsVisibility();
+}
+
+function openExportModal() {
+    if (!exportModal) return;
+    resetExportModalUi();
+    exportModal.hidden = false;
+    document.body.classList.add('modal-open');
+    if (exportFpsInput) {
+        exportFpsInput.focus();
+        exportFpsInput.select();
+    }
+}
+
+function closeExportModal() {
+    if (!exportModal) return;
+    if (isExporting) return;
+    exportModal.hidden = true;
+    document.body.classList.remove('modal-open');
+}
+
+function triggerDownload(url) {
+    const safeUrl = typeof url === 'string' ? url.trim() : '';
+    if (!safeUrl) return;
+    const a = document.createElement('a');
+    a.href = safeUrl;
+    a.rel = 'noopener';
+    a.style.display = 'none';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+}
+
+async function performProjectExport() {
+    if (isExporting) return;
+    if (!projectExportUrl) {
+        setExportError('Не найден адрес экспорта.');
+        return;
+    }
+
+    const format = getSelectedExportFormat();
+    const resolution = exportResolutionSelect ? exportResolutionSelect.value : 'original';
+    const fpsRaw = exportFpsInput ? parseInt(exportFpsInput.value, 10) : projectFps;
+    if (!Number.isFinite(fpsRaw) || fpsRaw <= 0) {
+        setExportError('Укажите корректный FPS (1–60).');
+        return;
+    }
+    const fps = clamp(fpsRaw, 1, 60);
+    if (exportFpsInput) {
+        exportFpsInput.value = String(fps);
+    }
+
+    // Быстрые клиентские подсказки (сервер всё равно проверит).
+    const totalFrames = Array.isArray(timelineFrames) ? timelineFrames.length : 0;
+    if (format === 'gif' && totalFrames && totalFrames > 250) {
+        setExportError(`Слишком много кадров для GIF (${totalFrames}). Рекомендуем PNG‑последовательность.`);
+        return;
+    }
+    if (format === 'png_zip' && totalFrames && totalFrames > 2000) {
+        setExportError(`Слишком много кадров для экспорта (${totalFrames}). Уменьшите количество кадров.`);
+        return;
+    }
+
+    let loopInfinite = true;
+    let loopCount = 0;
+    if (format === 'gif') {
+        loopInfinite = exportGifInfiniteCheckbox ? Boolean(exportGifInfiniteCheckbox.checked) : true;
+        loopCount = exportGifLoopCountInput ? parseInt(exportGifLoopCountInput.value, 10) : 0;
+        if (!Number.isFinite(loopCount) || loopCount < 0) {
+            loopCount = 0;
+        }
+    }
+
+    isExporting = true;
+    setExportError('');
+    setExportResult('', '');
+    setExportControlsDisabled(true);
+    setExportProgressVisible(true);
+
+    try {
+        const savedOk = await saveCurrentFrame();
+        if (!savedOk && hasUnsavedChanges) {
+            throw new Error('Не удалось сохранить текущий кадр перед экспортом.');
+        }
+
+        const payload = {
+            format,
+            resolution,
+            fps,
+        };
+        if (format === 'gif') {
+            payload.loop_infinite = loopInfinite;
+            payload.loop_count = loopCount;
+        }
+
+        const response = await fetch(projectExportUrl, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRFToken': getCsrfToken(),
+            },
+            credentials: 'same-origin',
+            body: JSON.stringify(payload),
+        });
+
+        let data = null;
+        try {
+            data = await response.json();
+        } catch (error) {
+            data = null;
+        }
+
+        if (!response.ok || !data || !data.ok) {
+            const serverMessage = data && (data.message || data.error) ? (data.message || data.error) : '';
+            const fallback = 'Не удалось экспортировать.';
+            throw new Error(serverMessage || fallback);
+        }
+
+        const downloadUrl = data.download_url || '';
+        const filename = data.filename || '';
+        if (!downloadUrl) {
+            throw new Error('Сервер не вернул ссылку для скачивания.');
+        }
+
+        setExportProgressVisible(false);
+        setExportControlsDisabled(false);
+        setExportResult(downloadUrl, filename);
+        triggerDownload(downloadUrl);
+    } catch (error) {
+        console.error('Ошибка экспорта', error);
+        let errorText = 'Не удалось экспортировать.';
+        if (error instanceof Error && error.message) {
+            errorText = error.message;
+        }
+        if (errorText === 'Failed to fetch') {
+            errorText = 'Не удалось связаться с сервером.';
+        }
+        setExportError(errorText);
+    } finally {
+        isExporting = false;
+        setExportProgressVisible(false);
+        setExportControlsDisabled(false);
+        updateExportOptionsVisibility();
+    }
+}
+
+function bindExportEvents() {
+    if (!exportButton || !exportModal) return;
+
+    if (exportFpsInput && !exportFpsInput.value) {
+        exportFpsInput.value = String(projectFps);
+    }
+    updateExportOptionsVisibility();
+
+    exportButton.addEventListener('click', () => {
+        openExportModal();
+    });
+
+    exportModal.addEventListener('click', (event) => {
+        const closeTarget = event.target && event.target.closest('[data-export-action="close"]');
+        if (closeTarget) {
+            closeExportModal();
+        }
+    });
+
+    if (exportModalCloseButton) {
+        exportModalCloseButton.addEventListener('click', () => closeExportModal());
+    }
+    if (exportCancelButton) {
+        exportCancelButton.addEventListener('click', () => closeExportModal());
+    }
+    if (exportConfirmButton) {
+        exportConfirmButton.addEventListener('click', () => performProjectExport());
+    }
+
+    if (exportFormatInputs && exportFormatInputs.forEach) {
+        exportFormatInputs.forEach((input) => {
+            if (!input) return;
+            input.addEventListener('change', () => {
+                updateExportOptionsVisibility();
+                setExportError('');
+                setExportResult('', '');
+            });
+        });
+    }
+
+    if (exportGifInfiniteCheckbox) {
+        exportGifInfiniteCheckbox.addEventListener('change', () => {
+            syncGifLoopControls();
+        });
+    }
 }
 
 // =======================
@@ -4644,9 +5978,11 @@ async function initEditor() {
     }
 
     syncCanvasSizes();
+    hydratePanelPositions();
     await loadLayers();
     bindTimelineEvents();
     await loadTimelineFrames();
+    initOnionSkin();
     syncEditorLayout();
     fillBackgroundLayerIfNeeded();
 
@@ -4660,9 +5996,18 @@ async function initEditor() {
     bindToolbarEvents();
     bindLayerEvents();
     bindLayersPanelDrag();
+    bindHistoryPanelDrag();
+    bindHistoryEvents();
     bindSaveEvents();
+    bindExportEvents();
     initSaveState();
     hydrateSavedFrame();
+    hydratePanelPositions();
+    window.addEventListener('i18n:language-changed', () => {
+        renderLayerList();
+        updateHistoryPanel();
+        updateLastSavedLabel();
+    });
     startLastSavedTicker();
     window.addEventListener('resize', syncEditorLayout);
 }

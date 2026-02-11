@@ -1,12 +1,18 @@
 import base64
+import io
 import json
+import mimetypes
+import os
+import zipfile
 from binascii import Error as BinasciiError
 
 from django.contrib import messages
+from django.conf import settings
 from django.core.files.base import ContentFile
+from django.core import signing
 from django.db import transaction
 from django.db.models import Max
-from django.http import JsonResponse
+from django.http import JsonResponse, FileResponse, Http404
 from django.shortcuts import render, redirect, get_object_or_404
 from django.urls import reverse
 from django.contrib.auth.decorators import login_required
@@ -14,6 +20,13 @@ from django.views.decorators.http import require_POST, require_http_methods
 from .models import AnimationProject, Frame, Layer
 
 MAX_PREVIEW_IMAGE_BYTES = 5 * 1024 * 1024
+MAX_EXPORT_GIF_BYTES = 50 * 1024 * 1024
+MAX_EXPORT_GIF_FRAMES = 250
+MAX_EXPORT_GIF_TOTAL_PIXELS = 200_000_000
+MAX_EXPORT_PNG_ZIP_FRAMES = 2000
+EXPORT_TOKEN_MAX_AGE_SECONDS = 60 * 60  # 1 час
+EXPORT_SIGNING_SALT = 'animstudio.export'
+EXPORT_BASE_DIR = 'exports'
 
 
 def serialize_layer(layer):
@@ -708,3 +721,329 @@ def layer_reorder(request, pk, index):
         'ok': True,
         'layers': [serialize_layer(layer) for layer in layers],
     })
+
+
+def _parse_int(value, default_value=None, min_value=None, max_value=None):
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default_value
+    if min_value is not None:
+        parsed = max(min_value, parsed)
+    if max_value is not None:
+        parsed = min(max_value, parsed)
+    return parsed
+
+
+def _normalize_resolution_key(value):
+    if not isinstance(value, str):
+        return 'original'
+    value = value.strip().lower()
+    if value in ('original', 'orig', 'source'):
+        return 'original'
+    if value in ('720p', '1280x720'):
+        return '720p'
+    if value in ('1080p', '1920x1080'):
+        return '1080p'
+    return 'original'
+
+
+def _get_export_size(project, resolution_key):
+    if resolution_key == '720p':
+        return 1280, 720
+    if resolution_key == '1080p':
+        return 1920, 1080
+    return int(project.width), int(project.height)
+
+
+def _get_pillow_resample():
+    # Pillow 9+: Image.Resampling.LANCZOS; старые версии: Image.LANCZOS
+    try:
+        from PIL import Image  # pylint: disable=import-outside-toplevel
+        return Image.Resampling.LANCZOS
+    except Exception:
+        try:
+            from PIL import Image  # pylint: disable=import-outside-toplevel
+            return Image.LANCZOS
+        except Exception:
+            return 1  # PIL.Image.NEAREST (fallback)
+
+
+def _load_frame_rgba(frame, fallback_size):
+    try:
+        from PIL import Image  # pylint: disable=import-outside-toplevel
+    except Exception as exc:
+        raise RuntimeError('Pillow не установлен. Установите пакет Pillow для экспорта изображений.') from exc
+
+    width, height = fallback_size
+    if frame.preview_image:
+        try:
+            path = frame.preview_image.path
+            with Image.open(path) as im:
+                rgba = im.convert('RGBA')
+            return rgba
+        except Exception:
+            # если файл битый/недоступен — возвращаем пустой кадр, но не падаем
+            pass
+    return Image.new('RGBA', (int(width), int(height)), (0, 0, 0, 0))
+
+
+def _fit_to_exact_size(image_rgba, out_size):
+    try:
+        from PIL import Image  # pylint: disable=import-outside-toplevel
+    except Exception as exc:
+        raise RuntimeError('Pillow не установлен. Установите пакет Pillow для экспорта изображений.') from exc
+
+    out_w, out_h = int(out_size[0]), int(out_size[1])
+    if out_w <= 0 or out_h <= 0:
+        return image_rgba
+
+    src_w, src_h = image_rgba.size
+    if src_w == out_w and src_h == out_h:
+        return image_rgba
+
+    resample = _get_pillow_resample()
+    scale = min(out_w / src_w, out_h / src_h)
+    new_w = max(1, int(round(src_w * scale)))
+    new_h = max(1, int(round(src_h * scale)))
+    resized = image_rgba.resize((new_w, new_h), resample=resample)
+
+    canvas = Image.new('RGBA', (out_w, out_h), (0, 0, 0, 0))
+    offset_x = (out_w - new_w) // 2
+    offset_y = (out_h - new_h) // 2
+    canvas.alpha_composite(resized, (offset_x, offset_y))
+    return canvas
+
+
+def _ensure_export_dir(user_id, project_id):
+    rel_dir = os.path.join(EXPORT_BASE_DIR, f'user_{user_id}', f'project_{project_id}')
+    abs_dir = os.path.join(settings.MEDIA_ROOT, rel_dir)
+    os.makedirs(abs_dir, exist_ok=True)
+    return rel_dir.replace('\\', '/'), abs_dir
+
+
+def _build_export_token(user_id, project_id, rel_path):
+    payload = {
+        'u': int(user_id),
+        'p': int(project_id),
+        'path': str(rel_path),
+    }
+    return signing.dumps(payload, salt=EXPORT_SIGNING_SALT, compress=True)
+
+
+def _decode_export_token(token, max_age_seconds):
+    return signing.loads(token, salt=EXPORT_SIGNING_SALT, max_age=max_age_seconds)
+
+
+def _safe_media_path(rel_path):
+    rel_path = (rel_path or '').replace('\\', '/')
+    if not rel_path.startswith(f'{EXPORT_BASE_DIR}/'):
+        return None
+    if '..' in rel_path.split('/'):
+        return None
+    abs_path = os.path.join(settings.MEDIA_ROOT, rel_path)
+    abs_root = os.path.abspath(settings.MEDIA_ROOT)
+    abs_path = os.path.abspath(abs_path)
+    if not abs_path.startswith(abs_root):
+        return None
+    return abs_path
+
+
+@login_required
+@require_POST
+def project_export(request, pk):
+    project = get_object_or_404(AnimationProject, pk=pk, owner=request.user)
+
+    try:
+        payload = json.loads(request.body.decode('utf-8')) if request.body else {}
+    except json.JSONDecodeError:
+        return JsonResponse({'ok': False, 'error': 'invalid_json', 'message': 'Некорректный JSON.'}, status=400)
+
+    if not isinstance(payload, dict):
+        return JsonResponse({'ok': False, 'error': 'invalid_payload', 'message': 'Некорректный формат данных.'}, status=400)
+
+    export_format = (payload.get('format') or '').strip().lower()
+    if export_format in ('png', 'png_zip', 'png-seq', 'png_sequence', 'zip'):
+        export_format = 'png_zip'
+    elif export_format in ('gif', 'gif_file'):
+        export_format = 'gif'
+    else:
+        return JsonResponse({'ok': False, 'error': 'invalid_format', 'message': 'Выберите формат экспорта.'}, status=400)
+
+    resolution_key = _normalize_resolution_key(payload.get('resolution'))
+    out_w, out_h = _get_export_size(project, resolution_key)
+
+    fps = _parse_int(payload.get('fps'), default_value=int(project.fps), min_value=1, max_value=60)
+
+    frames_qs = project.frames.order_by('index', 'id')
+    frames = list(frames_qs)
+    total_frames = len(frames)
+    if total_frames <= 0:
+        return JsonResponse({'ok': False, 'error': 'no_frames', 'message': 'В проекте нет кадров.'}, status=400)
+
+    if export_format == 'gif' and total_frames > MAX_EXPORT_GIF_FRAMES:
+        return JsonResponse({
+            'ok': False,
+            'error': 'too_many_frames',
+            'message': f'Слишком много кадров для GIF ({total_frames}). Рекомендуем экспорт в PNG‑последовательность или уменьшить количество кадров.',
+            'limits': {'max_gif_frames': MAX_EXPORT_GIF_FRAMES},
+        }, status=413)
+
+    if export_format == 'png_zip' and total_frames > MAX_EXPORT_PNG_ZIP_FRAMES:
+        return JsonResponse({
+            'ok': False,
+            'error': 'too_many_frames',
+            'message': f'Слишком много кадров для экспорта ({total_frames}). Уменьшите количество кадров.',
+            'limits': {'max_png_zip_frames': MAX_EXPORT_PNG_ZIP_FRAMES},
+        }, status=413)
+
+    if export_format == 'gif':
+        loop_infinite = bool(payload.get('loop_infinite', True))
+        loop_count = _parse_int(payload.get('loop_count'), default_value=0, min_value=0, max_value=10_000)
+        loop_value = 0 if loop_infinite or loop_count == 0 else loop_count
+    else:
+        loop_value = None
+
+    rel_dir, abs_dir = _ensure_export_dir(request.user.id, project.pk)
+
+    safe_title = (project.title or 'project').strip()
+    safe_title = ''.join(ch for ch in safe_title if ch.isalnum() or ch in (' ', '-', '_')).strip() or 'project'
+    safe_title = safe_title.replace(' ', '_')
+
+    # Кадры берём из preview_image (они уже слиты на клиенте при сохранении кадра).
+    source_size = (int(project.width), int(project.height))
+
+    if export_format == 'png_zip':
+        digits = max(4, len(str(total_frames)))
+        filename = f'{safe_title}_png_seq_{out_w}x{out_h}_{fps}fps.zip'
+        abs_path = os.path.join(abs_dir, filename)
+        try:
+            with zipfile.ZipFile(abs_path, mode='w', compression=zipfile.ZIP_DEFLATED) as zf:
+                for idx, frame in enumerate(frames, start=1):
+                    name = f'frame_{idx:0{digits}d}.png'
+                    rgba = _load_frame_rgba(frame, fallback_size=source_size)
+                    fitted = _fit_to_exact_size(rgba, (out_w, out_h))
+                    img_bytes = io.BytesIO()
+                    fitted.save(img_bytes, format='PNG')
+                    zf.writestr(name, img_bytes.getvalue())
+        except RuntimeError as error:
+            try:
+                if os.path.exists(abs_path):
+                    os.remove(abs_path)
+            except Exception:
+                pass
+            return JsonResponse({'ok': False, 'error': 'export_unavailable', 'message': str(error)}, status=500)
+        except Exception:
+            try:
+                if os.path.exists(abs_path):
+                    os.remove(abs_path)
+            except Exception:
+                pass
+            return JsonResponse({'ok': False, 'error': 'export_failed', 'message': 'Не удалось сформировать ZIP‑архив.'}, status=500)
+
+        rel_path = f'{rel_dir}/{filename}'
+        token = _build_export_token(request.user.id, project.pk, rel_path)
+        download_url = reverse('animation:project_export_download', kwargs={'pk': project.pk, 'token': token})
+        return JsonResponse({
+            'ok': True,
+            'format': 'png_zip',
+            'filename': filename,
+            'download_url': download_url,
+        })
+
+    # GIF
+    try:
+        total_pixels = int(out_w) * int(out_h) * int(total_frames)
+    except Exception:
+        total_pixels = 0
+    if total_pixels and total_pixels > MAX_EXPORT_GIF_TOTAL_PIXELS:
+        return JsonResponse({
+            'ok': False,
+            'error': 'gif_too_large',
+            'message': 'Слишком тяжёлый GIF для генерации. Попробуйте уменьшить разрешение/количество кадров или экспортировать PNG‑последовательность.',
+            'limits': {'max_total_pixels': MAX_EXPORT_GIF_TOTAL_PIXELS},
+        }, status=413)
+
+    images = []
+    try:
+        for frame in frames:
+            rgba = _load_frame_rgba(frame, fallback_size=source_size)
+            fitted = _fit_to_exact_size(rgba, (out_w, out_h))
+            images.append(fitted)
+    except RuntimeError as error:
+        return JsonResponse({'ok': False, 'error': 'export_unavailable', 'message': str(error)}, status=500)
+    except Exception:
+        return JsonResponse({'ok': False, 'error': 'export_failed', 'message': 'Не удалось подготовить кадры для экспорта.'}, status=500)
+
+    duration_ms = int(round(1000 / max(1, fps)))
+    gif_buffer = io.BytesIO()
+    try:
+        # Pillow сам приведёт кадры к палитре GIF.
+        images[0].save(
+            gif_buffer,
+            format='GIF',
+            save_all=True,
+            append_images=images[1:],
+            duration=duration_ms,
+            loop=int(loop_value or 0),
+            optimize=True,
+            disposal=2,
+        )
+    except Exception:
+        return JsonResponse({'ok': False, 'error': 'export_failed', 'message': 'Не удалось сформировать GIF.'}, status=500)
+
+    gif_bytes = gif_buffer.getvalue()
+    if len(gif_bytes) > MAX_EXPORT_GIF_BYTES:
+        return JsonResponse({
+            'ok': False,
+            'error': 'gif_too_large',
+            'message': 'GIF получился слишком тяжёлым. Попробуйте уменьшить разрешение/FPS или экспортировать PNG‑последовательность.',
+            'limits': {'max_gif_bytes': MAX_EXPORT_GIF_BYTES},
+        }, status=413)
+
+    filename = f'{safe_title}_{out_w}x{out_h}_{fps}fps.gif'
+    abs_path = os.path.join(abs_dir, filename)
+    with open(abs_path, 'wb') as f:
+        f.write(gif_bytes)
+
+    rel_path = f'{rel_dir}/{filename}'
+    token = _build_export_token(request.user.id, project.pk, rel_path)
+    download_url = reverse('animation:project_export_download', kwargs={'pk': project.pk, 'token': token})
+    return JsonResponse({
+        'ok': True,
+        'format': 'gif',
+        'filename': filename,
+        'download_url': download_url,
+    })
+
+
+@login_required
+@require_http_methods(["GET"])
+def project_export_download(request, pk, token):
+    project = get_object_or_404(AnimationProject, pk=pk, owner=request.user)
+
+    try:
+        data = _decode_export_token(token, EXPORT_TOKEN_MAX_AGE_SECONDS)
+    except signing.SignatureExpired:
+        raise Http404('Ссылка на экспорт устарела.')
+    except signing.BadSignature:
+        raise Http404('Некорректная ссылка.')
+
+    if not isinstance(data, dict):
+        raise Http404('Некорректная ссылка.')
+    if int(data.get('u') or 0) != int(request.user.id):
+        raise Http404('Нет доступа.')
+    if int(data.get('p') or 0) != int(project.pk):
+        raise Http404('Нет доступа.')
+
+    rel_path = data.get('path')
+    abs_path = _safe_media_path(rel_path)
+    if not abs_path or not os.path.isfile(abs_path):
+        raise Http404('Файл не найден.')
+
+    content_type, _ = mimetypes.guess_type(abs_path)
+    if not content_type:
+        content_type = 'application/octet-stream'
+
+    filename = os.path.basename(abs_path)
+    return FileResponse(open(abs_path, 'rb'), as_attachment=True, filename=filename, content_type=content_type)

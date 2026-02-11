@@ -8,7 +8,9 @@
      data-project-id="{{ project.id }}"
      data-project-width="{{ project.width }}"
      data-project-height="{{ project.height }}"
+     data-project-fps="{{ project.fps }}"
      data-project-save-url="{% url 'animation:project_save' project.pk %}"
+     data-project-export-url="{% url 'animation:project_export' project.pk %}"
      data-frames-list-url="{% url 'animation:frames_list' project.pk %}"
      data-frame-detail-url-template="{% url 'animation:frame_detail' project.pk 0 %}"
      data-frame-create-url="{% url 'animation:frame_create' project.pk %}"
@@ -39,10 +41,17 @@
             <button type="button"
                     id="save-project-button"
                     class="tool-button"
-                    disabled>
+                    disabled
+                    data-i18n="save_project">
                 Сохранить проект
             </button>
-            <span class="save-status" id="save-status" aria-live="polite">
+            <button type="button"
+                    id="export-project-button"
+                    class="tool-button"
+                    data-i18n="export">
+                Экспорт
+            </button>
+            <span class="save-status" id="save-status" aria-live="polite" data-i18n="no_changes">
                 Нет изменений
             </span>
             <span class="save-last-time" id="last-saved-time"></span>
@@ -53,96 +62,109 @@
         <button type="button"
                 class="tool-button tool-button--active"
                 data-tool="brush"
-                aria-label="Кисть">
+                aria-label="Кисть"
+                data-i18n-attr="aria-label:brush">
             <img class="tool-icon" src="{% static 'animation/icons/brush.svg' %}" alt="">
         </button>
 
         <button type="button"
                 class="tool-button"
                 data-tool="eraser"
-                aria-label="Ластик">
+                aria-label="Ластик"
+                data-i18n-attr="aria-label:eraser">
             <img class="tool-icon" src="{% static 'animation/icons/eraser.svg' %}" alt="">
         </button>
 
         <button type="button"
                 class="tool-button"
                 data-tool="fill"
-                aria-label="Заливка">
+                aria-label="Заливка"
+                data-i18n-attr="aria-label:fill">
             <img class="tool-icon" src="{% static 'animation/icons/fill.svg' %}" alt="">
         </button>
 
         <button type="button"
                 class="tool-button"
                 data-tool="eyedropper"
-                aria-label="Пипетка">
+                aria-label="Пипетка"
+                data-i18n-attr="aria-label:eyedropper">
             <img class="tool-icon" src="{% static 'animation/icons/eyedropper.svg' %}" alt="">
         </button>
 
         <button type="button"
                 class="tool-button"
                 data-tool="line"
-                aria-label="Линия">
+                aria-label="Линия"
+                data-i18n-attr="aria-label:line">
             <img class="tool-icon" src="{% static 'animation/icons/line.svg' %}" alt="">
         </button>
 
         <button type="button"
                 class="tool-button"
                 data-tool="rectangle"
-                aria-label="Прямоугольник">
+                aria-label="Прямоугольник"
+                data-i18n-attr="aria-label:rectangle">
             <img class="tool-icon" src="{% static 'animation/icons/rectangle.svg' %}" alt="">
         </button>
 
         <button type="button"
                 class="tool-button"
                 data-tool="ellipse"
-                aria-label="Окружность">
+                aria-label="Окружность"
+                data-i18n-attr="aria-label:ellipse">
             <img class="tool-icon" src="{% static 'animation/icons/ellipse.svg' %}" alt="">
         </button>
 
         <button type="button"
                 class="tool-button"
                 data-tool="pan"
-                aria-label="Панорама">
+                aria-label="Панорама"
+                data-i18n-attr="aria-label:pan">
             <img class="tool-icon" src="{% static 'animation/icons/hand.svg' %}" alt="">
         </button>
 
         <button type="button"
                 class="tool-button"
                 data-tool="select"
-                aria-label="Выделение">
+                aria-label="Выделение"
+                data-i18n-attr="aria-label:select">
             <img class="tool-icon" src="{% static 'animation/icons/lasso.svg' %}" alt="">
         </button>
 
         <div class="tool-control tool-control--group">
-            <span class="tool-control__label">Режим выделения</span>
+            <span class="tool-control__label" data-i18n="selection_mode">Режим выделения</span>
             <button type="button"
                     class="tool-button tool-button--mode tool-button--active"
                     data-select-mode="rect"
-                    aria-label="Выделение прямоугольником">
+                    aria-label="Выделение прямоугольником"
+                    data-i18n-attr="aria-label:rectangle_selection">
                 <img class="tool-icon" src="{% static 'animation/icons/select-rect.svg' %}" alt="">
             </button>
             <button type="button"
                     class="tool-button tool-button--mode"
                     data-select-mode="ellipse"
-                    aria-label="Выделение окружностью">
+                    aria-label="Выделение окружностью"
+                    data-i18n-attr="aria-label:ellipse_selection">
                 <img class="tool-icon" src="{% static 'animation/icons/select-ellipse.svg' %}" alt="">
             </button>
             <button type="button"
                     class="tool-button tool-button--mode"
                     data-select-mode="lasso"
-                    aria-label="Выделение лассо">
+                    aria-label="Выделение лассо"
+                    data-i18n-attr="aria-label:lasso_selection">
                 <img class="tool-icon" src="{% static 'animation/icons/lasso.svg' %}" alt="">
             </button>
             <button type="button"
                     class="tool-button tool-button--mode"
                     data-select-mode="magic"
-                    aria-label="Волшебная палочка">
+                    aria-label="Волшебная палочка"
+                    data-i18n-attr="aria-label:magic_wand">
                 <img class="tool-icon" src="{% static 'animation/icons/wand.svg' %}" alt="">
             </button>
         </div>
 
         <label class="tool-control tool-control--wand">
-            Чувствительность
+            <span data-i18n="sensitivity">Чувствительность</span>
             <input type="range"
                    id="wand-sensitivity"
                    min="0"
@@ -151,14 +173,14 @@
         </label>
 
         <label class="tool-control">
-            Цвет
+            <span data-i18n="color">Цвет</span>
             <input type="color"
                    id="color-picker"
                    value="#000000">
         </label>
 
         <label class="tool-control">
-            Размер
+            <span data-i18n="size">Размер</span>
             <input type="range"
                    id="brush-size"
                    min="1"
@@ -173,6 +195,20 @@
                     width="{{ project.width }}"
                     height="{{ project.height }}">
             </canvas>
+            <canvas id="editor-onion-prev"
+                    class="onion-canvas onion-canvas--prev"
+                    width="{{ project.width }}"
+                    height="{{ project.height }}"
+                    aria-hidden="true"
+                    hidden>
+            </canvas>
+            <canvas id="editor-onion-next"
+                    class="onion-canvas onion-canvas--next"
+                    width="{{ project.width }}"
+                    height="{{ project.height }}"
+                    aria-hidden="true"
+                    hidden>
+            </canvas>
             <canvas id="editor-overlay"
                     width="{{ project.width }}"
                     height="{{ project.height }}"
@@ -181,63 +217,253 @@
             <div class="eyedropper-zoom" id="eyedropper-zoom" aria-hidden="true">
                 <canvas id="eyedropper-zoom-canvas" width="120" height="120"></canvas>
             </div>
-
-            <aside class="history-panel" aria-label="История действий">
-                <div class="history-panel__header">
-                    <h3 class="history-panel__title">История</h3>
-                </div>
-                <ul class="history-list" id="history-list"></ul>
-                <p class="history-empty" id="history-empty" hidden>Действий пока нет</p>
-            </aside>
-
-            <aside class="layers-panel" aria-label="Слои">
-                <div class="layers-panel__header">
-                    <h3 class="layers-panel__title">Слои</h3>
-                    <button type="button"
-                            class="tool-button tool-button--small layers-panel__add"
-                            id="add-layer-button"
-                            aria-label="Добавить слой"
-                            title="Добавить слой">
-                        <img class="tool-icon tool-icon--small"
-                             src="{% static 'animation/icons/plus.svg' %}"
-                             alt="">
-                    </button>
-                </div>
-                <ul class="layers-list" id="layers-list"></ul>
-                <p class="layers-empty" id="layers-empty" hidden>Слои не найдены</p>
-            </aside>
         </div>
+
+        <div class="onion-panel" id="onion-skin-panel" hidden>
+            <div class="onion-panel__header">
+                <span class="onion-panel__title">Onion‑Skin</span>
+                <button type="button"
+                        class="onion-panel__close"
+                        id="onion-skin-close"
+                        aria-label="Закрыть настройки Onion‑Skin"
+                        title="Закрыть"
+                        data-i18n-attr="aria-label:close_onion_skin_settings, title:close">
+                    ×
+                </button>
+            </div>
+
+            <div class="onion-panel__body">
+                <label class="onion-field">
+                    <span class="onion-field__label">
+                        <span data-i18n="frame_count">Количество кадров:</span>
+                        <strong id="onion-skin-count-value">2</strong>
+                    </span>
+                    <input type="range"
+                           id="onion-skin-count"
+                           min="1"
+                           max="3"
+                           value="2">
+                </label>
+
+                <label class="onion-field">
+                    <span class="onion-field__label">
+                        <span data-i18n="previous_opacity">Прозрачность предыдущих:</span>
+                        <strong id="onion-skin-opacity-prev-value">35%</strong>
+                    </span>
+                    <input type="range"
+                           id="onion-skin-opacity-prev"
+                           min="0"
+                           max="100"
+                           value="35">
+                </label>
+
+                <label class="onion-field">
+                    <span class="onion-field__label">
+                        <span data-i18n="next_opacity">Прозрачность следующих:</span>
+                        <strong id="onion-skin-opacity-next-value">35%</strong>
+                    </span>
+                    <input type="range"
+                           id="onion-skin-opacity-next"
+                           min="0"
+                           max="100"
+                           value="35">
+                </label>
+
+                <fieldset class="onion-fieldset"
+                          aria-label="Показывать"
+                          data-i18n-attr="aria-label:show">
+                    <legend class="onion-fieldset__legend" data-i18n="show_label">Показывать:</legend>
+                    <label class="onion-radio">
+                        <input type="radio"
+                               name="onion-skin-mode"
+                               value="prev"
+                               id="onion-skin-mode-prev">
+                        <span data-i18n="previous_only">только предыдущие</span>
+                    </label>
+                    <label class="onion-radio">
+                        <input type="radio"
+                               name="onion-skin-mode"
+                               value="next"
+                               id="onion-skin-mode-next">
+                        <span data-i18n="next_only">только следующие</span>
+                    </label>
+                    <label class="onion-radio">
+                        <input type="radio"
+                               name="onion-skin-mode"
+                               value="both"
+                               id="onion-skin-mode-both"
+                               checked>
+                        <span data-i18n="both">и те и другие</span>
+                    </label>
+                </fieldset>
+            </div>
+        </div>
+
+        <aside class="history-panel"
+               aria-label="История действий"
+               data-i18n-attr="aria-label:action_history">
+            <div class="history-panel__header">
+                <h3 class="history-panel__title" data-i18n="history">История</h3>
+            </div>
+            <ul class="history-list" id="history-list"></ul>
+            <p class="history-empty" id="history-empty" hidden data-i18n="no_actions_yet">Действий пока нет</p>
+        </aside>
+
+        <aside class="layers-panel" aria-label="Слои" data-i18n-attr="aria-label:layers">
+            <div class="layers-panel__header">
+                <h3 class="layers-panel__title" data-i18n="layers">Слои</h3>
+                <button type="button"
+                        class="tool-button tool-button--small layers-panel__add"
+                        id="add-layer-button"
+                        aria-label="Добавить слой"
+                        title="Добавить слой"
+                        data-i18n-attr="aria-label:add_layer, title:add_layer">
+                    <img class="tool-icon tool-icon--small"
+                         src="{% static 'animation/icons/plus.svg' %}"
+                         alt="">
+                </button>
+            </div>
+            <ul class="layers-list" id="layers-list"></ul>
+            <p class="layers-empty" id="layers-empty" hidden data-i18n="no_layers_found">Слои не найдены</p>
+        </aside>
     </div>
 
-    <div class="timeline-wrapper" aria-label="Таймлайн кадров">
+    <div class="timeline-wrapper" aria-label="Таймлайн кадров" data-i18n-attr="aria-label:frame_timeline">
         <div class="timeline-controls">
             <button type="button"
                     class="tool-button tool-button--small"
                     id="add-frame-button"
                     title="Добавить кадр"
-                    aria-label="Добавить кадр">
+                    aria-label="Добавить кадр"
+                    data-i18n-attr="title:add_frame, aria-label:add_frame">
                 +
             </button>
             <button type="button"
                     class="tool-button tool-button--small"
                     id="duplicate-frame-button"
                     title="Дублировать кадр"
-                    aria-label="Дублировать кадр">
+                    aria-label="Дублировать кадр"
+                    data-i18n-attr="title:duplicate_frame, aria-label:duplicate_frame">
                 ⧉
             </button>
             <button type="button"
                     class="tool-button tool-button--small"
                     id="delete-frame-button"
                     title="Удалить кадр"
-                    aria-label="Удалить кадр">
+                    aria-label="Удалить кадр"
+                    data-i18n-attr="title:delete_frame, aria-label:delete_frame">
                 <img class="tool-icon tool-icon--small" src="{% static 'animation/icons/trash.svg' %}" alt="">
             </button>
+
+            <div class="timeline-onion">
+                <button type="button"
+                        class="tool-button tool-button--small"
+                        id="onion-skin-toggle"
+                        title="Onion‑Skin (соседние кадры)"
+                        aria-label="Onion‑Skin (просмотр соседних кадров)"
+                        data-i18n-attr="title:onion_skin_adjacent_frames, aria-label:onion_skin_preview_adjacent_frames">
+                    <img class="tool-icon tool-icon--small"
+                         src="{% static 'animation/icons/onion.svg' %}"
+                         alt="">
+                </button>
+            </div>
         </div>
         <div class="timeline-strip" id="timeline-strip" role="list"></div>
     </div>
 
 </div>
 
+{# Модальное окно экспорта #}
+<div class="modal" id="export-modal" hidden>
+    <div class="modal__overlay" data-export-action="close"></div>
+    <div class="modal__content" role="dialog" aria-modal="true" aria-labelledby="export-modal-title">
+        <div class="modal__header">
+            <h3 class="modal__title" id="export-modal-title" data-i18n="export_animation">Экспорт анимации</h3>
+            <button type="button"
+                    class="modal__close"
+                    id="export-modal-close"
+                    aria-label="Закрыть"
+                    data-i18n-attr="aria-label:close">
+                ×
+            </button>
+        </div>
+
+        <div class="modal__body">
+            <fieldset class="export-fieldset"
+                      aria-label="Формат экспорта"
+                      data-i18n-attr="aria-label:export_format">
+                <legend class="export-legend" data-i18n="format">Формат</legend>
+                <label class="export-radio">
+                    <input type="radio" name="export-format" value="png_zip" checked>
+                    <span data-i18n="png_sequence_zip">PNG‑последовательность (ZIP)</span>
+                </label>
+                <label class="export-radio">
+                    <input type="radio" name="export-format" value="gif">
+                    <span data-i18n="gif_file">GIF‑файл</span>
+                </label>
+            </fieldset>
+
+            <div class="export-grid">
+                <label class="form-field">
+                    <span data-i18n="resolution">Разрешение</span>
+                    <select id="export-resolution">
+                        <option value="original" data-i18n="original">Оригинал</option>
+                        <option value="720p">720p</option>
+                        <option value="1080p">1080p</option>
+                    </select>
+                </label>
+
+                <label class="form-field">
+                    <span data-i18n="fps">FPS</span>
+                    <input type="number"
+                           id="export-fps"
+                           min="1"
+                           max="60"
+                           step="1">
+                </label>
+            </div>
+
+            <div class="export-gif-options" id="export-gif-options" hidden>
+                <label class="export-checkbox">
+                    <input type="checkbox" id="export-gif-infinite" checked>
+                    <span data-i18n="loop_forever">Повторять бесконечно</span>
+                </label>
+
+                <label class="form-field">
+                    <span data-i18n="loop_count_0_infinite">Количество повторов (0 — бесконечно)</span>
+                    <input type="number"
+                           id="export-gif-loop-count"
+                           min="0"
+                           max="10000"
+                           step="1"
+                           value="0"
+                           disabled>
+                </label>
+            </div>
+
+            <p class="form-error" id="export-error" role="alert" hidden></p>
+
+            <div class="export-progress" id="export-progress" hidden aria-live="polite">
+                <span class="export-spinner" aria-hidden="true"></span>
+                <span data-i18n="generating">Создание…</span>
+            </div>
+
+            <div class="export-result" id="export-result" hidden>
+                <a class="tool-button" id="export-download-link" href="#" download data-i18n="download_file">Скачать файл</a>
+            </div>
+        </div>
+
+        <div class="modal__actions">
+            <button type="button" class="tool-button" id="export-confirm-button" data-i18n="export_action">
+                Экспортировать
+            </button>
+            <button type="button" class="tool-button" id="export-cancel-button" data-i18n="cancel">
+                Отмена
+            </button>
+        </div>
+    </div>
+</div>
+
 {# bootstrap-код и подключение JS #}
-<script src="{% static 'animation/editor.js' %}"></script>
+<script src="{% static 'animation/editor.js' %}" defer></script>
 {% endblock %}
