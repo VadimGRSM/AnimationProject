@@ -106,6 +106,10 @@ const onionOpacityNextValueLabel = document.getElementById('onion-skin-opacity-n
 const onionModePrevInput = document.getElementById('onion-skin-mode-prev');
 const onionModeNextInput = document.getElementById('onion-skin-mode-next');
 const onionModeBothInput = document.getElementById('onion-skin-mode-both');
+const playbackControls = document.getElementById('playback-controls');
+const playbackPlayButton = document.getElementById('playback-play-button');
+const playbackStopButton = document.getElementById('playback-stop-button');
+const playbackLoopToggle = document.getElementById('playback-loop-toggle');
 
 const projectSaveUrl = (editorRoot && editorRoot.dataset.projectSaveUrl)
     || window.ANIM_PROJECT_SAVE_URL
@@ -257,6 +261,26 @@ let isSwitchingFrame = false;
 let dragFrameId = null;
 let panStartedByMiddle = false;
 let isExporting = false;
+let timelineControlsTemporarilyDisabled = false;
+
+const PLAYBACK_IDLE = 'idle';
+const PLAYBACK_PLAYING = 'playing';
+const PLAYBACK_PAUSED = 'paused';
+let playbackMode = PLAYBACK_IDLE;
+let playbackLoopEnabled = false;
+let playbackRafId = null;
+let playbackLastTickAt = 0;
+let playbackAccumulatedMs = 0;
+let playbackStepInFlight = false;
+let playbackStartFrameIndex = null;
+let playbackMarkerFrameIndex = null;
+let playbackAudioElement = null;
+let playbackStopping = false;
+let playbackFrameOrder = [];
+let playbackFramePosition = -1;
+let playbackPreviewCanvas = null;
+let playbackPreviewCtx = null;
+const playbackFrameImageCache = new Map();
 
 // =======================
 // Onion-Skin (соседние кадры)
@@ -323,6 +347,7 @@ const LEGACY_HISTORY_LABEL_KEYS = {
  * и визуально подсвечиваем кнопку
  */
 function setTool(toolName) {
+    if (isEditingLockedByPlayback()) return;
     if (!TOOL_SET.has(toolName)) return;
 
     currentTool = toolName;
@@ -366,6 +391,7 @@ function setBrushSize(size) {
 }
 
 function setSelectionMode(mode) {
+    if (isEditingLockedByPlayback()) return;
     if (mode !== SELECT_RECT && mode !== SELECT_ELLIPSE && mode !== SELECT_LASSO && mode !== SELECT_MAGIC) {
         return;
     }
@@ -381,6 +407,41 @@ function setSelectionMode(mode) {
     if (wandSensitivityInput) {
         wandSensitivityInput.disabled = mode !== SELECT_MAGIC;
     }
+}
+
+function getI18nText(key, fallback) {
+    if (typeof t === 'function') {
+        try {
+            const translated = t(key);
+            if (translated && translated !== key) return translated;
+        } catch (error) {
+            // ignore and fallback
+        }
+    }
+    return fallback;
+}
+
+function isPlaybackSessionActive() {
+    return playbackMode === PLAYBACK_PLAYING || playbackMode === PLAYBACK_PAUSED;
+}
+
+function isPlaybackRunning() {
+    return playbackMode === PLAYBACK_PLAYING;
+}
+
+function isEditingLockedByPlayback() {
+    return isPlaybackSessionActive() || playbackStopping;
+}
+
+function getOrderedTimelineIndexes() {
+    const unique = new Set();
+    timelineFrames.forEach((frame) => {
+        const index = Number(frame && frame.index);
+        if (Number.isFinite(index) && index > 0) {
+            unique.add(index);
+        }
+    });
+    return [...unique].sort((a, b) => a - b);
 }
 
 function clamp(value, min, max) {
@@ -841,10 +902,67 @@ function getFrameDeleteUrl(index) {
     return fillFrameUrl(frameDeleteUrlTemplate, index);
 }
 
+function shouldDisableTimelineControls() {
+    return timelineControlsTemporarilyDisabled || isPlaybackSessionActive() || playbackStopping;
+}
+
+function syncTimelineControlsState() {
+    const isDisabled = shouldDisableTimelineControls();
+    if (addFrameButton) addFrameButton.disabled = isDisabled;
+    if (duplicateFrameButton) duplicateFrameButton.disabled = isDisabled;
+    if (deleteFrameButton) deleteFrameButton.disabled = isDisabled;
+    if (onionToggleButton) onionToggleButton.disabled = isDisabled;
+
+    if (timelineStrip) {
+        timelineStrip.classList.toggle('timeline-strip--locked', isDisabled);
+        timelineStrip.querySelectorAll('.timeline-frame').forEach((el) => {
+            el.draggable = !isDisabled;
+        });
+    }
+}
+
+function syncToolbarControlsState() {
+    const isDisabled = isEditingLockedByPlayback();
+    toolButtons.forEach((button) => {
+        button.disabled = isDisabled;
+    });
+    selectionModeButtons.forEach((button) => {
+        button.disabled = isDisabled;
+    });
+    if (colorInput) colorInput.disabled = isDisabled;
+    if (sizeInput) sizeInput.disabled = isDisabled;
+    if (wandSensitivityInput) {
+        wandSensitivityInput.disabled = isDisabled || selectionMode !== SELECT_MAGIC;
+    }
+}
+
+function syncLayerControlsState() {
+    const isDisabled = isEditingLockedByPlayback();
+    if (addLayerButton) addLayerButton.disabled = isDisabled;
+    if (!layersList) return;
+
+    layersList.querySelectorAll('.layer-item').forEach((item) => {
+        item.draggable = !isDisabled;
+        item.classList.toggle('layer-item--locked', isDisabled);
+    });
+    layersList.querySelectorAll('button, input, select, textarea').forEach((control) => {
+        control.disabled = isDisabled;
+    });
+}
+
+function syncEditorInteractionLockUi() {
+    const isLocked = isEditingLockedByPlayback();
+    if (editorRoot) {
+        editorRoot.classList.toggle('editor-root--playback', isLocked);
+    }
+    syncToolbarControlsState();
+    syncLayerControlsState();
+    syncTimelineControlsState();
+}
+
 function setTimelineControlsDisabled(isDisabled) {
-    if (addFrameButton) addFrameButton.disabled = Boolean(isDisabled);
-    if (duplicateFrameButton) duplicateFrameButton.disabled = Boolean(isDisabled);
-    if (deleteFrameButton) deleteFrameButton.disabled = Boolean(isDisabled);
+    timelineControlsTemporarilyDisabled = Boolean(isDisabled);
+    syncTimelineControlsState();
 }
 
 function getLayerListUrl() {
@@ -1177,6 +1295,7 @@ function renderLayerList() {
     });
     updateLayersEmptyState();
     applyListMaxVisibleHeight(layersList, '.layer-item', LAYERS_VISIBLE_COUNT);
+    syncLayerControlsState();
 }
 
 
@@ -1281,6 +1400,7 @@ function fillBackgroundLayerIfNeeded() {
 }
 
 async function createLayer() {
+    if (isEditingLockedByPlayback()) return;
     const listUrl = getLayerListUrl();
     if (!listUrl) return;
     beginFullHistory('layer_add');
@@ -1310,6 +1430,7 @@ async function createLayer() {
 }
 
 async function updateLayer(layerId, updates) {
+    if (isEditingLockedByPlayback()) return null;
     const url = getLayerUpdateUrl(layerId);
     if (!url) return null;
     try {
@@ -1334,6 +1455,7 @@ async function updateLayer(layerId, updates) {
 }
 
 async function deleteLayer(layerId) {
+    if (isEditingLockedByPlayback()) return;
     const url = getLayerDeleteUrl(layerId);
     if (!url) return;
     beginFullHistory('layer_delete');
@@ -1532,6 +1654,10 @@ function syncCanvasSizes() {
     const width = canvas.width;
     const height = canvas.height;
 
+    if (playbackPreviewCanvas) {
+        playbackPreviewCanvas.width = width;
+        playbackPreviewCanvas.height = height;
+    }
     if (onionPrevCanvas) {
         onionPrevCanvas.width = width;
         onionPrevCanvas.height = height;
@@ -1553,6 +1679,12 @@ function syncCanvasSizes() {
 function syncOverlayPlacement() {
     if (!overlayCanvas || !canvas) return;
     const rect = canvas.getBoundingClientRect();
+    if (playbackPreviewCanvas) {
+        playbackPreviewCanvas.style.width = `${rect.width}px`;
+        playbackPreviewCanvas.style.height = `${rect.height}px`;
+        playbackPreviewCanvas.style.left = `${canvas.offsetLeft}px`;
+        playbackPreviewCanvas.style.top = `${canvas.offsetTop}px`;
+    }
     if (onionPrevCanvas) {
         onionPrevCanvas.style.width = `${rect.width}px`;
         onionPrevCanvas.style.height = `${rect.height}px`;
@@ -4034,6 +4166,495 @@ function initOnionSkin() {
     bindOnionPanelDrag();
 }
 
+function ensurePlaybackPreviewCanvas() {
+    if (playbackPreviewCanvas) return playbackPreviewCanvas;
+    if (!canvasWrapper || !canvas) return null;
+
+    const previewCanvas = document.createElement('canvas');
+    previewCanvas.id = 'editor-playback-preview';
+    previewCanvas.className = 'playback-preview-canvas';
+    previewCanvas.hidden = true;
+    previewCanvas.width = canvas.width;
+    previewCanvas.height = canvas.height;
+
+    if (overlayCanvas && overlayCanvas.parentNode) {
+        overlayCanvas.parentNode.insertBefore(previewCanvas, overlayCanvas);
+    } else {
+        canvasWrapper.appendChild(previewCanvas);
+    }
+
+    playbackPreviewCanvas = previewCanvas;
+    playbackPreviewCtx = previewCanvas.getContext('2d');
+    syncOverlayPlacement();
+    return playbackPreviewCanvas;
+}
+
+function clearPlaybackPreviewCanvas() {
+    if (!playbackPreviewCanvas || !playbackPreviewCtx) return;
+    playbackPreviewCtx.clearRect(0, 0, playbackPreviewCanvas.width, playbackPreviewCanvas.height);
+}
+
+function setPlaybackPreviewVisible(visible) {
+    const canvasEl = ensurePlaybackPreviewCanvas();
+    if (!canvasEl) return;
+    canvasEl.hidden = !visible;
+    if (!visible) {
+        clearPlaybackPreviewCanvas();
+    }
+}
+
+function getPlaybackFrameCacheEntry(frameIndex) {
+    const index = Number(frameIndex);
+    if (!Number.isFinite(index) || index <= 0) return null;
+    if (!playbackFrameImageCache.has(index)) {
+        playbackFrameImageCache.set(index, {
+            imageUrl: '',
+            image: null,
+            promise: null,
+        });
+    }
+    return playbackFrameImageCache.get(index);
+}
+
+function primePlaybackCurrentFrameCache() {
+    const flattened = flattenLayers();
+    const entry = getPlaybackFrameCacheEntry(currentFrameIndex);
+    if (!entry || !flattened) return;
+    entry.imageUrl = flattened;
+    entry.image = null;
+    entry.promise = null;
+}
+
+function getPlaybackFrameImageUrl(frameIndex) {
+    const index = Number(frameIndex);
+    if (!Number.isFinite(index) || index <= 0) return '';
+
+    const timelineFrame = getTimelineFrameByIndex(index);
+    if (timelineFrame && timelineFrame.preview_url) {
+        return normalizeAssetUrl(timelineFrame.preview_url);
+    }
+
+    if (index === currentFrameIndex) {
+        const currentEntry = getPlaybackFrameCacheEntry(index);
+        if (currentEntry && currentEntry.imageUrl) {
+            return currentEntry.imageUrl;
+        }
+    }
+    return '';
+}
+
+function ensurePlaybackFrameImage(frameIndex) {
+    const entry = getPlaybackFrameCacheEntry(frameIndex);
+    if (!entry) return Promise.resolve(null);
+
+    const nextImageUrl = getPlaybackFrameImageUrl(frameIndex);
+    if (!nextImageUrl) {
+        entry.image = null;
+        entry.imageUrl = '';
+        entry.promise = null;
+        return Promise.resolve(null);
+    }
+
+    if (entry.image && entry.imageUrl === nextImageUrl) {
+        return Promise.resolve(entry.image);
+    }
+    if (entry.promise && entry.imageUrl === nextImageUrl) {
+        return entry.promise;
+    }
+
+    entry.imageUrl = nextImageUrl;
+    const targetUrl = nextImageUrl;
+    entry.promise = new Promise((resolve) => {
+        const image = new Image();
+        image.onload = () => {
+            if (entry.imageUrl === targetUrl) {
+                entry.image = image;
+                entry.promise = null;
+                resolve(image);
+                return;
+            }
+            resolve(null);
+        };
+        image.onerror = () => {
+            if (entry.imageUrl === targetUrl) {
+                entry.image = null;
+                entry.promise = null;
+            }
+            resolve(null);
+        };
+        image.src = targetUrl;
+    });
+    return entry.promise;
+}
+
+function prefetchPlaybackFrameImages(frameIndexes) {
+    frameIndexes.forEach((frameIndex) => {
+        void ensurePlaybackFrameImage(frameIndex);
+    });
+}
+
+async function renderPlaybackFrameByIndex(frameIndex) {
+    const canvasEl = ensurePlaybackPreviewCanvas();
+    if (!canvasEl || !playbackPreviewCtx) return false;
+
+    const image = await ensurePlaybackFrameImage(frameIndex);
+    if (!isPlaybackSessionActive()) return false;
+
+    clearPlaybackPreviewCanvas();
+    if (image) {
+        playbackPreviewCtx.drawImage(image, 0, 0, canvasEl.width, canvasEl.height);
+    }
+    setPlaybackMarkerFrame(frameIndex);
+    emitPlaybackSignal('anim-playback');
+    return true;
+}
+
+function resolvePlaybackAudioElement() {
+    if (playbackAudioElement) return playbackAudioElement;
+
+    const fromDom = document.querySelector('audio[data-playback-audio], #playback-audio, #editor-audio-track');
+    if (fromDom && typeof fromDom.play === 'function') {
+        playbackAudioElement = fromDom;
+        return playbackAudioElement;
+    }
+
+    const audioUrl = (editorRoot && editorRoot.dataset && editorRoot.dataset.projectAudioUrl)
+        || window.ANIM_PROJECT_AUDIO_URL
+        || '';
+    if (!audioUrl || !editorRoot) {
+        return null;
+    }
+
+    const audio = document.createElement('audio');
+    audio.id = 'playback-audio';
+    audio.dataset.playbackAudio = 'true';
+    audio.preload = 'auto';
+    audio.src = normalizeAssetUrl(audioUrl);
+    audio.hidden = true;
+    editorRoot.appendChild(audio);
+    playbackAudioElement = audio;
+    return playbackAudioElement;
+}
+
+function setPlaybackAudioToCurrentFrame() {
+    const audio = resolvePlaybackAudioElement();
+    if (!audio) return;
+    const safeFps = Math.max(1, projectFps);
+    const frameIndex = Number.isFinite(playbackMarkerFrameIndex)
+        ? playbackMarkerFrameIndex
+        : currentFrameIndex;
+    const frameOffsetSeconds = Math.max(0, (Number(frameIndex) - 1) / safeFps);
+    try {
+        audio.currentTime = frameOffsetSeconds;
+    } catch (error) {
+        // ignore seek errors for unsupported streams
+    }
+}
+
+function playbackAudioPlay(options = {}) {
+    const audio = resolvePlaybackAudioElement();
+    if (!audio) return;
+    if (options.seekToFrameStart) {
+        setPlaybackAudioToCurrentFrame();
+    }
+    const playPromise = audio.play();
+    if (playPromise && typeof playPromise.catch === 'function') {
+        playPromise.catch(() => {
+            // браузер может запретить autoplay без пользовательского жеста
+        });
+    }
+}
+
+function playbackAudioPause() {
+    const audio = resolvePlaybackAudioElement();
+    if (!audio) return;
+    audio.pause();
+}
+
+function playbackAudioStop() {
+    const audio = resolvePlaybackAudioElement();
+    if (!audio) return;
+    audio.pause();
+    try {
+        audio.currentTime = 0;
+    } catch (error) {
+        // ignore seek errors for unsupported streams
+    }
+}
+
+function emitPlaybackSignal(eventName) {
+    const detail = {
+        state: playbackMode,
+        active: isPlaybackSessionActive(),
+        playing: isPlaybackSessionActive(),
+        frameIndex: Number.isFinite(playbackMarkerFrameIndex) ? playbackMarkerFrameIndex : currentFrameIndex,
+        loop: playbackLoopEnabled,
+    };
+    window.dispatchEvent(new CustomEvent(eventName, { detail }));
+    if (eventName !== 'anim-playback') {
+        window.dispatchEvent(new CustomEvent('anim-playback', { detail }));
+    }
+}
+
+function setPlaybackMarkerFrame(frameIndex) {
+    if (Number.isFinite(frameIndex) && frameIndex > 0) {
+        playbackMarkerFrameIndex = frameIndex;
+    } else {
+        playbackMarkerFrameIndex = null;
+    }
+    if (!timelineStrip) return;
+    timelineStrip.querySelectorAll('.timeline-frame').forEach((el) => {
+        const idx = Number(el.dataset.frameIndex);
+        const isMarkerActive = Number.isFinite(playbackMarkerFrameIndex)
+            && idx === playbackMarkerFrameIndex
+            && isPlaybackSessionActive();
+        el.classList.toggle('timeline-frame--playback-current', isMarkerActive);
+    });
+}
+
+function updatePlaybackControlsState() {
+    const hasFrames = getOrderedTimelineIndexes().length > 0;
+
+    if (playbackPlayButton) {
+        const isPlaying = isPlaybackRunning();
+        const isPaused = playbackMode === PLAYBACK_PAUSED;
+        playbackPlayButton.textContent = isPlaying
+            ? getI18nText('pause', 'Pause')
+            : getI18nText('play', 'Play');
+        playbackPlayButton.setAttribute('aria-label', playbackPlayButton.textContent);
+        playbackPlayButton.classList.toggle('tool-button--active', isPlaying);
+        const idleBlocked = playbackMode === PLAYBACK_IDLE && (isSwitchingFrame || isSaving || isAutosaving || !hasFrames);
+        playbackPlayButton.disabled = playbackStopping || idleBlocked;
+        playbackPlayButton.dataset.playbackState = isPlaying ? 'playing' : (isPaused ? 'paused' : 'idle');
+    }
+
+    if (playbackStopButton) {
+        playbackStopButton.disabled = playbackStopping || !isPlaybackSessionActive();
+    }
+
+    if (playbackLoopToggle) {
+        playbackLoopToggle.checked = playbackLoopEnabled;
+        playbackLoopToggle.disabled = playbackStopping;
+    }
+}
+
+function getNextPlaybackFramePosition() {
+    if (!playbackFrameOrder.length) return -1;
+    const nextPosition = playbackFramePosition + 1;
+    if (nextPosition < playbackFrameOrder.length) {
+        return nextPosition;
+    }
+    if (playbackLoopEnabled) {
+        return 0;
+    }
+    return -1;
+}
+
+function stopPlaybackLoop() {
+    if (playbackRafId) {
+        cancelAnimationFrame(playbackRafId);
+        playbackRafId = null;
+    }
+    playbackLastTickAt = 0;
+    playbackAccumulatedMs = 0;
+}
+
+async function stepPlaybackForward() {
+    if (playbackStepInFlight || !isPlaybackRunning()) return;
+
+    const nextPosition = getNextPlaybackFramePosition();
+    if (nextPosition < 0) {
+        await stopPlaybackPreview({ restoreStartFrame: true });
+        return;
+    }
+
+    const nextFrameIndex = playbackFrameOrder[nextPosition];
+    playbackStepInFlight = true;
+    try {
+        const rendered = await renderPlaybackFrameByIndex(nextFrameIndex);
+        if (rendered && isPlaybackSessionActive()) {
+            playbackFramePosition = nextPosition;
+        }
+    } finally {
+        playbackStepInFlight = false;
+    }
+}
+
+function playbackLoopTick(now) {
+    if (!isPlaybackRunning()) {
+        stopPlaybackLoop();
+        return;
+    }
+    if (!playbackLastTickAt) {
+        playbackLastTickAt = now;
+    }
+
+    let delta = now - playbackLastTickAt;
+    playbackLastTickAt = now;
+    if (!Number.isFinite(delta) || delta < 0) {
+        delta = 0;
+    }
+
+    const frameDuration = 1000 / Math.max(1, projectFps);
+    playbackAccumulatedMs = Math.min(playbackAccumulatedMs + delta, frameDuration * 2);
+
+    if (playbackAccumulatedMs >= frameDuration && !playbackStepInFlight) {
+        playbackAccumulatedMs -= frameDuration;
+        void stepPlaybackForward();
+    }
+
+    playbackRafId = requestAnimationFrame(playbackLoopTick);
+}
+
+function startPlaybackLoop() {
+    stopPlaybackLoop();
+    playbackRafId = requestAnimationFrame(playbackLoopTick);
+}
+
+function cancelLiveCanvasInteractionsForPlayback() {
+    pendingCanvasStartFromOutside = null;
+
+    if (isDrawing) {
+        if (isShapeTool(activeTool)) {
+            commitShape();
+        }
+        stopDrawing();
+    }
+
+    if (isSelecting) {
+        isSelecting = false;
+        selectionDraft = null;
+        lassoPoints = [];
+    }
+
+    if (isPanning) {
+        stopPan();
+    }
+
+    if (isTransformingSelection) {
+        isTransformingSelection = false;
+        hideTransformHint();
+        setCanvasCursorOverride(null);
+        hoverTransformHandle = null;
+    }
+
+    hideEyedropperZoom();
+    renderScene();
+    renderOverlay();
+}
+
+async function startPlaybackPreview() {
+    if (playbackStopping) return;
+    if (isPlaybackRunning()) {
+        pausePlaybackPreview();
+        return;
+    }
+
+    if (playbackMode === PLAYBACK_PAUSED) {
+        playbackMode = PLAYBACK_PLAYING;
+        setPlaybackPreviewVisible(true);
+        syncEditorInteractionLockUi();
+        updatePlaybackControlsState();
+        playbackAudioPlay({ seekToFrameStart: false });
+        emitPlaybackSignal('anim-playback');
+        startPlaybackLoop();
+        return;
+    }
+
+    if (isSwitchingFrame || isSaving || isAutosaving) return;
+
+    const savedOk = await saveCurrentFrame();
+    if (!savedOk && hasUnsavedChanges) return;
+
+    const ordered = getOrderedTimelineIndexes();
+    if (!ordered.length) return;
+
+    cancelLiveCanvasInteractionsForPlayback();
+    primePlaybackCurrentFrameCache();
+    playbackFrameOrder = ordered;
+    playbackFramePosition = ordered.indexOf(currentFrameIndex);
+    if (playbackFramePosition < 0) {
+        playbackFramePosition = 0;
+    }
+    const startFrameIndex = playbackFrameOrder[playbackFramePosition];
+
+    playbackStartFrameIndex = currentFrameIndex;
+    playbackMode = PLAYBACK_PLAYING;
+    setPlaybackPreviewVisible(true);
+    syncEditorInteractionLockUi();
+    updatePlaybackControlsState();
+    await renderPlaybackFrameByIndex(startFrameIndex);
+    if (!isPlaybackSessionActive()) return;
+    prefetchPlaybackFrameImages(playbackFrameOrder);
+    playbackAudioPlay({ seekToFrameStart: true });
+    emitPlaybackSignal('anim-playback-start');
+    startPlaybackLoop();
+}
+
+function pausePlaybackPreview() {
+    if (!isPlaybackRunning()) return;
+    playbackMode = PLAYBACK_PAUSED;
+    stopPlaybackLoop();
+    playbackAudioPause();
+    syncEditorInteractionLockUi();
+    updatePlaybackControlsState();
+    emitPlaybackSignal('anim-playback');
+}
+
+async function stopPlaybackPreview(options = {}) {
+    if (!isPlaybackSessionActive() && !playbackStopping) return;
+    void options;
+
+    playbackStopping = true;
+    playbackMode = PLAYBACK_IDLE;
+    stopPlaybackLoop();
+    playbackAudioStop();
+    syncEditorInteractionLockUi();
+    updatePlaybackControlsState();
+
+    playbackFrameOrder = [];
+    playbackFramePosition = -1;
+    playbackStartFrameIndex = null;
+    playbackStepInFlight = false;
+    playbackStopping = false;
+    setPlaybackPreviewVisible(false);
+    setPlaybackMarkerFrame(null);
+    syncEditorInteractionLockUi();
+    updatePlaybackControlsState();
+
+    emitPlaybackSignal('anim-playback-stop');
+}
+
+function bindPlaybackEvents() {
+    if (!playbackControls) return;
+
+    playbackLoopEnabled = Boolean(playbackLoopToggle && playbackLoopToggle.checked);
+    updatePlaybackControlsState();
+
+    if (playbackPlayButton) {
+        playbackPlayButton.addEventListener('click', () => {
+            if (isPlaybackRunning()) {
+                pausePlaybackPreview();
+                return;
+            }
+            void startPlaybackPreview();
+        });
+    }
+
+    if (playbackStopButton) {
+        playbackStopButton.addEventListener('click', () => {
+            void stopPlaybackPreview({ restoreStartFrame: true });
+        });
+    }
+
+    if (playbackLoopToggle) {
+        playbackLoopToggle.addEventListener('change', () => {
+            playbackLoopEnabled = Boolean(playbackLoopToggle.checked);
+            updatePlaybackControlsState();
+        });
+    }
+}
+
 function renderTimelineFrames() {
     if (!timelineStrip) return;
 
@@ -4049,7 +4670,7 @@ function renderTimelineFrames() {
         }
         button.dataset.frameId = String(frame.id);
         button.dataset.frameIndex = String(frame.index);
-        button.draggable = true;
+        button.draggable = !shouldDisableTimelineControls();
         button.title = `Кадр ${frame.index}`;
 
         const number = document.createElement('span');
@@ -4084,9 +4705,8 @@ function renderTimelineFrames() {
 
     timelineStrip.scrollLeft = previousScroll;
     setTimelineControlsDisabled(isSwitchingFrame || isSaving || isAutosaving);
-    if (deleteFrameButton) {
-        deleteFrameButton.disabled = Boolean(isSwitchingFrame || isSaving || isAutosaving);
-    }
+    setPlaybackMarkerFrame(playbackMarkerFrameIndex);
+    updatePlaybackControlsState();
 }
 
 function setActiveTimelineIndex(frameIndex) {
@@ -4116,6 +4736,18 @@ function updateTimelineFramePreview(framePayload) {
         storedByIndex.updated_at = updatedAt || storedByIndex.updated_at || '';
         if (Number.isFinite(frameIndex) && frameIndex > 0) {
             storedByIndex.index = frameIndex;
+        }
+    }
+
+    const cacheIndex = Number.isFinite(frameIndex) && frameIndex > 0
+        ? frameIndex
+        : (storedByIndex && Number.isFinite(Number(storedByIndex.index)) ? Number(storedByIndex.index) : null);
+    if (Number.isFinite(cacheIndex) && cacheIndex > 0) {
+        const cacheEntry = getPlaybackFrameCacheEntry(cacheIndex);
+        if (cacheEntry) {
+            cacheEntry.imageUrl = previewUrl ? normalizeAssetUrl(previewUrl) : '';
+            cacheEntry.image = null;
+            cacheEntry.promise = null;
         }
     }
 
@@ -4169,6 +4801,7 @@ async function loadTimelineFrames() {
             throw new Error('Не удалось загрузить кадры.');
         }
         timelineFrames = Array.isArray(data.frames) ? data.frames : [];
+        playbackFrameImageCache.clear();
         syncCurrentFrameIdFromTimeline();
         renderTimelineFrames();
     } catch (error) {
@@ -4217,7 +4850,11 @@ async function loadFrameByIndex(targetIndex) {
         fillBackgroundLayerIfNeeded();
 
         setActiveTimelineIndex(currentFrameIndex);
+        if (isPlaybackSessionActive()) {
+            setPlaybackMarkerFrame(currentFrameIndex);
+        }
         updateSaveButtonState();
+        updatePlaybackControlsState();
         updateHistoryPanel();
         prefetchOnionFramesForCurrent();
         requestOnionSkinRender();
@@ -4235,6 +4872,7 @@ async function loadFrameByIndex(targetIndex) {
 }
 
 async function switchToFrameIndex(targetIndex) {
+    if (shouldDisableTimelineControls()) return;
     const index = Number(targetIndex);
     if (!Number.isFinite(index) || index <= 0) return;
     if (index === currentFrameIndex) return;
@@ -4250,6 +4888,7 @@ async function switchToFrameIndex(targetIndex) {
 }
 
 async function createFrameOnServer(options = {}) {
+    if (shouldDisableTimelineControls()) return;
     if (!frameCreateUrl) return;
     if (isSwitchingFrame) return;
 
@@ -4279,6 +4918,7 @@ async function createFrameOnServer(options = {}) {
         }
 
         timelineFrames = Array.isArray(data.frames) ? data.frames : timelineFrames;
+        playbackFrameImageCache.clear();
         currentFrameIndex = Number(data.active_index) || currentFrameIndex;
         currentFrameId = data.frame && data.frame.id ? Number(data.frame.id) : currentFrameId;
         renderTimelineFrames();
@@ -4293,6 +4933,7 @@ async function createFrameOnServer(options = {}) {
 }
 
 async function deleteCurrentFrameOnServer() {
+    if (shouldDisableTimelineControls()) return;
     if (isSwitchingFrame) return;
     const deleteUrl = getFrameDeleteUrl(currentFrameIndex);
     if (!deleteUrl) return;
@@ -4324,6 +4965,7 @@ async function deleteCurrentFrameOnServer() {
         }
 
         timelineFrames = Array.isArray(data.frames) ? data.frames : [];
+        playbackFrameImageCache.clear();
         const nextIndex = Number(data.active_index) || 1;
         currentFrameId = null;
         resetOnionFrameCache();
@@ -4339,6 +4981,7 @@ async function deleteCurrentFrameOnServer() {
 }
 
 async function saveFrameOrder(orderedIds) {
+    if (shouldDisableTimelineControls()) return;
     if (!frameReorderUrl) return;
     if (!Array.isArray(orderedIds) || orderedIds.length < 2) return;
 
@@ -4359,6 +5002,7 @@ async function saveFrameOrder(orderedIds) {
 
         const activeId = currentFrameId;
         timelineFrames = Array.isArray(data.frames) ? data.frames : timelineFrames;
+        playbackFrameImageCache.clear();
         if (activeId) {
             const activeFrame = getTimelineFrameById(activeId);
             if (activeFrame) {
@@ -4378,18 +5022,21 @@ async function saveFrameOrder(orderedIds) {
 function bindTimelineEvents() {
     if (addFrameButton) {
         addFrameButton.addEventListener('click', () => {
+            if (shouldDisableTimelineControls()) return;
             createFrameOnServer({ duplicate: false });
         });
     }
 
     if (duplicateFrameButton) {
         duplicateFrameButton.addEventListener('click', () => {
+            if (shouldDisableTimelineControls()) return;
             createFrameOnServer({ duplicate: true });
         });
     }
 
     if (deleteFrameButton) {
         deleteFrameButton.addEventListener('click', () => {
+            if (shouldDisableTimelineControls()) return;
             deleteCurrentFrameOnServer();
         });
     }
@@ -4397,6 +5044,7 @@ function bindTimelineEvents() {
     if (!timelineStrip) return;
 
     timelineStrip.addEventListener('click', (event) => {
+        if (shouldDisableTimelineControls()) return;
         const item = event.target.closest('.timeline-frame');
         if (!item) return;
         const index = Number(item.dataset.frameIndex);
@@ -4405,6 +5053,10 @@ function bindTimelineEvents() {
     });
 
     timelineStrip.addEventListener('dragstart', (event) => {
+        if (shouldDisableTimelineControls()) {
+            event.preventDefault();
+            return;
+        }
         const item = event.target.closest('.timeline-frame');
         if (!item) return;
         dragFrameId = Number(item.dataset.frameId);
@@ -4423,6 +5075,7 @@ function bindTimelineEvents() {
     });
 
     timelineStrip.addEventListener('dragover', (event) => {
+        if (shouldDisableTimelineControls()) return;
         event.preventDefault();
         const dragging = timelineStrip.querySelector('.timeline-frame.is-dragging');
         const target = event.target.closest('.timeline-frame');
@@ -4437,6 +5090,7 @@ function bindTimelineEvents() {
     });
 
     timelineStrip.addEventListener('drop', (event) => {
+        if (shouldDisableTimelineControls()) return;
         event.preventDefault();
         const orderedIds = [...timelineStrip.querySelectorAll('.timeline-frame')]
             .map((item) => Number(item.dataset.frameId))
@@ -4688,6 +5342,7 @@ function stopPan() {
 }
 
 function handlePointerDown(event) {
+    if (isEditingLockedByPlayback()) return;
     // Средняя кнопка мыши (колёсико): временная панорама без смены инструмента.
     if (event.button === 1) {
         event.preventDefault();
@@ -4766,6 +5421,7 @@ function handlePointerDown(event) {
 }
 
 function handlePointerMove(event) {
+    if (isEditingLockedByPlayback()) return;
     if (isTransformingSelection) {
         updateSelectionTransform(event);
         return;
@@ -4817,6 +5473,7 @@ function handlePointerMove(event) {
 }
 
 function handlePointerUp(event) {
+    if (isEditingLockedByPlayback()) return;
     pendingCanvasStartFromOutside = null;
     if (isTransformingSelection) {
         isTransformingSelection = false;
@@ -4884,6 +5541,7 @@ function handlePointerUp(event) {
 }
 
 function handlePointerLeave() {
+    if (isEditingLockedByPlayback()) return;
     hideEyedropperZoom();
     hideTransformHint();
     setCanvasCursorOverride(null);
@@ -4891,6 +5549,10 @@ function handlePointerLeave() {
 }
 
 function handleWindowPointerDown(event) {
+    if (isEditingLockedByPlayback()) {
+        pendingCanvasStartFromOutside = null;
+        return;
+    }
     if (!event) return;
     if (event.button !== 0) return;
 
@@ -4928,6 +5590,7 @@ function handleWindowPointerDown(event) {
 }
 
 function tryStartCanvasInteractionFromOutside(event) {
+    if (isEditingLockedByPlayback()) return false;
     if (!event || !canvas) return false;
     if (isDrawing || isSelecting || isPanning || isTransformingSelection) return false;
     if (isDraggingLayersPanel || isDraggingHistoryPanel || isDraggingOnionPanel || isOpacityDragging) return false;
@@ -4955,6 +5618,7 @@ function tryStartCanvasInteractionFromOutside(event) {
 }
 
 function handleWindowPointerMove(event) {
+    if (isEditingLockedByPlayback()) return;
     if (!isDrawing && !isSelecting && !isPanning && !isTransformingSelection) {
         tryStartCanvasInteractionFromOutside(event);
         return;
@@ -4963,6 +5627,7 @@ function handleWindowPointerMove(event) {
 }
 
 function handleCanvasDoubleClick(event) {
+    if (isEditingLockedByPlayback()) return;
     if (!selection || isSelecting || isPanning || isTransformingSelection) return;
     const { x, y } = getCanvasCoords(event);
     if (!isPointInSelection(x, y, selection)) {
@@ -4971,6 +5636,7 @@ function handleCanvasDoubleClick(event) {
 }
 
 function handleWheel(event) {
+    if (isEditingLockedByPlayback()) return;
     if (!canvas) return;
     event.preventDefault();
 
@@ -5076,6 +5742,7 @@ function pasteImageFile(file) {
 }
 
 function handlePaste(event) {
+    if (isEditingLockedByPlayback()) return;
     if (!event) return;
     if (isTextInputElement(event.target)) return;
     if (!bufferCtx || !bufferCanvas) return;
@@ -5104,6 +5771,24 @@ function handleKeyDown(event) {
         if (event.code === 'Escape') {
             event.preventDefault();
             closeExportModal();
+        }
+        return;
+    }
+
+    if (isEditingLockedByPlayback()) {
+        if (event.code === 'Space') {
+            event.preventDefault();
+            if (isPlaybackRunning()) {
+                pausePlaybackPreview();
+            } else {
+                void startPlaybackPreview();
+            }
+            return;
+        }
+        if (event.code === 'Escape') {
+            event.preventDefault();
+            void stopPlaybackPreview({ restoreStartFrame: true });
+            return;
         }
         return;
     }
@@ -5204,6 +5889,7 @@ function bindCanvasEvents() {
 function bindToolbarEvents() {
     if (toolbar) {
         toolbar.addEventListener('click', (event) => {
+            if (isEditingLockedByPlayback()) return;
             const button = event.target.closest('[data-tool], [data-select-mode]');
             if (!button) return;
 
@@ -5221,12 +5907,14 @@ function bindToolbarEvents() {
 
     if (colorInput) {
         colorInput.addEventListener('input', (event) => {
+            if (isEditingLockedByPlayback()) return;
             setColor(event.target.value);
         });
     }
 
     if (sizeInput) {
         sizeInput.addEventListener('input', (event) => {
+            if (isEditingLockedByPlayback()) return;
             const value = parseInt(event.target.value, 10) || 1;
             setBrushSize(value);
         });
@@ -5234,6 +5922,7 @@ function bindToolbarEvents() {
 
     if (wandSensitivityInput) {
         wandSensitivityInput.addEventListener('input', (event) => {
+            if (isEditingLockedByPlayback()) return;
             const value = parseInt(event.target.value, 10);
             if (!Number.isNaN(value)) {
                 wandTolerance = clamp(value, 0, 255);
@@ -5249,6 +5938,7 @@ function bindToolbarEvents() {
 function bindLayerEvents() {
     if (addLayerButton) {
         addLayerButton.addEventListener('click', () => {
+            if (isEditingLockedByPlayback()) return;
             createLayer();
         });
     }
@@ -5256,6 +5946,7 @@ function bindLayerEvents() {
     if (!layersList) return;
 
     layersList.addEventListener('pointerdown', (event) => {
+        if (isEditingLockedByPlayback()) return;
         if (event.target.matches('input[type="range"]')) {
             isOpacityDragging = true;
             beginFullHistory('layer_opacity_action');
@@ -5263,6 +5954,7 @@ function bindLayerEvents() {
     });
 
     layersList.addEventListener('click', async (event) => {
+        if (isEditingLockedByPlayback()) return;
         const actionTarget = event.target.closest('[data-action]');
         const action = actionTarget ? actionTarget.dataset.action : null;
         const item = event.target.closest('.layer-item');
@@ -5334,6 +6026,7 @@ function bindLayerEvents() {
     });
 
     layersList.addEventListener('input', (event) => {
+        if (isEditingLockedByPlayback()) return;
         if (event.target.dataset.action !== 'opacity') return;
         const item = event.target.closest('.layer-item');
         if (!item) return;
@@ -5347,6 +6040,7 @@ function bindLayerEvents() {
     });
 
     layersList.addEventListener('change', async (event) => {
+        if (isEditingLockedByPlayback()) return;
         if (event.target.dataset.action !== 'opacity') return;
         const item = event.target.closest('.layer-item');
         if (!item) return;
@@ -5366,6 +6060,10 @@ function bindLayerEvents() {
     });
 
     layersList.addEventListener('dragstart', (event) => {
+        if (isEditingLockedByPlayback()) {
+            event.preventDefault();
+            return;
+        }
         if (isOpacityDragging) {
             event.preventDefault();
             return;
@@ -5397,6 +6095,7 @@ function bindLayerEvents() {
     });
 
     layersList.addEventListener('dragover', (event) => {
+        if (isEditingLockedByPlayback()) return;
         event.preventDefault();
         const dragging = layersList.querySelector('.layer-item.is-dragging');
         const target = event.target.closest('.layer-item');
@@ -5411,6 +6110,7 @@ function bindLayerEvents() {
     });
 
     layersList.addEventListener('drop', (event) => {
+        if (isEditingLockedByPlayback()) return;
         event.preventDefault();
         beginFullHistory('layer_order');
         const orderedIds = [...layersList.querySelectorAll('.layer-item')]
@@ -5981,6 +6681,7 @@ async function initEditor() {
     hydratePanelPositions();
     await loadLayers();
     bindTimelineEvents();
+    bindPlaybackEvents();
     await loadTimelineFrames();
     initOnionSkin();
     syncEditorLayout();
@@ -6000,6 +6701,8 @@ async function initEditor() {
     bindHistoryEvents();
     bindSaveEvents();
     bindExportEvents();
+    syncEditorInteractionLockUi();
+    updatePlaybackControlsState();
     initSaveState();
     hydrateSavedFrame();
     hydratePanelPositions();
@@ -6007,6 +6710,7 @@ async function initEditor() {
         renderLayerList();
         updateHistoryPanel();
         updateLastSavedLabel();
+        updatePlaybackControlsState();
     });
     startLastSavedTicker();
     window.addEventListener('resize', syncEditorLayout);

@@ -626,6 +626,17 @@ body.modal-open {
     max-height: none;
 }
 
+.playback-preview-canvas {
+    position: absolute;
+    top: 12px;
+    left: 12px;
+    pointer-events: none;
+    border-radius: 4px;
+    max-width: none;
+    max-height: none;
+    z-index: 950;
+}
+
 .onion-canvas--prev {
     /* выше слоёв (10+), но ниже overlay (1000) */
     z-index: 900;
@@ -818,6 +829,11 @@ body.modal-open {
     cursor: grab;
 }
 
+.layer-item--locked {
+    cursor: not-allowed;
+    opacity: 0.75;
+}
+
 .layer-item--active {
     border-color: #2563eb;
     background-color: #eff6ff;
@@ -1008,7 +1024,8 @@ body.modal-open {
     background-color: #e5e7eb;
     border-radius: 10px;
     display: flex;
-    align-items: center;
+    flex-direction: column;
+    align-items: stretch;
     gap: 10px;
     max-width: 100%;
 }
@@ -1132,6 +1149,10 @@ body.modal-open {
     scroll-snap-type: x proximity;
 }
 
+.timeline-strip--locked {
+    opacity: 0.85;
+}
+
 .timeline-frame {
     position: relative;
     width: 104px;
@@ -1154,6 +1175,41 @@ body.modal-open {
 .timeline-frame--active {
     border-color: #2563eb;
     box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.22);
+}
+
+.timeline-frame--playback-current {
+    box-shadow:
+        0 0 0 2px rgba(16, 185, 129, 0.35),
+        inset 0 -4px 0 rgba(16, 185, 129, 0.9);
+}
+
+.playback-controls {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.playback-loop {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+    color: #374151;
+    user-select: none;
+}
+
+.playback-loop input[type="checkbox"] {
+    cursor: pointer;
+}
+
+.editor-root--playback .canvas-wrapper {
+    box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.2), 0 10px 15px rgba(0, 0, 0, 0.08);
+}
+
+.editor-root--playback .layer-canvas,
+.editor-root--playback .onion-canvas {
+    visibility: hidden;
 }
 
 .timeline-frame.is-dragging {

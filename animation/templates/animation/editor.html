@@ -369,6 +369,28 @@
             </div>
         </div>
         <div class="timeline-strip" id="timeline-strip" role="list"></div>
+        <div class="playback-controls" id="playback-controls">
+            <button type="button"
+                    class="tool-button tool-button--small"
+                    id="playback-play-button"
+                    aria-label="Play"
+                    data-i18n-attr="aria-label:play"
+                    data-i18n="play">
+                Play
+            </button>
+            <button type="button"
+                    class="tool-button tool-button--small"
+                    id="playback-stop-button"
+                    aria-label="Stop"
+                    data-i18n-attr="aria-label:stop"
+                    data-i18n="stop">
+                Stop
+            </button>
+            <label class="playback-loop">
+                <input type="checkbox" id="playback-loop-toggle">
+                <span data-i18n="loop">Loop</span>
+            </label>
+        </div>
     </div>
 
 </div>
