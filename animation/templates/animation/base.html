@@ -8,34 +8,46 @@
     <script>
         const currentUserIdRaw = document.documentElement.dataset.currentUserId || '';
         window.CURRENT_USER_ID = currentUserIdRaw ? Number(currentUserIdRaw) : null;
-        window.I18N_URL = "{% static 'animation/i18n.json' %}?v=20260211";
+        window.I18N_URL = "{% static 'animation/i18n.json' %}?v=20260330";
     </script>
-    <script src="{% static 'animation/i18n.js' %}?v=20260211" defer></script>
+    <script src="{% static 'animation/i18n.js' %}?v=20260330" defer></script>
 </head>
-<body>
-<header>
-    <h1>AnimStudio</h1>
-    {% if user.is_authenticated %}
-        <p>
-            <span data-i18n="logged_in_as">Вы вошли как</span> {{ user.username }}
-            | <a href="{% url 'logout' %}" data-i18n="log_out">Выйти</a>
-        </p>
-    {% else %}
-        <p>
-            <a href="{% url 'login' %}" data-i18n="log_in">Войти</a>
-        </p>
-    {% endif %}
-    <p class="language-picker">
-        <label>
-            <span data-i18n="language">Язык</span>
-            <select id="language-select">
-                <option value="ru" data-i18n="russian">Русский</option>
-                <option value="uk" data-i18n="ukrainian">Українська</option>
-                <option value="en" data-i18n="english">English</option>
-            </select>
-        </label>
-    </p>
-    <hr>
+<body class="{% block body_class %}{% endblock %}">
+<header class="anim-header">
+    <div class="anim-header__inner">
+        <div class="anim-header__left">
+            {% block header_brand_prefix %}{% endblock %}
+            <a class="anim-header__logo-link" href="{% url 'animation:project_list' %}" aria-label="AnimStudio">
+                <span class="anim-header__logo">AnimStudio</span>
+            </a>
+            {% block header_context %}{% endblock %}
+        </div>
+        <div class="anim-header__right">
+            {% block header_project_controls %}{% endblock %}
+            <div class="anim-header__meta">
+                {% if user.is_authenticated %}
+                    <p class="anim-header__user">
+                        <span data-i18n="logged_in_as">Вы вошли как</span> {{ user.username }}
+                        | <a href="{% url 'logout' %}" data-i18n="log_out">Выйти</a>
+                    </p>
+                {% else %}
+                    <p class="anim-header__user">
+                        <a href="{% url 'login' %}" data-i18n="log_in">Войти</a>
+                    </p>
+                {% endif %}
+                <p class="language-picker anim-header__language">
+                    <label>
+                        <span data-i18n="language">Язык</span>
+                        <select id="language-select">
+                            <option value="ru" data-i18n="russian">Русский</option>
+                            <option value="uk" data-i18n="ukrainian">Українська</option>
+                            <option value="en" data-i18n="english">English</option>
+                        </select>
+                    </label>
+                </p>
+            </div>
+        </div>
+    </div>
 </header>
 
 <main>

@@ -43,14 +43,26 @@ const onionPrevCtx = onionPrevCanvas ? onionPrevCanvas.getContext('2d') : null;
 const onionNextCanvas = document.getElementById('editor-onion-next');
 const onionNextCtx = onionNextCanvas ? onionNextCanvas.getContext('2d') : null;
 
+const toolbarPanel = document.querySelector('.editor-toolbar-panel');
+const toolbarPanelHeader = toolbarPanel ? toolbarPanel.querySelector('.editor-toolbar-panel__header') : null;
 const toolbar = document.querySelector('.editor-toolbar');
+const toolSettingsPopover = document.getElementById('tool-settings-popover');
+const toolSettingsSelectionModes = document.getElementById('tool-settings-selection-modes');
+const toolSettingsSize = document.getElementById('tool-settings-size');
+const toolSettingsOpacity = document.getElementById('tool-settings-opacity');
+const toolSettingsBlur = document.getElementById('tool-settings-blur');
+const toolSettingsSensitivity = document.getElementById('tool-settings-sensitivity');
+const selectToolIcon = document.getElementById('select-tool-icon');
 const canvasWrapper = document.querySelector('.canvas-wrapper');
 const editorMain = document.querySelector('.editor-main');
 const toolButtons = document.querySelectorAll('.tool-button[data-tool]');
 const selectionModeButtons = document.querySelectorAll('[data-select-mode]');
 const wandSensitivityInput = document.getElementById('wand-sensitivity');
 const colorInput = document.getElementById('color-picker');
+const secondaryColorInput = document.getElementById('secondary-color-picker');
 const sizeInput = document.getElementById('brush-size');
+const opacityInput = document.getElementById('brush-opacity');
+const blurInput = document.getElementById('brush-blur');
 const saveButton = document.getElementById('save-project-button');
 const exportButton = document.getElementById('export-project-button');
 const saveStatus = document.getElementById('save-status');
@@ -62,6 +74,7 @@ const exportModalCloseButton = document.getElementById('export-modal-close');
 const exportCancelButton = document.getElementById('export-cancel-button');
 const exportConfirmButton = document.getElementById('export-confirm-button');
 const exportResolutionSelect = document.getElementById('export-resolution');
+const exportFpsField = document.getElementById('export-fps-field');
 const exportFpsInput = document.getElementById('export-fps');
 const exportGifOptions = document.getElementById('export-gif-options');
 const exportGifInfiniteCheckbox = document.getElementById('export-gif-infinite');
@@ -110,10 +123,12 @@ const playbackControls = document.getElementById('playback-controls');
 const playbackPlayButton = document.getElementById('playback-play-button');
 const playbackStopButton = document.getElementById('playback-stop-button');
 const playbackLoopToggle = document.getElementById('playback-loop-toggle');
+const playbackFpsInput = document.getElementById('playback-fps-input');
 
 const projectSaveUrl = (editorRoot && editorRoot.dataset.projectSaveUrl)
     || window.ANIM_PROJECT_SAVE_URL
     || '';
+const projectUpdateUrl = (editorRoot && editorRoot.dataset.projectUpdateUrl) || '';
 const projectExportUrl = (editorRoot && editorRoot.dataset.projectExportUrl)
     || window.ANIM_PROJECT_EXPORT_URL
     || '';
@@ -144,7 +159,8 @@ let currentFramePreviewUrl = (editorRoot && editorRoot.dataset.currentFramePrevi
 let currentFrameUpdatedAt = (editorRoot && editorRoot.dataset.currentFrameUpdatedAt)
     || window.ANIM_CURRENT_FRAME_UPDATED_AT
     || '';
-const projectFps = (() => {
+let currentFrameContentJson = '';
+let projectFps = (() => {
     const raw = editorRoot ? editorRoot.dataset.projectFps : null;
     const parsed = parseInt(raw, 10);
     return Number.isFinite(parsed) && parsed > 0 ? parsed : 12;
@@ -156,7 +172,20 @@ const projectFps = (() => {
 
 let currentTool = TOOL_BRUSH;
 let currentColor = colorInput ? colorInput.value : '#000000';
+let secondaryColor = secondaryColorInput ? secondaryColorInput.value : '#ffffff';
 let currentSize = sizeInput ? parseInt(sizeInput.value, 10) || 4 : 4;
+let brushOpacity = opacityInput ? (parseInt(opacityInput.value, 10) || 100) : 100;
+let brushBlur = blurInput ? parseInt(blurInput.value, 10) || 0 : 0;
+let activeStrokeColor = currentColor;
+let activeStrokeOpacity = 1;
+let activeStrokeBlur = 0;
+let brushStampCanvas = null;
+let brushStampCtx = null;
+let brushStampRadius = 0;
+let brushStampSpacing = 1;
+let brushStampCarryDistance = 0;
+let activePointerButton = 0;
+let toolSettingsAnchorButton = null;
 
 // =======================
 // Состояние слоёв
@@ -169,6 +198,9 @@ let dragLayerId = null;
 let flattenCanvas = null;
 let flattenCtx = null;
 let didInitBackground = false;
+let isDraggingToolbarPanel = false;
+let toolbarPanelOffsetX = 0;
+let toolbarPanelOffsetY = 0;
 let isDraggingLayersPanel = false;
 let layersPanelOffsetX = 0;
 let layersPanelOffsetY = 0;
@@ -262,6 +294,7 @@ let dragFrameId = null;
 let panStartedByMiddle = false;
 let isExporting = false;
 let timelineControlsTemporarilyDisabled = false;
+let isUpdatingProjectFps = false;
 
 const PLAYBACK_IDLE = 'idle';
 const PLAYBACK_PLAYING = 'playing';
@@ -311,6 +344,7 @@ const HISTORY_VISIBLE_ACTIONS = 5;
 const LAYERS_VISIBLE_COUNT = 3;
 const frameHistories = new Map();
 let isHistoryApplying = false;
+let frameHydrationToken = 0;
 let didDrawStroke = false;
 let lastDrawTool = null;
 let historyPending = null;
@@ -346,6 +380,109 @@ const LEGACY_HISTORY_LABEL_KEYS = {
  * Устанавливаем активный инструмент
  * и визуально подсвечиваем кнопку
  */
+function getToolButtonByName(toolName) {
+    for (const button of toolButtons) {
+        if (button.dataset.tool === toolName) return button;
+    }
+    return null;
+}
+
+function getColorByMouseButton(button) {
+    return button === 2 ? secondaryColor : currentColor;
+}
+
+function getToolSettingsConfig(toolName) {
+    const showSelectionModes = toolName === TOOL_SELECT;
+    const showSensitivity = toolName === TOOL_SELECT && selectionMode === SELECT_MAGIC;
+    const showOpacity = toolName === TOOL_BRUSH;
+    const showBlur = toolName === TOOL_BRUSH;
+    const showSize = toolName === TOOL_BRUSH
+        || toolName === TOOL_ERASER
+        || toolName === TOOL_LINE
+        || toolName === TOOL_RECTANGLE
+        || toolName === TOOL_ELLIPSE;
+    return {
+        showSelectionModes,
+        showSensitivity,
+        showOpacity,
+        showBlur,
+        showSize,
+    };
+}
+
+function applyToolSettingsVisibility(toolName) {
+    if (!toolSettingsPopover) return false;
+    const config = getToolSettingsConfig(toolName);
+    if (toolSettingsSelectionModes) {
+        toolSettingsSelectionModes.hidden = !config.showSelectionModes;
+    }
+    if (toolSettingsSize) {
+        toolSettingsSize.hidden = !config.showSize;
+    }
+    if (toolSettingsOpacity) {
+        toolSettingsOpacity.hidden = !config.showOpacity;
+    }
+    if (toolSettingsBlur) {
+        toolSettingsBlur.hidden = !config.showBlur;
+    }
+    if (toolSettingsSensitivity) {
+        toolSettingsSensitivity.hidden = !config.showSensitivity;
+    }
+    return config.showSelectionModes
+        || config.showSize
+        || config.showOpacity
+        || config.showBlur
+        || config.showSensitivity;
+}
+
+function closeToolSettingsPopover() {
+    if (!toolSettingsPopover) return;
+    toolSettingsPopover.hidden = true;
+    toolSettingsAnchorButton = null;
+}
+
+function positionToolSettingsPopover(anchorButton) {
+    if (!toolSettingsPopover || !toolbarPanel || !anchorButton) return;
+    const panelRect = toolbarPanel.getBoundingClientRect();
+    const buttonRect = anchorButton.getBoundingClientRect();
+    const viewportW = window.innerWidth || document.documentElement.clientWidth || 0;
+    const viewportH = window.innerHeight || document.documentElement.clientHeight || 0;
+    const popoverWidth = toolSettingsPopover.offsetWidth || 240;
+    const popoverHeight = toolSettingsPopover.offsetHeight || 120;
+    const margin = 8;
+
+    let top = Math.round(buttonRect.top - panelRect.top);
+    if (Number.isFinite(viewportH) && viewportH > 0) {
+        const maxTopOnViewport = viewportH - popoverHeight - margin;
+        const absoluteTop = clamp(panelRect.top + top, margin, Math.max(margin, maxTopOnViewport));
+        top = Math.round(absoluteTop - panelRect.top);
+    }
+
+    let left = Math.round(buttonRect.right - panelRect.left + 10);
+    if (Number.isFinite(viewportW) && viewportW > 0) {
+        const absoluteLeft = panelRect.left + left;
+        const overflowRight = absoluteLeft + popoverWidth > viewportW - margin;
+        if (overflowRight) {
+            left = Math.round(buttonRect.left - panelRect.left - popoverWidth - 10);
+        }
+    }
+
+    toolSettingsPopover.style.left = `${left}px`;
+    toolSettingsPopover.style.top = `${top}px`;
+}
+
+function openToolSettingsPopover(anchorButton, options = {}) {
+    if (!toolSettingsPopover || !anchorButton) return;
+    const hasContent = applyToolSettingsVisibility(currentTool);
+    if (!hasContent) {
+        closeToolSettingsPopover();
+        return;
+    }
+    toolSettingsPopover.hidden = false;
+    toolSettingsAnchorButton = anchorButton;
+    positionToolSettingsPopover(anchorButton);
+}
+
 function setTool(toolName) {
     if (isEditingLockedByPlayback()) return;
     if (!TOOL_SET.has(toolName)) return;
@@ -373,14 +510,34 @@ function setTool(toolName) {
     if (toolName !== TOOL_EYEDROPPER) {
         hideEyedropperZoom();
     }
+    applyToolSettingsVisibility(toolName);
+    if (toolSettingsPopover && !toolSettingsPopover.hidden) {
+        const anchorButton = getToolButtonByName(toolName) || toolSettingsAnchorButton;
+        if (anchorButton) {
+            openToolSettingsPopover(anchorButton);
+        } else {
+            closeToolSettingsPopover();
+        }
+    }
     updateCursor();
 }
 
 /**
  * Устанавливаем текущий цвет кисти
  */
-function setColor(colorValue) {
+function setColor(colorValue, options = {}) {
+    const useSecondary = Boolean(options.secondary);
+    if (useSecondary) {
+        secondaryColor = colorValue;
+        if (secondaryColorInput && secondaryColorInput.value !== colorValue) {
+            secondaryColorInput.value = colorValue;
+        }
+        return;
+    }
     currentColor = colorValue;
+    if (colorInput && colorInput.value !== colorValue) {
+        colorInput.value = colorValue;
+    }
 }
 
 /**
@@ -388,6 +545,22 @@ function setColor(colorValue) {
  */
 function setBrushSize(size) {
     currentSize = size;
+}
+
+function setBrushOpacity(value) {
+    const parsed = parseInt(value, 10);
+    brushOpacity = Number.isNaN(parsed) ? 100 : clamp(parsed, 1, 100);
+    if (opacityInput && parseInt(opacityInput.value, 10) !== brushOpacity) {
+        opacityInput.value = String(brushOpacity);
+    }
+}
+
+function setBrushBlur(value) {
+    const parsed = parseInt(value, 10);
+    brushBlur = Number.isNaN(parsed) ? 0 : clamp(parsed, 0, 40);
+    if (blurInput && parseInt(blurInput.value, 10) !== brushBlur) {
+        blurInput.value = String(brushBlur);
+    }
 }
 
 function setSelectionMode(mode) {
@@ -404,21 +577,38 @@ function setSelectionMode(mode) {
         }
     });
 
+    if (selectToolIcon) {
+        const modeButton = [...selectionModeButtons].find((button) => button.dataset.selectMode === mode) || null;
+        const modeIcon = modeButton ? modeButton.querySelector('.tool-icon') : null;
+        const nextSrc = modeIcon ? modeIcon.getAttribute('src') : null;
+        if (nextSrc) {
+            selectToolIcon.setAttribute('src', nextSrc);
+        }
+    }
+
     if (wandSensitivityInput) {
         wandSensitivityInput.disabled = mode !== SELECT_MAGIC;
     }
+    applyToolSettingsVisibility(currentTool);
+    if (toolSettingsPopover && !toolSettingsPopover.hidden && toolSettingsAnchorButton) {
+        positionToolSettingsPopover(toolSettingsAnchorButton);
+    }
 }
 
-function getI18nText(key, fallback) {
+function getI18nText(key, fallback, params = null) {
     if (typeof t === 'function') {
         try {
-            const translated = t(key);
+            const translated = t(key, params || undefined);
             if (translated && translated !== key) return translated;
         } catch (error) {
             // ignore and fallback
         }
     }
-    return fallback;
+    if (!params || typeof fallback !== 'string') return fallback;
+    return fallback.replace(/%\{(\w+)\}/g, (_, paramKey) => {
+        const value = params[paramKey];
+        return value === undefined || value === null ? '' : String(value);
+    });
 }
 
 function isPlaybackSessionActive() {
@@ -930,9 +1120,15 @@ function syncToolbarControlsState() {
         button.disabled = isDisabled;
     });
     if (colorInput) colorInput.disabled = isDisabled;
+    if (secondaryColorInput) secondaryColorInput.disabled = isDisabled;
     if (sizeInput) sizeInput.disabled = isDisabled;
+    if (opacityInput) opacityInput.disabled = isDisabled;
+    if (blurInput) blurInput.disabled = isDisabled;
     if (wandSensitivityInput) {
         wandSensitivityInput.disabled = isDisabled || selectionMode !== SELECT_MAGIC;
+    }
+    if (isDisabled) {
+        closeToolSettingsPopover();
     }
 }
 
@@ -1563,12 +1759,23 @@ function isShapeTool(toolName) {
 function applyStrokeStyles(targetCtx, options = {}) {
     if (!targetCtx) return;
     const useEraser = Boolean(options.useEraser);
-    const strokeColor = useEraser ? '#000000' : currentColor;
+    const explicitColor = typeof options.color === 'string' ? options.color : null;
+    const strokeColor = useEraser ? '#000000' : (explicitColor || currentColor);
+    const opacity = Number.isFinite(options.opacity) ? clamp(options.opacity, 0, 1) : 1;
+    const blurStrength = Number.isFinite(options.blur) ? Math.max(0, options.blur) : 0;
     targetCtx.lineCap = 'round';
     targetCtx.lineJoin = 'round';
     targetCtx.lineWidth = currentSize;
     targetCtx.strokeStyle = strokeColor;
     targetCtx.globalCompositeOperation = useEraser ? 'destination-out' : 'source-over';
+    targetCtx.globalAlpha = opacity;
+    if (!useEraser && blurStrength > 0) {
+        targetCtx.shadowBlur = blurStrength;
+        targetCtx.shadowColor = strokeColor;
+    } else {
+        targetCtx.shadowBlur = 0;
+        targetCtx.shadowColor = 'transparent';
+    }
 }
 
 function clearCanvas(targetCtx, targetCanvas) {
@@ -1769,13 +1976,9 @@ function syncResponsiveCanvasSize() {
     const paddingBottom = toPxNumber(rootStyles.paddingBottom);
     const rowGap = toPxNumber(rootStyles.rowGap || rootStyles.gap);
 
-    const headerEl = editorRoot.querySelector('.editor-header');
-    const toolbarEl = editorRoot.querySelector('.editor-toolbar');
     const timelineEl = editorRoot.querySelector('.timeline-wrapper');
 
-    const fixedHeight = (headerEl ? headerEl.offsetHeight : 0)
-        + (toolbarEl ? toolbarEl.offsetHeight : 0)
-        + (timelineEl ? timelineEl.offsetHeight : 0);
+    const fixedHeight = timelineEl ? timelineEl.offsetHeight : 0;
 
     const visibleChildren = [...editorRoot.children].filter((el) => !el.hidden);
     const gapsTotal = rowGap * Math.max(0, visibleChildren.length - 1);
@@ -1824,6 +2027,9 @@ function updateCursor() {
 function startDrawing(x, y, toolName) {
     isDrawing = true;
     activeTool = toolName;
+    activeStrokeColor = getColorByMouseButton(activePointerButton);
+    activeStrokeOpacity = toolName === TOOL_BRUSH ? (brushOpacity / 100) : 1;
+    activeStrokeBlur = toolName === TOOL_BRUSH ? brushBlur : 0;
     lastX = x;
     lastY = y;
     startX = x;
@@ -1833,11 +2039,23 @@ function startDrawing(x, y, toolName) {
         beginLayerHistory(getToolHistoryLabel(toolName));
     }
 
-    if (toolName === TOOL_BRUSH || toolName === TOOL_ERASER) {
+    if (toolName === TOOL_BRUSH) {
         didDrawStroke = true;
         lastDrawTool = toolName;
         markUnsavedChanges();
-        drawStrokeSegment(x, y, x, y, toolName);
+        beginBrushStroke(x, y);
+        return;
+    }
+
+    if (toolName === TOOL_ERASER) {
+        didDrawStroke = true;
+        lastDrawTool = toolName;
+        markUnsavedChanges();
+        drawStrokeSegment(x, y, x, y, toolName, {
+            color: activeStrokeColor,
+            opacity: activeStrokeOpacity,
+            blur: activeStrokeBlur,
+        });
     }
 }
 
@@ -1848,9 +2066,21 @@ function startDrawing(x, y, toolName) {
 function continueDrawing(x, y) {
     if (!isDrawing) return;
 
-    if (activeTool === TOOL_BRUSH || activeTool === TOOL_ERASER) {
+    if (activeTool === TOOL_BRUSH) {
         const target = isShiftPressed ? getSnappedPoint(startX, startY, x, y) : { x, y };
-        drawStrokeSegment(lastX, lastY, target.x, target.y, activeTool);
+        appendBrushStrokePoint(target.x, target.y);
+        lastX = target.x;
+        lastY = target.y;
+        return;
+    }
+
+    if (activeTool === TOOL_ERASER) {
+        const target = isShiftPressed ? getSnappedPoint(startX, startY, x, y) : { x, y };
+        drawStrokeSegment(lastX, lastY, target.x, target.y, activeTool, {
+            color: activeStrokeColor,
+            opacity: activeStrokeOpacity,
+            blur: activeStrokeBlur,
+        });
         lastX = target.x;
         lastY = target.y;
         return;
@@ -1870,6 +2100,10 @@ function continueDrawing(x, y) {
  */
 function stopDrawing() {
     isDrawing = false;
+    activePointerButton = 0;
+    activeStrokeOpacity = 1;
+    activeStrokeBlur = 0;
+    brushStampCarryDistance = 0;
     if (didDrawStroke && (lastDrawTool === TOOL_BRUSH || lastDrawTool === TOOL_ERASER)) {
         commitLayerHistory();
     }
@@ -1878,14 +2112,179 @@ function stopDrawing() {
     activeTool = null;
 }
 
-function drawStrokeSegment(fromX, fromY, toX, toY, toolName) {
+function toRgbaCss(hex, alpha = 1) {
+    const [r, g, b] = hexToRgba(hex);
+    return `rgba(${r}, ${g}, ${b}, ${clamp(alpha, 0, 1)})`;
+}
+
+function computeBrushStampAlpha(targetOpacity, radius, spacing) {
+    const normalizedOpacity = clamp(targetOpacity, 0, 1);
+    if (normalizedOpacity <= 0 || radius <= 0 || spacing <= 0) {
+        return 0;
+    }
+    if (normalizedOpacity >= 1) {
+        return 1;
+    }
+    const overlapCount = Math.max(1, Math.ceil((radius * 2) / spacing));
+    return 1 - Math.pow(1 - normalizedOpacity, 1 / overlapCount);
+}
+
+function ensureBrushStampCanvas(size) {
+    if (!brushStampCanvas) {
+        brushStampCanvas = document.createElement('canvas');
+    }
+    if (brushStampCanvas.width !== size || brushStampCanvas.height !== size) {
+        brushStampCanvas.width = size;
+        brushStampCanvas.height = size;
+        brushStampCtx = brushStampCanvas.getContext('2d');
+    }
+    if (!brushStampCtx) {
+        brushStampCtx = brushStampCanvas.getContext('2d');
+    }
+    return Boolean(brushStampCtx);
+}
+
+function rebuildBrushStamp() {
+    const radius = Math.max(0.75, currentSize / 2);
+    const softness = clamp(activeStrokeBlur / 40, 0, 1);
+    const spacingFactor = softness > 0 ? 0.32 : 0.5;
+    const spacing = Math.max(1, radius * spacingFactor);
+    const stampAlpha = computeBrushStampAlpha(activeStrokeOpacity, radius, spacing);
+    const size = Math.max(4, Math.ceil(radius * 2 + 6));
+
+    if (!ensureBrushStampCanvas(size) || !brushStampCtx) return false;
+
+    brushStampRadius = radius;
+    brushStampSpacing = spacing;
+
+    clearCanvas(brushStampCtx, brushStampCanvas);
+
+    const center = size / 2;
+    const innerRadius = radius * Math.max(0, 1 - softness * 0.92);
+    const colorSolid = toRgbaCss(activeStrokeColor, stampAlpha);
+    const colorTransparent = toRgbaCss(activeStrokeColor, 0);
+
+    brushStampCtx.save();
+    brushStampCtx.fillStyle = colorSolid;
+    if (softness <= 0.001 || innerRadius >= radius - 0.25) {
+        brushStampCtx.beginPath();
+        brushStampCtx.arc(center, center, radius, 0, Math.PI * 2);
+        brushStampCtx.fill();
+    } else {
+        const gradient = brushStampCtx.createRadialGradient(
+            center,
+            center,
+            Math.max(0, innerRadius),
+            center,
+            center,
+            radius,
+        );
+        const innerStop = clamp(innerRadius / radius, 0, 0.98);
+        gradient.addColorStop(0, colorSolid);
+        gradient.addColorStop(innerStop, colorSolid);
+        gradient.addColorStop(1, colorTransparent);
+        brushStampCtx.fillStyle = gradient;
+        brushStampCtx.beginPath();
+        brushStampCtx.arc(center, center, radius, 0, Math.PI * 2);
+        brushStampCtx.fill();
+    }
+    brushStampCtx.restore();
+    return true;
+}
+
+function drawBrushStampAt(targetCtx, x, y) {
+    if (!targetCtx || !brushStampCanvas) return;
+    const offset = brushStampCanvas.width / 2;
+    targetCtx.drawImage(brushStampCanvas, x - offset, y - offset);
+}
+
+function drawBrushStampPoint(x, y) {
+    if (!brushStampCanvas) return;
+    drawBufferWithSelection((targetCtx) => {
+        drawBrushStampAt(targetCtx, x, y);
+    });
+
+    if (!ctx || !canvas) return;
+    if (selection && selection.type === SELECT_MAGIC) {
+        renderScene();
+        return;
+    }
+
+    withTransformedContext(ctx, () => {
+        drawBrushStampAt(ctx, x, y);
+    }, { clipToFrame: true, clipToSelection: true });
+}
+
+function drawBrushSegment(fromX, fromY, toX, toY) {
+    if (!brushStampCanvas) return;
+    const dx = toX - fromX;
+    const dy = toY - fromY;
+    const segmentLength = Math.hypot(dx, dy);
+    if (segmentLength <= 0) return;
+
+    const unitX = dx / segmentLength;
+    const unitY = dy / segmentLength;
+    const positions = [];
+    let distance = brushStampSpacing - brushStampCarryDistance;
+
+    while (distance <= segmentLength) {
+        positions.push({
+            x: fromX + unitX * distance,
+            y: fromY + unitY * distance,
+        });
+        distance += brushStampSpacing;
+    }
+
+    brushStampCarryDistance = (brushStampCarryDistance + segmentLength) % brushStampSpacing;
+
+    if (!positions.length) return;
+
+    drawBufferWithSelection((targetCtx) => {
+        positions.forEach((point) => {
+            drawBrushStampAt(targetCtx, point.x, point.y);
+        });
+    });
+
+    if (!ctx || !canvas) return;
+    if (selection && selection.type === SELECT_MAGIC) {
+        renderScene();
+        return;
+    }
+
+    withTransformedContext(ctx, () => {
+        positions.forEach((point) => {
+            drawBrushStampAt(ctx, point.x, point.y);
+        });
+    }, { clipToFrame: true, clipToSelection: true });
+}
+
+function beginBrushStroke(x, y) {
+    if (!bufferCtx || !bufferCanvas) return;
+    if (!rebuildBrushStamp()) return;
+    brushStampCarryDistance = 0;
+    drawBrushStampPoint(x, y);
+}
+
+function appendBrushStrokePoint(x, y) {
+    drawBrushSegment(lastX, lastY, x, y);
+}
+
+function drawStrokeSegment(fromX, fromY, toX, toY, toolName, options = {}) {
     if (!bufferCtx || !bufferCanvas) return;
     const useEraser = toolName === TOOL_ERASER;
+    const strokeColor = typeof options.color === 'string' ? options.color : activeStrokeColor;
+    const strokeOpacity = Number.isFinite(options.opacity) ? clamp(options.opacity, 0, 1) : activeStrokeOpacity;
+    const strokeBlur = Number.isFinite(options.blur) ? Math.max(0, options.blur) : activeStrokeBlur;
     const isMagicErase = useEraser && selection && selection.type === SELECT_MAGIC && selection.maskCanvas;
 
     drawBufferWithSelection((targetCtx) => {
         targetCtx.save();
-        applyStrokeStyles(targetCtx, { useEraser: isMagicErase ? false : useEraser });
+        applyStrokeStyles(targetCtx, {
+            useEraser: isMagicErase ? false : useEraser,
+            color: strokeColor,
+            opacity: strokeOpacity,
+            blur: strokeBlur,
+        });
         targetCtx.beginPath();
         targetCtx.moveTo(fromX, fromY);
         targetCtx.lineTo(toX, toY);
@@ -1900,7 +2299,12 @@ function drawStrokeSegment(fromX, fromY, toX, toY, toolName) {
     }
     withTransformedContext(ctx, () => {
         ctx.save();
-        applyStrokeStyles(ctx, { useEraser });
+        applyStrokeStyles(ctx, {
+            useEraser,
+            color: strokeColor,
+            opacity: strokeOpacity,
+            blur: strokeBlur,
+        });
         ctx.beginPath();
         ctx.moveTo(fromX, fromY);
         ctx.lineTo(toX, toY);
@@ -1943,7 +2347,7 @@ function drawShapePreview(x, y) {
     renderOverlay();
     drawOverlayWithSelection((targetCtx) => {
         targetCtx.save();
-        applyStrokeStyles(targetCtx, { useEraser: false });
+        applyStrokeStyles(targetCtx, { useEraser: false, color: activeStrokeColor });
         drawShapePath(targetCtx, activeTool, startX, startY, x, y);
         targetCtx.stroke();
         targetCtx.restore();
@@ -1960,7 +2364,7 @@ function commitShape() {
     markUnsavedChanges();
     drawBufferWithSelection((targetCtx) => {
         targetCtx.save();
-        applyStrokeStyles(targetCtx, { useEraser: false });
+        applyStrokeStyles(targetCtx, { useEraser: false, color: activeStrokeColor });
         drawShapePath(targetCtx, activeTool, startX, startY, lastX, lastY);
         targetCtx.stroke();
         targetCtx.restore();
@@ -1971,7 +2375,7 @@ function commitShape() {
     } else {
         withTransformedContext(ctx, () => {
             ctx.save();
-            applyStrokeStyles(ctx, { useEraser: false });
+            applyStrokeStyles(ctx, { useEraser: false, color: activeStrokeColor });
             drawShapePath(ctx, activeTool, startX, startY, lastX, lastY);
             ctx.stroke();
             ctx.restore();
@@ -3214,7 +3618,7 @@ function getCanvasCoords(event) {
     return { x, y };
 }
 
-function pickColorAt(x, y) {
+function pickColorAt(x, y, options = {}) {
     if (!bufferCtx || !bufferCanvas) return;
     const px = Math.floor(x);
     const py = Math.floor(y);
@@ -3223,6 +3627,14 @@ function pickColorAt(x, y) {
     }
     const pixel = bufferCtx.getImageData(px, py, 1, 1).data;
     const hex = rgbToHex(pixel[0], pixel[1], pixel[2]);
+    const useSecondary = Boolean(options.secondary);
+    if (useSecondary) {
+        if (secondaryColorInput) {
+            secondaryColorInput.value = hex;
+        }
+        setColor(hex, { secondary: true });
+        return;
+    }
     if (colorInput) {
         colorInput.value = hex;
     }
@@ -3358,7 +3770,7 @@ function setPixelColor(data, index, color) {
     data[index + 3] = color[3];
 }
 
-function floodFill(startX, startY) {
+function floodFill(startX, startY, options = {}) {
     if (!bufferCtx || !bufferCanvas) return false;
     const width = bufferCanvas.width;
     const height = bufferCanvas.height;
@@ -3378,7 +3790,8 @@ function floodFill(startX, startY) {
         data[startIndex + 2],
         data[startIndex + 3],
     ];
-    const fillColor = hexToRgba(currentColor);
+    const fillColorHex = typeof options.color === 'string' ? options.color : currentColor;
+    const fillColor = hexToRgba(fillColorHex);
 
     if (colorsMatch(data, startIndex, fillColor)) return false;
 
@@ -3483,19 +3896,19 @@ function formatTimeAgo(date) {
     const diffSeconds = Math.max(0, Math.floor((Date.now() - date.getTime()) / 1000));
 
     if (diffSeconds < 5) {
-        return 'несколько секунд назад';
+        return getI18nText('a_few_seconds_ago', 'несколько секунд назад');
     }
     if (diffSeconds < 60) {
-        return `${diffSeconds} сек. назад`;
+        return getI18nText('seconds_ago', '%{count} сек. назад', { count: diffSeconds });
     }
 
     const diffMinutes = Math.floor(diffSeconds / 60);
     if (diffMinutes < 60) {
-        return `${diffMinutes} мин. назад`;
+        return getI18nText('minutes_ago', '%{count} мин. назад', { count: diffMinutes });
     }
 
     const diffHours = Math.floor(diffMinutes / 60);
-    return `${diffHours} ч. назад`;
+    return getI18nText('hours_ago', '%{count} ч. назад', { count: diffHours });
 }
 
 function updateLastSavedLabel() {
@@ -3506,7 +3919,12 @@ function updateLastSavedLabel() {
         return;
     }
 
-    lastSavedLabel.textContent = `Последнее сохранение: ${formatTimeAgo(lastSavedAt)}`;
+    const agoText = formatTimeAgo(lastSavedAt);
+    lastSavedLabel.textContent = getI18nText(
+        'last_saved_label',
+        'Последнее сохранение: %{time}',
+        { time: agoText },
+    );
 }
 
 function updateSaveButtonState() {
@@ -3533,6 +3951,145 @@ function initSaveState() {
     updateSaveButtonState();
 }
 
+function syncProjectFpsUi() {
+    if (editorRoot) {
+        editorRoot.dataset.projectFps = String(projectFps);
+    }
+    if (playbackFpsInput) {
+        playbackFpsInput.value = String(projectFps);
+    }
+    if (exportFpsInput) {
+        exportFpsInput.value = String(projectFps);
+    }
+}
+
+function syncPlaybackFpsControlState() {
+    if (!playbackFpsInput) return;
+    playbackFpsInput.disabled = isUpdatingProjectFps;
+}
+
+async function updateProjectFpsOnServer(nextFps) {
+    if (!projectUpdateUrl) {
+        setSaveStatus(
+            getI18nText('project_fps_update_failed', 'Не удалось обновить FPS проекта.'),
+            'error',
+        );
+        setSaveIndicator('error');
+        return false;
+    }
+
+    if (isUpdatingProjectFps) return false;
+
+    isUpdatingProjectFps = true;
+    syncPlaybackFpsControlState();
+    setSaveStatus(
+        getI18nText('project_fps_updating', 'Обновляем FPS проекта…'),
+        'saving',
+    );
+    setSaveIndicator('saving');
+
+    try {
+        const response = await fetch(projectUpdateUrl, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRFToken': getCsrfToken(),
+            },
+            credentials: 'same-origin',
+            body: JSON.stringify({ fps: nextFps }),
+        });
+
+        let data = null;
+        try {
+            data = await response.json();
+        } catch (error) {
+            data = null;
+        }
+
+        if (!response.ok || !data || !data.ok || !data.project) {
+            const errorMessage = data && data.error ? data.error : 'Не удалось обновить FPS проекта.';
+            throw new Error(errorMessage);
+        }
+
+        projectFps = Number(data.project.fps) || projectFps;
+        syncProjectFpsUi();
+        lastSavedAt = new Date();
+        updateLastSavedLabel();
+
+        if (isPlaybackSessionActive()) {
+            playbackAccumulatedMs = 0;
+            playbackLastTickAt = performance.now();
+            setPlaybackAudioToCurrentFrame();
+        }
+
+        if (hasUnsavedChanges) {
+            setSaveStatus('Есть несохраненные изменения', 'dirty');
+            setSaveIndicator('dirty');
+        } else {
+            setSaveStatus(
+                getI18nText('project_fps_updated', 'FPS проекта обновлён'),
+                'saved',
+            );
+            setSaveIndicator('saved');
+        }
+
+        updatePlaybackControlsState();
+        return true;
+    } catch (error) {
+        console.error('Ошибка обновления FPS проекта', error);
+        let errorText = getI18nText(
+            'project_fps_update_failed',
+            'Не удалось обновить FPS проекта.',
+        );
+        if (error instanceof Error && error.message) {
+            if (error.message === 'invalid_fps') {
+                errorText = getI18nText(
+                    'project_fps_invalid',
+                    'Укажите корректный FPS проекта (1-60).',
+                );
+            } else if (error.message !== 'Failed to fetch') {
+                errorText = error.message;
+            }
+        }
+        if (error instanceof Error && error.message === 'Failed to fetch') {
+            errorText = 'Не удалось связаться с сервером.';
+        }
+        if (playbackFpsInput) {
+            playbackFpsInput.value = String(projectFps);
+        }
+        setSaveStatus(errorText, 'error');
+        setSaveIndicator('error');
+        updatePlaybackControlsState();
+        return false;
+    } finally {
+        isUpdatingProjectFps = false;
+        syncPlaybackFpsControlState();
+    }
+}
+
+async function commitPlaybackFpsInputValue() {
+    if (!playbackFpsInput) return false;
+    const parsed = parseInt(playbackFpsInput.value, 10);
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+        playbackFpsInput.value = String(projectFps);
+        setSaveStatus(
+            getI18nText('project_fps_invalid', 'Укажите корректный FPS проекта (1-60).'),
+            'error',
+        );
+        setSaveIndicator('error');
+        return false;
+    }
+
+    const normalized = clamp(parsed, 1, 60);
+    playbackFpsInput.value = String(normalized);
+    if (normalized === projectFps) {
+        syncProjectFpsUi();
+        return true;
+    }
+
+    return updateProjectFpsOnServer(normalized);
+}
+
 function parseSavedDate(value) {
     if (!value) return null;
     const parsed = new Date(value);
@@ -3549,6 +4106,16 @@ function normalizeAssetUrl(url) {
     } catch (error) {
         return url;
     }
+}
+
+function loadImageAsync(src) {
+    return new Promise((resolve, reject) => {
+        const image = new Image();
+        image.decoding = 'async';
+        image.onload = () => resolve(image);
+        image.onerror = () => reject(new Error('image_load_failed'));
+        image.src = src;
+    });
 }
 
 function getTimelineFrameById(frameId) {
@@ -4436,6 +5003,8 @@ function updatePlaybackControlsState() {
         playbackLoopToggle.checked = playbackLoopEnabled;
         playbackLoopToggle.disabled = playbackStopping;
     }
+
+    syncPlaybackFpsControlState();
 }
 
 function getNextPlaybackFramePosition() {
@@ -4629,6 +5198,7 @@ function bindPlaybackEvents() {
     if (!playbackControls) return;
 
     playbackLoopEnabled = Boolean(playbackLoopToggle && playbackLoopToggle.checked);
+    syncProjectFpsUi();
     updatePlaybackControlsState();
 
     if (playbackPlayButton) {
@@ -4651,6 +5221,23 @@ function bindPlaybackEvents() {
         playbackLoopToggle.addEventListener('change', () => {
             playbackLoopEnabled = Boolean(playbackLoopToggle.checked);
             updatePlaybackControlsState();
+        });
+    }
+
+    if (playbackFpsInput) {
+        playbackFpsInput.addEventListener('change', () => {
+            void commitPlaybackFpsInputValue();
+        });
+        playbackFpsInput.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter') {
+                event.preventDefault();
+                playbackFpsInput.blur();
+            }
+            if (event.key === 'Escape') {
+                event.preventDefault();
+                playbackFpsInput.value = String(projectFps);
+                playbackFpsInput.blur();
+            }
         });
     }
 }
@@ -4831,6 +5418,7 @@ async function loadFrameByIndex(targetIndex) {
 
         const hasPersistedData = Boolean(data.frame && (data.frame.preview_url || data.frame.content_json));
         currentFramePreviewUrl = (data.frame && data.frame.preview_url) ? data.frame.preview_url : '';
+        currentFrameContentJson = (data.frame && data.frame.content_json) ? data.frame.content_json : '';
         currentFrameUpdatedAt = hasPersistedData && data.frame && data.frame.updated_at ? data.frame.updated_at : '';
 
         didInitBackground = false;
@@ -4846,7 +5434,7 @@ async function loadFrameByIndex(targetIndex) {
         }
 
         initSaveState();
-        hydrateSavedFrame();
+        await hydrateSavedFrame();
         fillBackgroundLayerIfNeeded();
 
         setActiveTimelineIndex(currentFrameIndex);
@@ -5139,6 +5727,187 @@ function flattenLayers() {
     return flattenCanvas.toDataURL('image/png');
 }
 
+function getOrderedLayersForStorage() {
+    return [...layers].sort((a, b) => {
+        if (a.order !== b.order) {
+            return a.order - b.order;
+        }
+        return a.id - b.id;
+    });
+}
+
+function getLayerSourceCanvasForStorage(layer, activeCompositeCanvas = null) {
+    if (!layer) return null;
+    if (activeCompositeCanvas && layer.id === activeLayerId) {
+        return activeCompositeCanvas;
+    }
+    return layer.bufferCanvas || null;
+}
+
+function buildFrameContentPayload() {
+    if (!canvas || !layers.length) return null;
+    const activeCompositeCanvas = hasFloatingSelection() ? getActiveLayerCompositeCanvas() : null;
+    const orderedLayers = getOrderedLayersForStorage();
+    const activeLayerIndex = orderedLayers.findIndex((layer) => layer.id === activeLayerId);
+    const currentActiveLayer = getLayerById(activeLayerId);
+    return {
+        version: 1,
+        width: canvas.width,
+        height: canvas.height,
+        active_layer_id: activeLayerId,
+        active_layer_order: currentActiveLayer ? currentActiveLayer.order : null,
+        active_layer_index: activeLayerIndex >= 0 ? activeLayerIndex : null,
+        layers: orderedLayers.map((layer, index) => {
+            ensureLayerCanvases(layer);
+            const sourceCanvas = getLayerSourceCanvasForStorage(layer, activeCompositeCanvas);
+            return {
+                id: layer.id,
+                order: layer.order,
+                index,
+                image_data: sourceCanvas ? sourceCanvas.toDataURL('image/png') : '',
+            };
+        }),
+    };
+}
+
+function parseFrameContentPayload(rawValue) {
+    if (!rawValue || typeof rawValue !== 'string') return null;
+    try {
+        const parsed = JSON.parse(rawValue);
+        if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.layers)) {
+            return null;
+        }
+        return parsed;
+    } catch (error) {
+        console.warn('Не удалось разобрать content_json кадра', error);
+        return null;
+    }
+}
+
+function clearAllLayerBuffers() {
+    layers.forEach((layer) => {
+        ensureLayerCanvases(layer);
+        if (!layer.bufferCtx || !layer.bufferCanvas) return;
+        clearCanvas(layer.bufferCtx, layer.bufferCanvas);
+    });
+}
+
+function resolveStoredActiveLayer(payload, orderedLayers) {
+    const activeLayerById = getLayerById(Number(payload && payload.active_layer_id));
+    if (activeLayerById) {
+        return activeLayerById;
+    }
+
+    const targetOrder = Number(payload && payload.active_layer_order);
+    if (Number.isFinite(targetOrder)) {
+        const activeLayerByOrder = orderedLayers.find((layer) => layer.order === targetOrder);
+        if (activeLayerByOrder) {
+            return activeLayerByOrder;
+        }
+    }
+
+    const targetIndex = Number(payload && payload.active_layer_index);
+    if (Number.isInteger(targetIndex) && targetIndex >= 0 && targetIndex < orderedLayers.length) {
+        return orderedLayers[targetIndex];
+    }
+
+    return orderedLayers.length ? orderedLayers[orderedLayers.length - 1] : null;
+}
+
+function resolveStoredLayerTarget(entry, orderedLayers, usedLayerIds, fallbackIndex) {
+    const entryId = Number(entry && entry.id);
+    if (Number.isFinite(entryId)) {
+        const layerById = getLayerById(entryId);
+        if (layerById && !usedLayerIds.has(layerById.id)) {
+            return layerById;
+        }
+    }
+
+    const entryOrder = Number(entry && entry.order);
+    if (Number.isFinite(entryOrder)) {
+        const layerByOrder = orderedLayers.find(
+            (layer) => layer.order === entryOrder && !usedLayerIds.has(layer.id),
+        );
+        if (layerByOrder) {
+            return layerByOrder;
+        }
+    }
+
+    const entryIndex = Number(entry && entry.index);
+    const targetIndex = Number.isInteger(entryIndex) ? entryIndex : fallbackIndex;
+    if (targetIndex >= 0 && targetIndex < orderedLayers.length) {
+        const layerByIndex = orderedLayers[targetIndex];
+        if (layerByIndex && !usedLayerIds.has(layerByIndex.id)) {
+            return layerByIndex;
+        }
+    }
+
+    return orderedLayers.find((layer) => !usedLayerIds.has(layer.id)) || null;
+}
+
+async function restoreLayersFromContentPayload(payload, expectedToken) {
+    if (!payload || !Array.isArray(payload.layers) || !layers.length) return false;
+
+    const orderedLayers = getOrderedLayersForStorage();
+    const usedLayerIds = new Set();
+    const mappedEntries = payload.layers.map((entry, index) => {
+        const layer = resolveStoredLayerTarget(entry, orderedLayers, usedLayerIds, index);
+        if (layer) {
+            usedLayerIds.add(layer.id);
+        }
+        return { entry, layer };
+    });
+
+    const loadedEntries = await Promise.all(mappedEntries.map(async ({ entry, layer }) => {
+        if (!layer || !entry || !entry.image_data) {
+            return { layer, image: null };
+        }
+        try {
+            const image = await loadImageAsync(entry.image_data);
+            return { layer, image };
+        } catch (error) {
+            console.warn('Не удалось восстановить слой из content_json', error);
+            return { layer, image: null };
+        }
+    }));
+
+    if (expectedToken !== frameHydrationToken) {
+        return false;
+    }
+
+    clearAllLayerBuffers();
+    loadedEntries.forEach(({ layer, image }) => {
+        if (!layer || !image) return;
+        ensureLayerCanvases(layer);
+        if (!layer.bufferCtx || !layer.bufferCanvas) return;
+        layer.bufferCtx.drawImage(image, 0, 0, layer.bufferCanvas.width, layer.bufferCanvas.height);
+    });
+
+    const restoredActiveLayer = resolveStoredActiveLayer(payload, orderedLayers);
+    if (restoredActiveLayer) {
+        activeLayerId = restoredActiveLayer.id;
+    }
+    updateActiveLayerPointers();
+    applyAllLayerStyles();
+    renderLayerList();
+    renderScene();
+    renderOverlay();
+    syncOverlayPlacement();
+
+    return loadedEntries.some(({ image }) => Boolean(image)) || payload.layers.length === 0;
+}
+
+function finalizeHydratedFrameState() {
+    if (!lastSavedAt) {
+        lastSavedAt = new Date();
+    }
+    setSaveIndicator('saved');
+    setSaveStatus('Сохранено', 'saved');
+    updateLastSavedLabel();
+    updateSaveButtonState();
+    ensureHistoryBaseline();
+}
+
 function drawImageOnLayer(layer, image, options = {}) {
     if (!layer || !layer.bufferCtx || !layer.bufferCanvas) return;
     clearCanvas(layer.bufferCtx, layer.bufferCanvas);
@@ -5150,13 +5919,29 @@ function drawImageOnLayer(layer, image, options = {}) {
     renderScene();
 }
 
-function hydrateSavedFrame() {
+async function hydrateSavedFrame() {
     if (!canvas || !layers.length) return;
+    const expectedToken = ++frameHydrationToken;
 
     const savedAt = parseSavedDate(currentFrameUpdatedAt);
     if (savedAt) {
         lastSavedAt = savedAt;
     }
+
+    const contentPayload = parseFrameContentPayload(currentFrameContentJson);
+    if (contentPayload) {
+        const restored = await restoreLayersFromContentPayload(contentPayload, expectedToken);
+        if (expectedToken !== frameHydrationToken) return;
+        if (restored) {
+            finalizeHydratedFrameState();
+            return;
+        }
+    }
+
+    clearAllLayerBuffers();
+    renderScene();
+    renderOverlay();
+    syncOverlayPlacement();
 
     if (!currentFramePreviewUrl) {
         if (lastSavedAt) {
@@ -5164,31 +5949,25 @@ function hydrateSavedFrame() {
             setSaveStatus('Сохранено', 'saved');
             updateLastSavedLabel();
         }
+        ensureHistoryBaseline();
         return;
     }
 
-    const image = new Image();
-    image.onload = () => {
+    try {
+        const image = await loadImageAsync(normalizeAssetUrl(currentFramePreviewUrl));
+        if (expectedToken !== frameHydrationToken) return;
         const backgroundLayer = getBackgroundLayer();
         if (backgroundLayer) {
             drawImageOnLayer(backgroundLayer, image);
         }
-        if (!lastSavedAt) {
-            lastSavedAt = new Date();
-        }
-        setSaveIndicator('saved');
-        setSaveStatus('Сохранено', 'saved');
-        updateLastSavedLabel();
-        updateSaveButtonState();
-        ensureHistoryBaseline();
-    };
-    image.onerror = () => {
-        console.warn('Не удалось загрузить сохраненный кадр');
+        finalizeHydratedFrameState();
+    } catch (error) {
+        if (expectedToken !== frameHydrationToken) return;
+        console.warn('Не удалось загрузить сохраненный кадр', error);
         setSaveIndicator('error');
         setSaveStatus('Не удалось загрузить сохраненный кадр', 'error');
         ensureHistoryBaseline();
-    };
-    image.src = normalizeAssetUrl(currentFramePreviewUrl);
+    }
 }
 
 /**
@@ -5196,8 +5975,12 @@ function hydrateSavedFrame() {
  */
 function getCurrentFramePayload() {
     const flattened = flattenLayers();
-    if (flattened) {
-        return { image_data: flattened };
+    const frameContent = buildFrameContentPayload();
+    if (flattened && frameContent) {
+        return {
+            image_data: flattened,
+            content_json: frameContent,
+        };
     }
     return null;
 }
@@ -5265,6 +6048,9 @@ async function saveCurrentFrame(options = {}) {
 
         hasUnsavedChanges = false;
         lastSavedAt = new Date();
+        currentFrameContentJson = payload.content_json
+            ? JSON.stringify(payload.content_json)
+            : currentFrameContentJson;
         if (data.frame) {
             currentFramePreviewUrl = data.frame.preview_url || currentFramePreviewUrl || '';
             currentFrameUpdatedAt = data.frame.updated_at || currentFrameUpdatedAt || '';
@@ -5351,7 +6137,17 @@ function handlePointerDown(event) {
         return;
     }
 
-    if (event.button !== 0) return;
+    if (event.button !== 0 && event.button !== 2) return;
+    const isRightButton = event.button === 2;
+    if (isRightButton) {
+        event.preventDefault();
+    }
+    const allowRightButton = currentTool === TOOL_BRUSH
+        || currentTool === TOOL_FILL
+        || currentTool === TOOL_EYEDROPPER
+        || isShapeTool(currentTool);
+    if (isRightButton && !allowRightButton) return;
+    activePointerButton = event.button;
     if (isTransformingSelection) return;
     if (isSpacePressed) {
         startPan(event);
@@ -5377,6 +6173,7 @@ function handlePointerDown(event) {
     lastPointerX = x;
     lastPointerY = y;
     if (currentTool === TOOL_SELECT) {
+        if (isRightButton) return;
         logCoordDebug('select-down', event);
         if (selectionMode === SELECT_MAGIC) {
             createMagicWandSelection(x, y);
@@ -5393,7 +6190,7 @@ function handlePointerDown(event) {
 
     if (currentTool === TOOL_EYEDROPPER) {
         updateEyedropperZoom(event);
-        pickColorAt(x, y);
+        pickColorAt(x, y, { secondary: isRightButton });
         hideEyedropperZoom();
         setTool(TOOL_BRUSH);
         return;
@@ -5405,7 +6202,7 @@ function handlePointerDown(event) {
 
     if (currentTool === TOOL_FILL) {
         beginLayerHistory(getToolHistoryLabel(TOOL_FILL));
-        const didFill = floodFill(x, y);
+        const didFill = floodFill(x, y, { color: getColorByMouseButton(activePointerButton) });
         if (didFill) {
             markUnsavedChanges();
             commitLayerHistory();
@@ -5548,6 +6345,20 @@ function handlePointerLeave() {
     hoverTransformHandle = null;
 }
 
+function handleCanvasContextMenu(event) {
+    if (!event) return;
+    if (isEditingLockedByPlayback()) return;
+    const shouldPrevent = currentTool === TOOL_BRUSH
+        || currentTool === TOOL_ERASER
+        || currentTool === TOOL_FILL
+        || isShapeTool(currentTool)
+        || currentTool === TOOL_EYEDROPPER
+        || currentTool === TOOL_SELECT;
+    if (shouldPrevent) {
+        event.preventDefault();
+    }
+}
+
 function handleWindowPointerDown(event) {
     if (isEditingLockedByPlayback()) {
         pendingCanvasStartFromOutside = null;
@@ -5571,7 +6382,8 @@ function handleWindowPointerDown(event) {
     const startedInsideCanvasWrapper = Boolean(canvasWrapper && target && canvasWrapper.contains(target));
 
     const startedOnOverlayPanel = Boolean(
-        (layersPanel && target && layersPanel.contains(target))
+        (toolbarPanel && target && toolbarPanel.contains(target))
+        || (layersPanel && target && layersPanel.contains(target))
         || (historyPanel && target && historyPanel.contains(target))
         || (onionPanel && target && onionPanel.contains(target)),
     );
@@ -5579,7 +6391,7 @@ function handleWindowPointerDown(event) {
     const startedOnInteractive = Boolean(
         (target && isTextInputElement(target))
         || (target && target.closest && target.closest('button, a, input, select, textarea, [role="button"]'))
-        || (target && target.closest && target.closest('.editor-toolbar, .timeline-wrapper, .editor-header')),
+        || (target && target.closest && target.closest('.editor-toolbar, .timeline-wrapper, .anim-header')),
     );
 
     const allowStart = !startedOnOverlayPanel
@@ -5593,7 +6405,7 @@ function tryStartCanvasInteractionFromOutside(event) {
     if (isEditingLockedByPlayback()) return false;
     if (!event || !canvas) return false;
     if (isDrawing || isSelecting || isPanning || isTransformingSelection) return false;
-    if (isDraggingLayersPanel || isDraggingHistoryPanel || isDraggingOnionPanel || isOpacityDragging) return false;
+    if (isDraggingToolbarPanel || isDraggingLayersPanel || isDraggingHistoryPanel || isDraggingOnionPanel || isOpacityDragging) return false;
 
     const buttons = typeof event.buttons === 'number' ? event.buttons : 0;
     const leftDown = (buttons & 1) === 1;
@@ -5767,6 +6579,10 @@ function handlePaste(event) {
 }
 
 function handleKeyDown(event) {
+    if (event.code === 'Escape' && toolSettingsPopover && !toolSettingsPopover.hidden) {
+        closeToolSettingsPopover();
+    }
+
     if (isExportModalOpen()) {
         if (event.code === 'Escape') {
             event.preventDefault();
@@ -5869,6 +6685,7 @@ function bindCanvasEvents() {
     canvas.addEventListener('mouseleave', handlePointerLeave);
     canvas.addEventListener('dblclick', handleCanvasDoubleClick);
     canvas.addEventListener('wheel', handleWheel, { passive: false });
+    canvas.addEventListener('contextmenu', handleCanvasContextMenu);
 
     window.addEventListener('mouseup', handlePointerUp);
     window.addEventListener('mousemove', handleWindowPointerMove);
@@ -5890,18 +6707,82 @@ function bindToolbarEvents() {
     if (toolbar) {
         toolbar.addEventListener('click', (event) => {
             if (isEditingLockedByPlayback()) return;
-            const button = event.target.closest('[data-tool], [data-select-mode]');
-            if (!button) return;
-
-            const toolName = button.dataset.tool;
-            const modeName = button.dataset.selectMode;
-
-            if (toolName && TOOL_SET.has(toolName)) {
-                setTool(toolName);
-            } else if (modeName) {
+            const modeButton = event.target.closest('[data-select-mode]');
+            if (modeButton) {
+                const modeName = modeButton.dataset.selectMode;
+                if (!modeName) return;
                 setSelectionMode(modeName);
                 setTool(TOOL_SELECT);
+                const selectButton = getToolButtonByName(TOOL_SELECT);
+                if (selectButton) {
+                    openToolSettingsPopover(selectButton, { forceVisible: true });
+                }
+                return;
             }
+
+            const toolButton = event.target.closest('[data-tool]');
+            if (!toolButton) return;
+            const toolName = toolButton.dataset.tool;
+            if (!toolName || !TOOL_SET.has(toolName)) return;
+            setTool(toolName);
+            const hasSettings = applyToolSettingsVisibility(toolName);
+            if (hasSettings) {
+                openToolSettingsPopover(toolButton);
+            } else {
+                closeToolSettingsPopover();
+            }
+        });
+
+        toolbar.addEventListener('contextmenu', (event) => {
+            if (isEditingLockedByPlayback()) return;
+            const toolButton = event.target.closest('[data-tool]');
+            if (!toolButton) return;
+            const toolName = toolButton.dataset.tool;
+            if (!toolName || !TOOL_SET.has(toolName)) return;
+            event.preventDefault();
+            setTool(toolName);
+            openToolSettingsPopover(toolButton, { forceVisible: true });
+        });
+    }
+
+    if (toolSettingsPopover) {
+        toolSettingsPopover.addEventListener('click', (event) => {
+            if (isEditingLockedByPlayback()) return;
+            const modeButton = event.target.closest('[data-select-mode]');
+            if (!modeButton) return;
+            const modeName = modeButton.dataset.selectMode;
+            if (!modeName) return;
+            setSelectionMode(modeName);
+            setTool(TOOL_SELECT);
+            const selectButton = getToolButtonByName(TOOL_SELECT);
+            if (selectButton) {
+                openToolSettingsPopover(selectButton, { forceVisible: true });
+            }
+        });
+
+        toolSettingsPopover.addEventListener('contextmenu', (event) => {
+            event.preventDefault();
+        });
+    }
+
+    document.addEventListener('mousedown', (event) => {
+        if (!toolSettingsPopover || toolSettingsPopover.hidden) return;
+        const target = event.target;
+        if (!target || target.nodeType !== 1) return;
+        if (toolSettingsPopover.contains(target)) return;
+        if (toolbar && toolbar.contains(target)) return;
+        closeToolSettingsPopover();
+    });
+
+    window.addEventListener('resize', () => {
+        if (!toolSettingsPopover || toolSettingsPopover.hidden || !toolSettingsAnchorButton) return;
+        positionToolSettingsPopover(toolSettingsAnchorButton);
+    });
+
+    if (toolbarPanel) {
+        toolbarPanel.addEventListener('scroll', () => {
+            if (!toolSettingsPopover || toolSettingsPopover.hidden || !toolSettingsAnchorButton) return;
+            positionToolSettingsPopover(toolSettingsAnchorButton);
         });
     }
 
@@ -5912,11 +6793,32 @@ function bindToolbarEvents() {
         });
     }
 
+    if (secondaryColorInput) {
+        secondaryColorInput.addEventListener('input', (event) => {
+            if (isEditingLockedByPlayback()) return;
+            setColor(event.target.value, { secondary: true });
+        });
+    }
+
     if (sizeInput) {
         sizeInput.addEventListener('input', (event) => {
             if (isEditingLockedByPlayback()) return;
             const value = parseInt(event.target.value, 10) || 1;
             setBrushSize(value);
+        });
+    }
+
+    if (opacityInput) {
+        opacityInput.addEventListener('input', (event) => {
+            if (isEditingLockedByPlayback()) return;
+            setBrushOpacity(event.target.value);
+        });
+    }
+
+    if (blurInput) {
+        blurInput.addEventListener('input', (event) => {
+            if (isEditingLockedByPlayback()) return;
+            setBrushBlur(event.target.value);
         });
     }
 
@@ -6228,6 +7130,15 @@ function applyPanelPosition(panelEl, position) {
 function hydratePanelPositions() {
     if (!editorMain) return;
 
+    const storedToolsPos = loadPanelPosition('tools');
+    const normalizedTools = normalizeLoadedPanelPosition(storedToolsPos);
+    if (toolbarPanel && normalizedTools.position) {
+        applyPanelPosition(toolbarPanel, normalizedTools.position);
+        if (normalizedTools.didMigrate) {
+            storePanelPosition('tools', normalizedTools.position);
+        }
+    }
+
     const storedLayersPos = loadPanelPosition('layers');
     const normalizedLayers = normalizeLoadedPanelPosition(storedLayersPos);
     if (layersPanel && normalizedLayers.position) {
@@ -6245,6 +7156,59 @@ function hydratePanelPositions() {
             storePanelPosition('history', normalizedHistory.position);
         }
     }
+}
+
+function startToolbarPanelDrag(event) {
+    if (!toolbarPanel || !toolbarPanelHeader || !editorMain) return;
+    if (event.button !== 0) return;
+    if (event.target.closest('button, input, select, textarea, a')) return;
+    event.preventDefault();
+
+    const mainRect = editorMain.getBoundingClientRect();
+    const panelRect = toolbarPanel.getBoundingClientRect();
+    toolbarPanelOffsetX = event.clientX - panelRect.left;
+    toolbarPanelOffsetY = event.clientY - panelRect.top;
+
+    const left = panelRect.left - mainRect.left;
+    const top = panelRect.top - mainRect.top;
+    toolbarPanel.style.left = `${left}px`;
+    toolbarPanel.style.top = `${top}px`;
+    toolbarPanel.style.right = 'auto';
+    toolbarPanel.style.bottom = 'auto';
+    isDraggingToolbarPanel = true;
+    toolbarPanel.classList.add('is-dragging');
+}
+
+function updateToolbarPanelDrag(event) {
+    if (!isDraggingToolbarPanel || !toolbarPanel || !editorMain) return;
+    const mainRect = editorMain.getBoundingClientRect();
+    const panelWidth = toolbarPanel.offsetWidth;
+    const panelHeight = toolbarPanel.offsetHeight;
+    const maxLeft = Math.max(0, mainRect.width - panelWidth);
+    const maxTop = Math.max(0, mainRect.height - panelHeight);
+    const nextLeft = clamp(event.clientX - mainRect.left - toolbarPanelOffsetX, 0, maxLeft);
+    const nextTop = clamp(event.clientY - mainRect.top - toolbarPanelOffsetY, 0, maxTop);
+    toolbarPanel.style.left = `${nextLeft}px`;
+    toolbarPanel.style.top = `${nextTop}px`;
+    if (toolSettingsPopover && !toolSettingsPopover.hidden && toolSettingsAnchorButton) {
+        positionToolSettingsPopover(toolSettingsAnchorButton);
+    }
+}
+
+function stopToolbarPanelDrag() {
+    if (!isDraggingToolbarPanel) return;
+    isDraggingToolbarPanel = false;
+    if (toolbarPanel) {
+        toolbarPanel.classList.remove('is-dragging');
+        savePanelPosition('tools', toolbarPanel);
+    }
+}
+
+function bindToolbarPanelDrag() {
+    if (!toolbarPanelHeader) return;
+    toolbarPanelHeader.addEventListener('mousedown', startToolbarPanelDrag);
+    window.addEventListener('mousemove', updateToolbarPanelDrag);
+    window.addEventListener('mouseup', stopToolbarPanelDrag);
 }
 
 function startLayersPanelDrag(event) {
@@ -6434,6 +7398,12 @@ function syncGifLoopControls() {
 
 function updateExportOptionsVisibility() {
     const isGif = getSelectedExportFormat() === 'gif';
+    if (exportFpsField) {
+        exportFpsField.hidden = !isGif;
+    }
+    if (exportFpsInput) {
+        exportFpsInput.disabled = !isGif;
+    }
     if (exportGifOptions) {
         exportGifOptions.hidden = !isGif;
     }
@@ -6453,9 +7423,11 @@ function openExportModal() {
     resetExportModalUi();
     exportModal.hidden = false;
     document.body.classList.add('modal-open');
-    if (exportFpsInput) {
+    if (getSelectedExportFormat() === 'gif' && exportFpsInput) {
         exportFpsInput.focus();
         exportFpsInput.select();
+    } else if (exportResolutionSelect) {
+        exportResolutionSelect.focus();
     }
 }
 
@@ -6487,14 +7459,17 @@ async function performProjectExport() {
 
     const format = getSelectedExportFormat();
     const resolution = exportResolutionSelect ? exportResolutionSelect.value : 'original';
-    const fpsRaw = exportFpsInput ? parseInt(exportFpsInput.value, 10) : projectFps;
-    if (!Number.isFinite(fpsRaw) || fpsRaw <= 0) {
-        setExportError('Укажите корректный FPS (1–60).');
-        return;
-    }
-    const fps = clamp(fpsRaw, 1, 60);
-    if (exportFpsInput) {
-        exportFpsInput.value = String(fps);
+    let fps = projectFps;
+    if (format === 'gif') {
+        const fpsRaw = exportFpsInput ? parseInt(exportFpsInput.value, 10) : projectFps;
+        if (!Number.isFinite(fpsRaw) || fpsRaw <= 0) {
+            setExportError('Укажите корректный FPS (1–60).');
+            return;
+        }
+        fps = clamp(fpsRaw, 1, 60);
+        if (exportFpsInput) {
+            exportFpsInput.value = String(fps);
+        }
     }
 
     // Быстрые клиентские подсказки (сервер всё равно проверит).
@@ -6533,9 +7508,9 @@ async function performProjectExport() {
         const payload = {
             format,
             resolution,
-            fps,
         };
         if (format === 'gif') {
+            payload.fps = fps;
             payload.loop_infinite = loopInfinite;
             payload.loop_count = loopCount;
         }
@@ -6679,22 +7654,25 @@ async function initEditor() {
 
     syncCanvasSizes();
     hydratePanelPositions();
-    await loadLayers();
     bindTimelineEvents();
     bindPlaybackEvents();
     await loadTimelineFrames();
     initOnionSkin();
     syncEditorLayout();
-    fillBackgroundLayerIfNeeded();
+    await loadFrameByIndex(currentFrameIndex);
 
     // устанавливаем стартовые значения
     setTool(currentTool);
     setColor(currentColor);
+    setColor(secondaryColor, { secondary: true });
     setBrushSize(currentSize);
+    setBrushOpacity(brushOpacity);
+    setBrushBlur(brushBlur);
     setSelectionMode(selectionMode);
 
     bindCanvasEvents();
     bindToolbarEvents();
+    bindToolbarPanelDrag();
     bindLayerEvents();
     bindLayersPanelDrag();
     bindHistoryPanelDrag();
@@ -6703,8 +7681,6 @@ async function initEditor() {
     bindExportEvents();
     syncEditorInteractionLockUi();
     updatePlaybackControlsState();
-    initSaveState();
-    hydrateSavedFrame();
     hydratePanelPositions();
     window.addEventListener('i18n:language-changed', () => {
         renderLayerList();

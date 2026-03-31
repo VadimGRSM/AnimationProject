@@ -1,55 +1,102 @@
 {% extends 'animation/base.html' %}
 
 {% block title %}Мои проекты{% endblock %}
+{% block body_class %}anim-page anim-page--projects{% endblock %}
 
 {% block content %}
-<h2 data-i18n="my_projects">Мои проекты</h2>
-
-<button type="button"
-        class="project-action"
-        id="create-project-button">
-    <span data-i18n="create_new_project">Создать новый проект</span>
-</button>
-
-<ul class="messages" id="project-messages"{% if not messages %} hidden{% endif %}>
-    {% for message in messages %}
-        <li class="message message--{{ message.tags }}">{{ message }}</li>
-    {% endfor %}
-</ul>
-
-<ul class="project-list" id="project-list">
-    {% for project in projects %}
-        <li class="project-item" data-project-id="{{ project.id }}">
-            <div class="project-info">
-                <strong class="project-title">{{ project.title }}</strong>
-                <span class="project-meta">
-                    ({{ project.width }}x{{ project.height }}, {{ project.fps }} fps)
-                </span>
-            </div>
-            <div class="project-actions">
-                <a class="project-action" href="{% url 'animation:project_editor' project.pk %}">
-                    <span data-i18n="open">Открыть</span>
+<section class="projects-dashboard">
+    <aside class="projects-dashboard__sidebar">
+        <div class="projects-sidebar">
+            <h2 class="projects-sidebar__title" data-i18n="quick_start">Быстрый старт</h2>
+            <div class="projects-sidebar__actions">
+                <button type="button"
+                        class="projects-shortcut projects-shortcut--primary"
+                        id="create-project-button">
+                    <span class="projects-shortcut__icon" aria-hidden="true">+</span>
+                    <span class="projects-shortcut__text" data-i18n="create_new_project">Создать новый проект</span>
+                </button>
+                {% if project_cards %}
+                    <a class="projects-shortcut"
+                       href="{{ project_cards.0.editor_url }}">
+                        <span class="projects-shortcut__icon" aria-hidden="true">▶</span>
+                        <span class="projects-shortcut__text" data-i18n="continue_project">Продолжить проект</span>
+                    </a>
+                {% endif %}
+                <a class="projects-shortcut"
+                   href="#project-list">
+                    <span class="projects-shortcut__icon" aria-hidden="true">▣</span>
+                    <span class="projects-shortcut__text" data-i18n="browse_projects">Открыть проекты</span>
                 </a>
-                <button type="button"
-                        class="project-action js-rename-button"
-                        data-project-id="{{ project.id }}"
-                        data-project-title="{{ project.title }}"
-                        data-rename-url="{% url 'animation:project_rename' project.pk %}">
-                    <span data-i18n="rename">Переименовать</span>
-                </button>
-                <button type="button"
-                        class="project-action project-action--danger js-delete-button"
-                        data-project-title="{{ project.title }}"
-                        data-delete-url="{% url 'animation:project_delete' project.pk %}">
-                    <span data-i18n="delete">Удалить</span>
-                </button>
             </div>
-        </li>
-    {% endfor %}
-    <li class="project-empty" id="project-empty"{% if projects %} hidden{% endif %}>
-        <span data-i18n="no_projects_yet">Проектов пока нет</span>
-    </li>
-</ul>
+        </div>
+    </aside>
+
+    <section class="projects-dashboard__content">
+        <ul class="messages projects-messages" id="project-messages"{% if not messages %} hidden{% endif %}>
+            {% for message in messages %}
+                <li class="message message--{{ message.tags }}">{{ message }}</li>
+            {% endfor %}
+        </ul>
+
+        <div class="projects-section">
+            <div class="projects-section__header">
+                <h2 class="projects-section__title" data-i18n="recent_projects">Последние проекты</h2>
+            </div>
+
+            <ul class="projects-grid" id="project-list">
+                {% for project in project_cards %}
+                    <li class="project-card" data-project-id="{{ project.id }}">
+                        <a class="project-card__cover" href="{{ project.editor_url }}">
+                            {% if project.preview_url %}
+                                <img class="project-card__image" src="{{ project.preview_url }}" alt="{{ project.title }}">
+                            {% else %}
+                                <div class="project-card__placeholder">
+                                    <span class="project-card__placeholder-initial">{{ project.title|slice:":1"|upper }}</span>
+                                </div>
+                            {% endif %}
+                        </a>
+                        <div class="project-card__body">
+                            <div class="project-card__head">
+                                <a class="project-card__title" href="{{ project.editor_url }}">{{ project.title }}</a>
+                                <div class="project-card__menu">
+                                    <button type="button"
+                                            class="project-card__icon-button js-rename-button"
+                                            data-project-id="{{ project.id }}"
+                                            data-project-title="{{ project.title }}"
+                                            data-rename-url="{{ project.rename_url }}"
+                                            aria-label="Переименовать"
+                                            title="Переименовать"
+                                            data-i18n-attr="aria-label:rename, title:rename">
+                                        ⋯
+                                    </button>
+                                </div>
+                            </div>
+                            <div class="project-card__meta">
+                                <span class="project-card__date" data-updated-at="{{ project.updated_at }}"></span>
+                                <span class="project-card__badge">{{ project.fps }} FPS</span>
+                            </div>
+                            <div class="project-card__footer">
+                                <span class="project-card__resolution">{{ project.width }}x{{ project.height }}</span>
+                                <div class="project-card__actions">
+                                    <a class="project-card__action" href="{{ project.editor_url }}" data-i18n="open">Открыть</a>
+                                    <button type="button"
+                                            class="project-card__action project-card__action--danger js-delete-button"
+                                            data-project-title="{{ project.title }}"
+                                            data-delete-url="{{ project.delete_url }}">
+                                        <span data-i18n="delete">Удалить</span>
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </li>
+                {% endfor %}
+                <li class="project-empty project-empty--dashboard" id="project-empty"{% if project_cards %} hidden{% endif %}>
+                    <span data-i18n="no_projects_yet">Проектов пока нет</span>
+                </li>
+            </ul>
+        </div>
+    </section>
+</section>
 
 <div class="modal" id="create-modal" hidden>
     <div class="modal__overlay" data-modal-close></div>
@@ -133,7 +180,7 @@
     </div>
 </div>
 
-<div class="modal" id="delete-modal" hidden>
+<div class="modal modal--danger" id="delete-modal" hidden>
     <div class="modal__overlay" data-modal-close></div>
     <div class="modal__content" role="dialog" aria-modal="true" aria-labelledby="delete-modal-title">
         <div class="modal__header">
@@ -142,7 +189,7 @@
         </div>
         <form method="post" class="modal__body" id="delete-form">
             {% csrf_token %}
-            <p class="modal__text" id="delete-modal-text"></p>
+            <p class="modal__text modal__text--danger" id="delete-modal-text"></p>
             <p class="form-error" id="delete-error" hidden></p>
             <div class="modal__actions">
                 <button type="submit" class="project-action project-action--danger">
@@ -174,6 +221,30 @@
         const messagesList = document.getElementById('project-messages');
         const projectList = document.getElementById('project-list');
         const emptyState = document.getElementById('project-empty');
+
+        const formatProjectDate = (isoValue) => {
+            if (!isoValue) return '';
+            const date = new Date(isoValue);
+            if (Number.isNaN(date.getTime())) {
+                return String(isoValue).slice(0, 10);
+            }
+            const locale = document.documentElement.lang || 'ru';
+            try {
+                return new Intl.DateTimeFormat(locale, {
+                    day: '2-digit',
+                    month: 'short',
+                    year: 'numeric',
+                }).format(date);
+            } catch (error) {
+                return String(isoValue).slice(0, 10);
+            }
+        };
+
+        const hydrateProjectDates = (root = document) => {
+            root.querySelectorAll?.('.project-card__date[data-updated-at]').forEach((node) => {
+                node.textContent = formatProjectDate(node.dataset.updatedAt || '');
+            });
+        };
 
         const getCookie = (name) => {
             if (!document.cookie) return null;
@@ -223,47 +294,93 @@
 
         const createProjectItem = (project) => {
             const item = document.createElement('li');
-            item.className = 'project-item';
+            item.className = 'project-card';
             item.dataset.projectId = project.id;
 
-            const info = document.createElement('div');
-            info.className = 'project-info';
+            const coverLink = document.createElement('a');
+            coverLink.className = 'project-card__cover';
+            coverLink.href = project.editor_url;
 
-            const title = document.createElement('strong');
-            title.className = 'project-title';
-            title.textContent = project.title;
+            if (project.preview_url) {
+                const image = document.createElement('img');
+                image.className = 'project-card__image';
+                image.src = project.preview_url;
+                image.alt = project.title;
+                coverLink.appendChild(image);
+            } else {
+                const placeholder = document.createElement('div');
+                placeholder.className = 'project-card__placeholder';
+                const initial = document.createElement('span');
+                initial.className = 'project-card__placeholder-initial';
+                initial.textContent = (project.title || 'P').charAt(0).toUpperCase();
+                placeholder.appendChild(initial);
+                coverLink.appendChild(placeholder);
+            }
 
-            const meta = document.createElement('span');
-            meta.className = 'project-meta';
-            meta.textContent = `(${project.width}x${project.height}, ${project.fps} fps)`;
+            const body = document.createElement('div');
+            body.className = 'project-card__body';
 
-            info.append(title, meta);
+            const head = document.createElement('div');
+            head.className = 'project-card__head';
 
-            const actions = document.createElement('div');
-            actions.className = 'project-actions';
+            const titleLink = document.createElement('a');
+            titleLink.className = 'project-card__title';
+            titleLink.href = project.editor_url;
+            titleLink.textContent = project.title;
 
-            const openLink = document.createElement('a');
-            openLink.className = 'project-action';
-            openLink.href = project.editor_url;
-            openLink.textContent = t('open');
+            const menu = document.createElement('div');
+            menu.className = 'project-card__menu';
 
             const renameButton = document.createElement('button');
             renameButton.type = 'button';
-            renameButton.className = 'project-action js-rename-button';
+            renameButton.className = 'project-card__icon-button js-rename-button';
             renameButton.dataset.projectId = project.id;
             renameButton.dataset.projectTitle = project.title;
             renameButton.dataset.renameUrl = project.rename_url;
-            renameButton.textContent = t('rename');
+            renameButton.textContent = '⋯';
+            renameButton.title = t('rename');
+            renameButton.setAttribute('aria-label', renameButton.title);
+            menu.appendChild(renameButton);
+            head.append(titleLink, menu);
+
+            const meta = document.createElement('div');
+            meta.className = 'project-card__meta';
+
+            const date = document.createElement('span');
+            date.className = 'project-card__date';
+            date.textContent = formatProjectDate(project.updated_at);
+
+            const fpsBadge = document.createElement('span');
+            fpsBadge.className = 'project-card__badge';
+            fpsBadge.textContent = `${project.fps} FPS`;
+            meta.append(date, fpsBadge);
+
+            const footer = document.createElement('div');
+            footer.className = 'project-card__footer';
+
+            const resolution = document.createElement('span');
+            resolution.className = 'project-card__resolution';
+            resolution.textContent = `${project.width}x${project.height}`;
+
+            const actions = document.createElement('div');
+            actions.className = 'project-card__actions';
+
+            const openLink = document.createElement('a');
+            openLink.className = 'project-card__action';
+            openLink.href = project.editor_url;
+            openLink.textContent = t('open');
 
             const deleteButton = document.createElement('button');
             deleteButton.type = 'button';
-            deleteButton.className = 'project-action project-action--danger js-delete-button';
+            deleteButton.className = 'project-card__action project-card__action--danger js-delete-button';
             deleteButton.dataset.projectTitle = project.title;
             deleteButton.dataset.deleteUrl = project.delete_url;
             deleteButton.textContent = t('delete');
 
-            actions.append(openLink, renameButton, deleteButton);
-            item.append(info, actions);
+            actions.append(openLink, deleteButton);
+            footer.append(resolution, actions);
+            body.append(head, meta, footer);
+            item.append(coverLink, body);
 
             return item;
         };
@@ -317,7 +434,7 @@
             if (deleteForm) {
                 deleteForm.action = deleteUrl;
                 deleteForm.dataset.projectTitle = title;
-                deleteForm.dataset.projectId = button.closest('.project-item')?.dataset.projectId || '';
+                deleteForm.dataset.projectId = button.closest('.project-card')?.dataset.projectId || '';
             }
             if (deleteModalText) {
                 deleteModalText.textContent = t('delete_project_confirm', { title });
@@ -368,6 +485,7 @@
         });
 
         keepSingleMessage();
+        hydrateProjectDates();
 
         if (createForm) {
             createForm.addEventListener('submit', async (event) => {
@@ -453,11 +571,19 @@
                     }
 
                     const updatedTitle = data.title || newTitle;
-                    const item = document.querySelector(`.project-item[data-project-id="${projectId}"]`);
+                    const item = document.querySelector(`.project-card[data-project-id="${projectId}"]`);
                     if (item) {
-                        const titleNode = item.querySelector('.project-title');
+                        const titleNode = item.querySelector('.project-card__title');
                         if (titleNode) {
                             titleNode.textContent = updatedTitle;
+                        }
+                        const image = item.querySelector('.project-card__image');
+                        if (image) {
+                            image.alt = updatedTitle;
+                        }
+                        const placeholderInitial = item.querySelector('.project-card__placeholder-initial');
+                        if (placeholderInitial) {
+                            placeholderInitial.textContent = updatedTitle.charAt(0).toUpperCase();
                         }
                         const renameButton = item.querySelector('.js-rename-button');
                         if (renameButton) {
@@ -509,13 +635,13 @@
                         return;
                     }
 
-                    const item = document.querySelector(`.project-item[data-project-id="${projectId}"]`);
+                    const item = document.querySelector(`.project-card[data-project-id="${projectId}"]`);
                     if (item) {
                         item.remove();
                     }
 
                     if (projectList && emptyState) {
-                        const hasItems = projectList.querySelector('.project-item');
+                        const hasItems = projectList.querySelector('.project-card');
                         emptyState.hidden = Boolean(hasItems);
                     }
 

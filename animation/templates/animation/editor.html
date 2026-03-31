@@ -3,12 +3,62 @@
 
 {% block title %}Редактор проекта {{ project.title }}{% endblock %}
 
+{% block body_class %}anim-page anim-page--editor{% endblock %}
+
+{% block header_brand_prefix %}
+<a class="anim-header__back-link"
+   href="{% url 'animation:project_list' %}"
+   aria-label="К списку проектов"
+   title="К списку проектов"
+   data-i18n-attr="aria-label:back_to_projects, title:back_to_projects">
+    <span aria-hidden="true">‹</span>
+</a>
+{% endblock %}
+
+{% block header_context %}
+<div class="anim-header__project">
+    <span class="anim-header__status-dot save-indicator save-indicator--idle"
+          id="save-indicator"
+          aria-hidden="true"></span>
+    <span class="anim-header__project-title">{{ project.title }}</span>
+</div>
+{% endblock %}
+
+{% block header_project_controls %}
+<div class="anim-header__editor">
+    <div class="editor-save">
+        <div class="save-button-tooltip">
+            <button type="button"
+                    id="save-project-button"
+                    class="tool-button"
+                    disabled
+                    data-i18n="save_project">
+                Сохранить проект
+            </button>
+            <div class="save-status-tooltip">
+                <span class="save-status" id="save-status" aria-live="polite" data-i18n="no_changes">
+                    Нет изменений
+                </span>
+                <span class="save-last-time" id="last-saved-time"></span>
+            </div>
+        </div>
+        <button type="button"
+                id="export-project-button"
+                class="tool-button"
+                data-i18n="export">
+            Экспорт
+        </button>
+    </div>
+</div>
+{% endblock %}
+
 {% block content %}
 <div class="editor-root"
      data-project-id="{{ project.id }}"
      data-project-width="{{ project.width }}"
      data-project-height="{{ project.height }}"
      data-project-fps="{{ project.fps }}"
+     data-project-update-url="{% url 'animation:project_update' project.pk %}"
      data-project-save-url="{% url 'animation:project_save' project.pk %}"
      data-project-export-url="{% url 'animation:project_export' project.pk %}"
      data-frames-list-url="{% url 'animation:frames_list' project.pk %}"
@@ -30,166 +80,175 @@
      data-current-frame-updated-at="{{ current_frame_updated_at }}"
      data-current-frame-index="{{ current_frame_index }}">
 
-    <div class="editor-header">
-        <div class="editor-title">
-            <span class="save-indicator save-indicator--idle"
-                  id="save-indicator"
-                  aria-hidden="true"></span>
-            <h2 class="editor-project-title">{{ project.title }}</h2>
-        </div>
-        <div class="editor-save">
-            <button type="button"
-                    id="save-project-button"
-                    class="tool-button"
-                    disabled
-                    data-i18n="save_project">
-                Сохранить проект
-            </button>
-            <button type="button"
-                    id="export-project-button"
-                    class="tool-button"
-                    data-i18n="export">
-                Экспорт
-            </button>
-            <span class="save-status" id="save-status" aria-live="polite" data-i18n="no_changes">
-                Нет изменений
-            </span>
-            <span class="save-last-time" id="last-saved-time"></span>
-        </div>
-    </div>
-
-    <div class="editor-toolbar">
-        <button type="button"
-                class="tool-button tool-button--active"
-                data-tool="brush"
-                aria-label="Кисть"
-                data-i18n-attr="aria-label:brush">
-            <img class="tool-icon" src="{% static 'animation/icons/brush.svg' %}" alt="">
-        </button>
-
-        <button type="button"
-                class="tool-button"
-                data-tool="eraser"
-                aria-label="Ластик"
-                data-i18n-attr="aria-label:eraser">
-            <img class="tool-icon" src="{% static 'animation/icons/eraser.svg' %}" alt="">
-        </button>
-
-        <button type="button"
-                class="tool-button"
-                data-tool="fill"
-                aria-label="Заливка"
-                data-i18n-attr="aria-label:fill">
-            <img class="tool-icon" src="{% static 'animation/icons/fill.svg' %}" alt="">
-        </button>
-
-        <button type="button"
-                class="tool-button"
-                data-tool="eyedropper"
-                aria-label="Пипетка"
-                data-i18n-attr="aria-label:eyedropper">
-            <img class="tool-icon" src="{% static 'animation/icons/eyedropper.svg' %}" alt="">
-        </button>
-
-        <button type="button"
-                class="tool-button"
-                data-tool="line"
-                aria-label="Линия"
-                data-i18n-attr="aria-label:line">
-            <img class="tool-icon" src="{% static 'animation/icons/line.svg' %}" alt="">
-        </button>
-
-        <button type="button"
-                class="tool-button"
-                data-tool="rectangle"
-                aria-label="Прямоугольник"
-                data-i18n-attr="aria-label:rectangle">
-            <img class="tool-icon" src="{% static 'animation/icons/rectangle.svg' %}" alt="">
-        </button>
-
-        <button type="button"
-                class="tool-button"
-                data-tool="ellipse"
-                aria-label="Окружность"
-                data-i18n-attr="aria-label:ellipse">
-            <img class="tool-icon" src="{% static 'animation/icons/ellipse.svg' %}" alt="">
-        </button>
-
-        <button type="button"
-                class="tool-button"
-                data-tool="pan"
-                aria-label="Панорама"
-                data-i18n-attr="aria-label:pan">
-            <img class="tool-icon" src="{% static 'animation/icons/hand.svg' %}" alt="">
-        </button>
-
-        <button type="button"
-                class="tool-button"
-                data-tool="select"
-                aria-label="Выделение"
-                data-i18n-attr="aria-label:select">
-            <img class="tool-icon" src="{% static 'animation/icons/lasso.svg' %}" alt="">
-        </button>
-
-        <div class="tool-control tool-control--group">
-            <span class="tool-control__label" data-i18n="selection_mode">Режим выделения</span>
-            <button type="button"
-                    class="tool-button tool-button--mode tool-button--active"
-                    data-select-mode="rect"
-                    aria-label="Выделение прямоугольником"
-                    data-i18n-attr="aria-label:rectangle_selection">
-                <img class="tool-icon" src="{% static 'animation/icons/select-rect.svg' %}" alt="">
-            </button>
-            <button type="button"
-                    class="tool-button tool-button--mode"
-                    data-select-mode="ellipse"
-                    aria-label="Выделение окружностью"
-                    data-i18n-attr="aria-label:ellipse_selection">
-                <img class="tool-icon" src="{% static 'animation/icons/select-ellipse.svg' %}" alt="">
-            </button>
-            <button type="button"
-                    class="tool-button tool-button--mode"
-                    data-select-mode="lasso"
-                    aria-label="Выделение лассо"
-                    data-i18n-attr="aria-label:lasso_selection">
-                <img class="tool-icon" src="{% static 'animation/icons/lasso.svg' %}" alt="">
-            </button>
-            <button type="button"
-                    class="tool-button tool-button--mode"
-                    data-select-mode="magic"
-                    aria-label="Волшебная палочка"
-                    data-i18n-attr="aria-label:magic_wand">
-                <img class="tool-icon" src="{% static 'animation/icons/wand.svg' %}" alt="">
-            </button>
-        </div>
-
-        <label class="tool-control tool-control--wand">
-            <span data-i18n="sensitivity">Чувствительность</span>
-            <input type="range"
-                   id="wand-sensitivity"
-                   min="0"
-                   max="255"
-                   value="32">
-        </label>
-
-        <label class="tool-control">
-            <span data-i18n="color">Цвет</span>
-            <input type="color"
-                   id="color-picker"
-                   value="#000000">
-        </label>
-
-        <label class="tool-control">
-            <span data-i18n="size">Размер</span>
-            <input type="range"
-                   id="brush-size"
-                   min="1"
-                   max="50"
-                   value="4">
-        </label>
-    </div>
-
     <div class="editor-main">
+        <aside class="editor-toolbar-panel"
+               aria-label="Панель инструментов">
+            <div class="editor-toolbar-panel__header"></div>
+            <div class="editor-toolbar">
+                <button type="button"
+                        class="tool-button tool-button--active"
+                        data-tool="brush"
+                        aria-label="Кисть"
+                        data-i18n-attr="aria-label:brush">
+                    <img class="tool-icon" src="{% static 'animation/icons/brush.svg' %}" alt="">
+                </button>
+
+                <button type="button"
+                        class="tool-button"
+                        data-tool="eraser"
+                        aria-label="Ластик"
+                        data-i18n-attr="aria-label:eraser">
+                    <img class="tool-icon" src="{% static 'animation/icons/eraser.svg' %}" alt="">
+                </button>
+
+                <button type="button"
+                        class="tool-button"
+                        data-tool="fill"
+                        aria-label="Заливка"
+                        data-i18n-attr="aria-label:fill">
+                    <img class="tool-icon" src="{% static 'animation/icons/fill.svg' %}" alt="">
+                </button>
+
+                <button type="button"
+                        class="tool-button"
+                        data-tool="eyedropper"
+                        aria-label="Пипетка"
+                        data-i18n-attr="aria-label:eyedropper">
+                    <img class="tool-icon" src="{% static 'animation/icons/eyedropper.svg' %}" alt="">
+                </button>
+
+                <button type="button"
+                        class="tool-button"
+                        data-tool="line"
+                        aria-label="Линия"
+                        data-i18n-attr="aria-label:line">
+                    <img class="tool-icon" src="{% static 'animation/icons/line.svg' %}" alt="">
+                </button>
+
+                <button type="button"
+                        class="tool-button"
+                        data-tool="rectangle"
+                        aria-label="Прямоугольник"
+                        data-i18n-attr="aria-label:rectangle">
+                    <img class="tool-icon" src="{% static 'animation/icons/rectangle.svg' %}" alt="">
+                </button>
+
+                <button type="button"
+                        class="tool-button"
+                        data-tool="ellipse"
+                        aria-label="Окружность"
+                        data-i18n-attr="aria-label:ellipse">
+                    <img class="tool-icon" src="{% static 'animation/icons/ellipse.svg' %}" alt="">
+                </button>
+
+                <button type="button"
+                        class="tool-button"
+                        data-tool="pan"
+                        aria-label="Панорама"
+                        data-i18n-attr="aria-label:pan">
+                    <img class="tool-icon" src="{% static 'animation/icons/hand.svg' %}" alt="">
+                </button>
+
+                <button type="button"
+                        class="tool-button"
+                        data-tool="select"
+                        aria-label="Выделение"
+                        data-i18n-attr="aria-label:select">
+                    <img class="tool-icon"
+                         id="select-tool-icon"
+                         src="{% static 'animation/icons/select-rect.svg' %}"
+                         alt="">
+                </button>
+            </div>
+
+            <div class="editor-toolbar-colors">
+                <input type="color"
+                       id="color-picker"
+                       value="#000000"
+                       title="Цвет ЛКМ"
+                       aria-label="Цвет ЛКМ"
+                       data-i18n-attr="title:primary_color, aria-label:primary_color">
+                <input type="color"
+                       id="secondary-color-picker"
+                       value="#ffffff"
+                       title="Цвет ПКМ"
+                       aria-label="Цвет ПКМ"
+                       data-i18n-attr="title:secondary_color, aria-label:secondary_color">
+            </div>
+
+            <div class="tool-settings-popover" id="tool-settings-popover" hidden>
+                <div class="tool-settings-popover__inner">
+                    <div class="tool-control tool-control--group" id="tool-settings-selection-modes" hidden>
+                        <span class="tool-control__label" data-i18n="selection_mode">Режим выделения</span>
+                        <button type="button"
+                                class="tool-button tool-button--mode tool-button--active"
+                                data-select-mode="rect"
+                                aria-label="Выделение прямоугольником"
+                                data-i18n-attr="aria-label:rectangle_selection">
+                            <img class="tool-icon" src="{% static 'animation/icons/select-rect.svg' %}" alt="">
+                        </button>
+                        <button type="button"
+                                class="tool-button tool-button--mode"
+                                data-select-mode="ellipse"
+                                aria-label="Выделение окружностью"
+                                data-i18n-attr="aria-label:ellipse_selection">
+                            <img class="tool-icon" src="{% static 'animation/icons/select-ellipse.svg' %}" alt="">
+                        </button>
+                        <button type="button"
+                                class="tool-button tool-button--mode"
+                                data-select-mode="lasso"
+                                aria-label="Выделение лассо"
+                                data-i18n-attr="aria-label:lasso_selection">
+                            <img class="tool-icon" src="{% static 'animation/icons/lasso.svg' %}" alt="">
+                        </button>
+                        <button type="button"
+                                class="tool-button tool-button--mode"
+                                data-select-mode="magic"
+                                aria-label="Волшебная палочка"
+                                data-i18n-attr="aria-label:magic_wand">
+                            <img class="tool-icon" src="{% static 'animation/icons/wand.svg' %}" alt="">
+                        </button>
+                    </div>
+
+                    <label class="tool-control" id="tool-settings-size" hidden>
+                        <span data-i18n="size">Размер</span>
+                        <input type="range"
+                               id="brush-size"
+                               min="1"
+                               max="50"
+                               value="4">
+                    </label>
+
+                    <label class="tool-control" id="tool-settings-opacity" hidden>
+                        <span data-i18n="opacity">Прозрачность</span>
+                        <input type="range"
+                               id="brush-opacity"
+                               min="1"
+                               max="100"
+                               value="100">
+                    </label>
+
+                    <label class="tool-control" id="tool-settings-blur" hidden>
+                        <span data-i18n="blur">Размытие</span>
+                        <input type="range"
+                               id="brush-blur"
+                               min="0"
+                               max="40"
+                               value="0">
+                    </label>
+
+                    <label class="tool-control tool-control--wand" id="tool-settings-sensitivity" hidden>
+                        <span data-i18n="sensitivity">Чувствительность</span>
+                        <input type="range"
+                               id="wand-sensitivity"
+                               min="0"
+                               max="255"
+                               value="32">
+                    </label>
+                </div>
+            </div>
+        </aside>
+
         <div class="canvas-wrapper">
             <canvas id="editor-canvas"
                     width="{{ project.width }}"
@@ -390,6 +449,17 @@
                 <input type="checkbox" id="playback-loop-toggle">
                 <span data-i18n="loop">Loop</span>
             </label>
+            <label class="playback-fps">
+                <span data-i18n="project_fps">FPS проекта</span>
+                <input type="number"
+                       id="playback-fps-input"
+                       min="1"
+                       max="60"
+                       step="1"
+                       value="{{ project.fps }}"
+                       aria-label="FPS проекта"
+                       data-i18n-attr="aria-label:project_fps">
+            </label>
         </div>
     </div>
 
@@ -435,7 +505,7 @@
                     </select>
                 </label>
 
-                <label class="form-field">
+                <label class="form-field" id="export-fps-field">
                     <span data-i18n="fps">FPS</span>
                     <input type="number"
                            id="export-fps"

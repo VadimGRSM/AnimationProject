@@ -55,6 +55,27 @@ def serialize_frame(frame):
     }
 
 
+def serialize_project_card(project, first_frame=None):
+    frame_payload = serialize_frame(first_frame) if first_frame else {
+        'preview_url': '',
+        'updated_at': project.updated_at.isoformat() if project.updated_at else '',
+        'has_preview': False,
+    }
+    return {
+        'id': project.pk,
+        'title': project.title,
+        'width': project.width,
+        'height': project.height,
+        'fps': project.fps,
+        'updated_at': project.updated_at.isoformat() if project.updated_at else '',
+        'preview_url': frame_payload.get('preview_url', ''),
+        'has_preview': frame_payload.get('has_preview', False),
+        'editor_url': reverse('animation:project_editor', kwargs={'pk': project.pk}),
+        'rename_url': reverse('animation:project_rename', kwargs={'pk': project.pk}),
+        'delete_url': reverse('animation:project_delete', kwargs={'pk': project.pk}),
+    }
+
+
 def ensure_default_layer(frame):
     if frame.layers.exists():
         return
@@ -165,9 +186,14 @@ def reorder_frames(project, ordered_ids=None):
 
 @login_required
 def project_list(request):
-    projects = AnimationProject.objects.filter(owner=request.user)
+    projects = AnimationProject.objects.filter(owner=request.user).prefetch_related('frames').order_by('-updated_at')
+    project_cards = []
+    for project in projects:
+        frames = list(project.frames.all())
+        first_frame = frames[0] if frames else None
+        project_cards.append(serialize_project_card(project, first_frame))
     return render(request, 'animation/project_list.html', {
-        'projects': projects,
+        'project_cards': project_cards,
     })
 
 
@@ -203,16 +229,7 @@ def project_create(request):
         if is_ajax:
             return JsonResponse({
                 'ok': True,
-                'project': {
-                    'id': project.pk,
-                    'title': project.title,
-                    'width': project.width,
-                    'height': project.height,
-                    'fps': project.fps,
-                    'editor_url': reverse('animation:project_editor', kwargs={'pk': project.pk}),
-                    'rename_url': reverse('animation:project_rename', kwargs={'pk': project.pk}),
-                    'delete_url': reverse('animation:project_delete', kwargs={'pk': project.pk}),
-                },
+                'project': serialize_project_card(project, frame),
             })
 
         return redirect('animation:project_editor', pk=project.pk)
@@ -338,6 +355,39 @@ def project_save(request, pk):
 
     project.save(update_fields=['updated_at'])
     return JsonResponse({'ok': True, 'saved_frames': saved_indices})
+
+
+@login_required
+@require_POST
+def project_update(request, pk):
+    project = get_object_or_404(AnimationProject, pk=pk, owner=request.user)
+
+    try:
+        payload = json.loads(request.body.decode('utf-8')) if request.body else {}
+    except json.JSONDecodeError:
+        return JsonResponse({'ok': False, 'error': 'invalid_json'}, status=400)
+
+    if not isinstance(payload, dict):
+        return JsonResponse({'ok': False, 'error': 'invalid_payload'}, status=400)
+
+    if 'fps' not in payload:
+        return JsonResponse({'ok': False, 'error': 'fps_required'}, status=400)
+
+    fps = _parse_int(payload.get('fps'), default_value=None, min_value=1, max_value=60)
+    if fps is None:
+        return JsonResponse({'ok': False, 'error': 'invalid_fps'}, status=400)
+
+    project.fps = fps
+    project.save(update_fields=['fps', 'updated_at'])
+
+    return JsonResponse({
+        'ok': True,
+        'project': {
+            'id': project.pk,
+            'fps': project.fps,
+            'updated_at': project.updated_at.isoformat() if project.updated_at else '',
+        },
+    })
 
 
 @login_required
@@ -873,8 +923,6 @@ def project_export(request, pk):
     resolution_key = _normalize_resolution_key(payload.get('resolution'))
     out_w, out_h = _get_export_size(project, resolution_key)
 
-    fps = _parse_int(payload.get('fps'), default_value=int(project.fps), min_value=1, max_value=60)
-
     frames_qs = project.frames.order_by('index', 'id')
     frames = list(frames_qs)
     total_frames = len(frames)
@@ -898,10 +946,12 @@ def project_export(request, pk):
         }, status=413)
 
     if export_format == 'gif':
+        fps = _parse_int(payload.get('fps'), default_value=int(project.fps), min_value=1, max_value=60)
         loop_infinite = bool(payload.get('loop_infinite', True))
         loop_count = _parse_int(payload.get('loop_count'), default_value=0, min_value=0, max_value=10_000)
         loop_value = 0 if loop_infinite or loop_count == 0 else loop_count
     else:
+        fps = None
         loop_value = None
 
     rel_dir, abs_dir = _ensure_export_dir(request.user.id, project.pk)
@@ -915,7 +965,7 @@ def project_export(request, pk):
 
     if export_format == 'png_zip':
         digits = max(4, len(str(total_frames)))
-        filename = f'{safe_title}_png_seq_{out_w}x{out_h}_{fps}fps.zip'
+        filename = f'{safe_title}_png_seq_{out_w}x{out_h}.zip'
         abs_path = os.path.join(abs_dir, filename)
         try:
             with zipfile.ZipFile(abs_path, mode='w', compression=zipfile.ZIP_DEFLATED) as zf:
