@@ -58,9 +58,17 @@
      data-project-width="{{ project.width }}"
      data-project-height="{{ project.height }}"
      data-project-fps="{{ project.fps }}"
+     data-project-audio-url="{{ project_audio.url }}"
+     data-project-audio-filename="{{ project_audio.filename }}"
+     data-project-audio-duration="{{ project_audio.duration_seconds|default_if_none:'' }}"
+     data-project-audio-start-frame="{{ project_audio.start_frame }}"
+     data-project-audio-segments="{{ project_audio.segments_json|escapejs }}"
      data-project-update-url="{% url 'animation:project_update' project.pk %}"
      data-project-save-url="{% url 'animation:project_save' project.pk %}"
      data-project-export-url="{% url 'animation:project_export' project.pk %}"
+     data-project-audio-info-url="{% url 'animation:project_audio_detail' project.pk %}"
+     data-project-audio-upload-url="{% url 'animation:project_audio_upload' project.pk %}"
+     data-project-audio-delete-url="{% url 'animation:project_audio_detail' project.pk %}"
      data-frames-list-url="{% url 'animation:frames_list' project.pk %}"
      data-frame-detail-url-template="{% url 'animation:frame_detail' project.pk 0 %}"
      data-frame-create-url="{% url 'animation:frame_create' project.pk %}"
@@ -249,32 +257,67 @@
             </div>
         </aside>
 
-        <div class="canvas-wrapper">
-            <canvas id="editor-canvas"
-                    width="{{ project.width }}"
-                    height="{{ project.height }}">
-            </canvas>
-            <canvas id="editor-onion-prev"
-                    class="onion-canvas onion-canvas--prev"
-                    width="{{ project.width }}"
-                    height="{{ project.height }}"
-                    aria-hidden="true"
-                    hidden>
-            </canvas>
-            <canvas id="editor-onion-next"
-                    class="onion-canvas onion-canvas--next"
-                    width="{{ project.width }}"
-                    height="{{ project.height }}"
-                    aria-hidden="true"
-                    hidden>
-            </canvas>
-            <canvas id="editor-overlay"
-                    width="{{ project.width }}"
-                    height="{{ project.height }}"
-                    aria-hidden="true">
-            </canvas>
-            <div class="eyedropper-zoom" id="eyedropper-zoom" aria-hidden="true">
-                <canvas id="eyedropper-zoom-canvas" width="120" height="120"></canvas>
+        <div class="canvas-stage">
+            <div class="canvas-wrapper">
+                <canvas id="editor-canvas"
+                        width="{{ project.width }}"
+                        height="{{ project.height }}">
+                </canvas>
+                <canvas id="editor-onion-prev"
+                        class="onion-canvas onion-canvas--prev"
+                        width="{{ project.width }}"
+                        height="{{ project.height }}"
+                        aria-hidden="true"
+                        hidden>
+                </canvas>
+                <canvas id="editor-onion-next"
+                        class="onion-canvas onion-canvas--next"
+                        width="{{ project.width }}"
+                        height="{{ project.height }}"
+                        aria-hidden="true"
+                        hidden>
+                </canvas>
+                <canvas id="editor-overlay"
+                        width="{{ project.width }}"
+                        height="{{ project.height }}"
+                        aria-hidden="true">
+                </canvas>
+                <div class="eyedropper-zoom" id="eyedropper-zoom" aria-hidden="true">
+                    <canvas id="eyedropper-zoom-canvas" width="120" height="120"></canvas>
+                </div>
+            </div>
+            <div class="playback-controls playback-controls--canvas" id="playback-controls">
+                <button type="button"
+                        class="tool-button tool-button--small"
+                        id="playback-play-button"
+                        aria-label="Play"
+                        data-i18n-attr="aria-label:play"
+                        data-i18n="play">
+                    Play
+                </button>
+                <button type="button"
+                        class="tool-button tool-button--small"
+                        id="playback-stop-button"
+                        aria-label="Stop"
+                        data-i18n-attr="aria-label:stop"
+                        data-i18n="stop">
+                    Stop
+                </button>
+                <label class="playback-loop">
+                    <input type="checkbox" id="playback-loop-toggle">
+                    <span data-i18n="loop">Loop</span>
+                </label>
+                <label class="playback-fps">
+                    <span data-i18n="project_fps">FPS проекта</span>
+                    <input type="number"
+                           id="playback-fps-input"
+                           min="1"
+                           max="60"
+                           step="1"
+                           value="{{ project.fps }}"
+                           aria-label="FPS проекта"
+                           data-i18n-attr="aria-label:project_fps">
+                </label>
             </div>
         </div>
 
@@ -428,38 +471,55 @@
             </div>
         </div>
         <div class="timeline-strip" id="timeline-strip" role="list"></div>
-        <div class="playback-controls" id="playback-controls">
-            <button type="button"
-                    class="tool-button tool-button--small"
-                    id="playback-play-button"
-                    aria-label="Play"
-                    data-i18n-attr="aria-label:play"
-                    data-i18n="play">
-                Play
-            </button>
-            <button type="button"
-                    class="tool-button tool-button--small"
-                    id="playback-stop-button"
-                    aria-label="Stop"
-                    data-i18n-attr="aria-label:stop"
-                    data-i18n="stop">
-                Stop
-            </button>
-            <label class="playback-loop">
-                <input type="checkbox" id="playback-loop-toggle">
-                <span data-i18n="loop">Loop</span>
-            </label>
-            <label class="playback-fps">
-                <span data-i18n="project_fps">FPS проекта</span>
-                <input type="number"
-                       id="playback-fps-input"
-                       min="1"
-                       max="60"
-                       step="1"
-                       value="{{ project.fps }}"
-                       aria-label="FPS проекта"
-                       data-i18n-attr="aria-label:project_fps">
-            </label>
+        <div class="timeline-audio" id="timeline-audio-track">
+            <div class="timeline-audio__toolbar">
+                <div class="timeline-audio__actions">
+                    <button type="button"
+                            class="tool-button tool-button--small"
+                            id="audio-upload-button"
+                            data-i18n="add_audio_file">
+                        Добавить аудио
+                    </button>
+                    <button type="button"
+                            class="tool-button tool-button--small"
+                            id="audio-delete-button"
+                            data-i18n="delete_audio_file">
+                        Удалить аудио
+                    </button>
+                    <button type="button"
+                            class="tool-button tool-button--small"
+                            id="audio-split-button"
+                            data-i18n="split_audio_segment">
+                        Разрезать
+                    </button>
+                    <input type="file"
+                           id="audio-file-input"
+                           accept=".mp3,audio/mpeg,.wav,audio/wav"
+                           hidden>
+                </div>
+            </div>
+            <div class="timeline-audio__lane" id="audio-track-lane">
+                <p class="timeline-audio__empty" id="audio-track-empty" data-i18n="audio_track_empty_hint">
+                    Загрузите одну дорожку MP3 или WAV для всего проекта.
+                </p>
+                <div class="timeline-audio__content" id="audio-track-content">
+                    <div class="timeline-audio__clips" id="audio-track-clips"></div>
+                    <div class="timeline-audio__playhead" id="audio-track-playhead" hidden></div>
+                    <div class="timeline-audio__clip timeline-audio__clip--template" id="audio-track-clip" hidden>
+                        <span class="timeline-audio__clip-handle timeline-audio__clip-handle--start" data-audio-handle="start"></span>
+                        <span class="timeline-audio__clip-content">
+                            <span class="timeline-audio__clip-name" id="audio-track-name">{{ project_audio.filename|default:'Аудиоклип' }}</span>
+                            <span class="timeline-audio__clip-meta" id="audio-track-meta"></span>
+                        </span>
+                        <span class="timeline-audio__clip-handle timeline-audio__clip-handle--end" data-audio-handle="end"></span>
+                    </div>
+                </div>
+            </div>
+            <audio id="editor-audio-track"
+                   data-playback-audio="true"
+                   preload="metadata"
+                   {% if project_audio.url %}src="{{ project_audio.url }}"{% endif %}
+                   hidden></audio>
         </div>
     </div>
 
@@ -492,6 +552,10 @@
                 <label class="export-radio">
                     <input type="radio" name="export-format" value="gif">
                     <span data-i18n="gif_file">GIF‑файл</span>
+                </label>
+                <label class="export-radio">
+                    <input type="radio" name="export-format" value="mp4" {% if not project_audio.has_audio %}disabled{% endif %}>
+                    <span>MP4‑видео с аудио</span>
                 </label>
             </fieldset>
 
