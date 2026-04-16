@@ -24,7 +24,7 @@ MAX_EXPORT_GIF_BYTES = 50 * 1024 * 1024
 MAX_EXPORT_GIF_FRAMES = 250
 MAX_EXPORT_GIF_TOTAL_PIXELS = 200_000_000
 MAX_EXPORT_PNG_ZIP_FRAMES = 2000
-EXPORT_TOKEN_MAX_AGE_SECONDS = 60 * 60  # 1 час
+EXPORT_TOKEN_MAX_AGE_SECONDS = 60 * 60  # 1 hour
 EXPORT_SIGNING_SALT = 'animstudio.export'
 EXPORT_BASE_DIR = 'exports'
 
@@ -82,7 +82,7 @@ def ensure_default_layer(frame):
     Layer.objects.create(
         frame=frame,
         order=1,
-        name='Фон',
+        name='Background',
         visible=True,
         opacity=100,
     )
@@ -121,8 +121,8 @@ def renumber_frames(project):
     if not frames:
         return frames
 
-    # уникальность (project, index) — чтобы не словить конфликты при смене индексов,
-    # сначала уводим индексы во временную область, затем выставляем 1..N.
+    # Keep (project, index) unique while reordering by moving indices
+    # into a temporary range before assigning the final 1..N sequence.
     temp_base = 1_000_000
     temp_updates = []
     for position, frame in enumerate(frames, start=1):
@@ -141,7 +141,7 @@ def renumber_frames(project):
     if final_updates:
         Frame.objects.bulk_update(final_updates, ['index'])
 
-    # возвращаем уже в правильном порядке
+    # Return the frames in the final correct order.
     return list(project.frames.order_by('index', 'id'))
 
 
@@ -201,7 +201,7 @@ def project_list(request):
 def project_create(request):
     if request.method == 'POST':
         is_ajax = request.headers.get('x-requested-with') == 'XMLHttpRequest'
-        title = (request.POST.get('title') or '').strip() or 'Новый проект'
+        title = (request.POST.get('title') or '').strip() or 'New project'
 
         def parse_int(value, default_value):
             try:
@@ -222,7 +222,7 @@ def project_create(request):
             height=height,
         )
 
-        # сразу создаём первый пустой кадр и фон
+        # Create the first empty frame and its background layer immediately.
         frame = Frame.objects.create(project=project, index=1)
         ensure_default_layer(frame)
 
@@ -267,14 +267,14 @@ def project_rename(request, pk):
         if posted_id and str(project.pk) != posted_id:
             if is_ajax:
                 return JsonResponse({'ok': False, 'error': 'invalid_project'}, status=400)
-            messages.error(request, 'Некорректный проект.')
+            messages.error(request, 'Invalid project.')
             return redirect('animation:project_list')
 
         new_title = (request.POST.get('new_title') or '').strip()
         if not new_title:
             if is_ajax:
                 return JsonResponse({'ok': False, 'error': 'empty_title'}, status=400)
-            messages.error(request, 'Название не может быть пустым.')
+            messages.error(request, 'Title cannot be empty.')
             return redirect('animation:project_list')
 
         project.title = new_title
@@ -285,7 +285,7 @@ def project_rename(request, pk):
                 'project_id': project.pk,
                 'title': project.title,
             })
-        messages.success(request, 'Название проекта обновлено.')
+        messages.success(request, 'Project title updated.')
         return redirect('animation:project_list')
 
     return render(request, 'animation/project_rename.html', {
@@ -306,7 +306,7 @@ def project_delete(request, pk):
             'project_id': pk,
             'title': project_title,
         })
-    messages.success(request, f'Проект «{project_title}» удалён.')
+    messages.success(request, f'Project "{project_title}" deleted.')
     return redirect('animation:project_list')
 
 
@@ -449,7 +449,7 @@ def frame_create(request, pk):
             if source is not None:
                 new_frame.content_json = source.content_json or ''
 
-                # копируем превью (файл) если оно есть
+                # Copy the preview image file when it exists.
                 if source.preview_image:
                     try:
                         source.preview_image.open('rb')
@@ -467,7 +467,7 @@ def frame_create(request, pk):
 
                 new_frame.save()
 
-                # копируем слои (метаданные)
+                # Copy layer metadata.
                 source_layers = list(source.layers.order_by('order', 'id'))
                 if source_layers:
                     Layer.objects.bulk_create([
@@ -506,7 +506,7 @@ def frame_delete(request, pk, index):
     with transaction.atomic():
         frame.delete()
 
-        # если это был последний кадр — создаём новый пустой, чтобы проект не остался без кадров
+        # If this was the last frame, create a new empty one so the project always has a frame.
         if project.frames.count() == 0:
             new_frame = Frame.objects.create(project=project, index=1)
             ensure_default_layer(new_frame)
@@ -515,7 +515,7 @@ def frame_delete(request, pk, index):
             frames = renumber_frames(project)
         project.save(update_fields=['updated_at'])
 
-    # ближайший кадр: по позиции (после перенумерации)
+    # Activate the nearest frame based on position after renumbering.
     next_total = len(frames)
     next_active_index = min(max(1, index), next_total) if next_total else 1
 
@@ -566,10 +566,10 @@ def frame_save(request, pk, index):
     try:
         payload = json.loads(request.body.decode('utf-8'))
     except json.JSONDecodeError:
-        return JsonResponse({'ok': False, 'error': 'Некорректный JSON.'}, status=400)
+        return JsonResponse({'ok': False, 'error': 'Invalid JSON.'}, status=400)
 
     if not isinstance(payload, dict):
-        return JsonResponse({'ok': False, 'error': 'Некорректный формат данных.'}, status=400)
+        return JsonResponse({'ok': False, 'error': 'Invalid payload format.'}, status=400)
 
     image_data = payload.get('image_data')
     content_json = payload.get('content_json')
@@ -580,11 +580,11 @@ def frame_save(request, pk, index):
             image_data = None
 
     if image_data is None and content_json is None:
-        return JsonResponse({'ok': False, 'error': 'Нет данных для сохранения.'}, status=400)
+        return JsonResponse({'ok': False, 'error': 'No data provided for saving.'}, status=400)
 
     if image_data is not None:
         if not isinstance(image_data, str):
-            return JsonResponse({'ok': False, 'error': 'Некорректные данные изображения.'}, status=400)
+            return JsonResponse({'ok': False, 'error': 'Invalid image data.'}, status=400)
 
         header = ''
         encoded = image_data
@@ -592,22 +592,22 @@ def frame_save(request, pk, index):
             try:
                 header, encoded = image_data.split(',', 1)
             except ValueError:
-                return JsonResponse({'ok': False, 'error': 'Некорректные данные изображения.'}, status=400)
+                return JsonResponse({'ok': False, 'error': 'Invalid image data.'}, status=400)
             encoded = encoded.strip()
 
         try:
             decoded = base64.b64decode(encoded, validate=True)
         except (BinasciiError, ValueError):
-            return JsonResponse({'ok': False, 'error': 'Некорректные данные изображения.'}, status=400)
+            return JsonResponse({'ok': False, 'error': 'Invalid image data.'}, status=400)
 
         if not decoded:
-            return JsonResponse({'ok': False, 'error': 'Пустое изображение.'}, status=400)
+            return JsonResponse({'ok': False, 'error': 'The image is empty.'}, status=400)
 
         if len(decoded) > MAX_PREVIEW_IMAGE_BYTES:
             max_mb = MAX_PREVIEW_IMAGE_BYTES // (1024 * 1024)
             return JsonResponse({
                 'ok': False,
-                'error': f'Изображение слишком большое. Максимум {max_mb} МБ.',
+                'error': f'Image is too large. Maximum size is {max_mb} MB.',
             }, status=413)
 
         extension = 'png'
@@ -630,7 +630,7 @@ def frame_save(request, pk, index):
             try:
                 frame.content_json = json.dumps(content_json, ensure_ascii=False)
             except (TypeError, ValueError):
-                return JsonResponse({'ok': False, 'error': 'Некорректные данные JSON.'}, status=400)
+                return JsonResponse({'ok': False, 'error': 'Invalid JSON data.'}, status=400)
 
     frame.save()
     project.save(update_fields=['updated_at'])
@@ -667,7 +667,7 @@ def frame_layers(request, pk, index):
 
     name = (payload.get('name') or '').strip()
     if not name:
-        name = f'Слой {frame.layers.count() + 1}'
+        name = f'Layer {frame.layers.count() + 1}'
 
     last_layer = frame.layers.order_by('-order', '-id').first()
     next_order = (last_layer.order if last_layer else 0) + 1
@@ -807,7 +807,7 @@ def _get_export_size(project, resolution_key):
 
 
 def _get_pillow_resample():
-    # Pillow 9+: Image.Resampling.LANCZOS; старые версии: Image.LANCZOS
+    # Pillow 9+: Image.Resampling.LANCZOS; older versions: Image.LANCZOS
     try:
         from PIL import Image  # pylint: disable=import-outside-toplevel
         return Image.Resampling.LANCZOS
@@ -823,7 +823,7 @@ def _load_frame_rgba(frame, fallback_size):
     try:
         from PIL import Image  # pylint: disable=import-outside-toplevel
     except Exception as exc:
-        raise RuntimeError('Pillow не установлен. Установите пакет Pillow для экспорта изображений.') from exc
+        raise RuntimeError('Pillow is not installed. Install Pillow to export images.') from exc
 
     width, height = fallback_size
     if frame.preview_image:
@@ -833,7 +833,7 @@ def _load_frame_rgba(frame, fallback_size):
                 rgba = im.convert('RGBA')
             return rgba
         except Exception:
-            # если файл битый/недоступен — возвращаем пустой кадр, но не падаем
+            # Return an empty frame if the file is broken or unavailable.
             pass
     return Image.new('RGBA', (int(width), int(height)), (0, 0, 0, 0))
 
@@ -842,7 +842,7 @@ def _fit_to_exact_size(image_rgba, out_size):
     try:
         from PIL import Image  # pylint: disable=import-outside-toplevel
     except Exception as exc:
-        raise RuntimeError('Pillow не установлен. Установите пакет Pillow для экспорта изображений.') from exc
+        raise RuntimeError('Pillow is not installed. Install Pillow to export images.') from exc
 
     out_w, out_h = int(out_size[0]), int(out_size[1])
     if out_w <= 0 or out_h <= 0:
@@ -907,10 +907,10 @@ def project_export(request, pk):
     try:
         payload = json.loads(request.body.decode('utf-8')) if request.body else {}
     except json.JSONDecodeError:
-        return JsonResponse({'ok': False, 'error': 'invalid_json', 'message': 'Некорректный JSON.'}, status=400)
+        return JsonResponse({'ok': False, 'error': 'invalid_json', 'message': 'Invalid JSON.'}, status=400)
 
     if not isinstance(payload, dict):
-        return JsonResponse({'ok': False, 'error': 'invalid_payload', 'message': 'Некорректный формат данных.'}, status=400)
+        return JsonResponse({'ok': False, 'error': 'invalid_payload', 'message': 'Invalid payload format.'}, status=400)
 
     export_format = (payload.get('format') or '').strip().lower()
     if export_format in ('png', 'png_zip', 'png-seq', 'png_sequence', 'zip'):
@@ -918,7 +918,7 @@ def project_export(request, pk):
     elif export_format in ('gif', 'gif_file'):
         export_format = 'gif'
     else:
-        return JsonResponse({'ok': False, 'error': 'invalid_format', 'message': 'Выберите формат экспорта.'}, status=400)
+        return JsonResponse({'ok': False, 'error': 'invalid_format', 'message': 'Choose an export format.'}, status=400)
 
     resolution_key = _normalize_resolution_key(payload.get('resolution'))
     out_w, out_h = _get_export_size(project, resolution_key)
@@ -927,13 +927,13 @@ def project_export(request, pk):
     frames = list(frames_qs)
     total_frames = len(frames)
     if total_frames <= 0:
-        return JsonResponse({'ok': False, 'error': 'no_frames', 'message': 'В проекте нет кадров.'}, status=400)
+        return JsonResponse({'ok': False, 'error': 'no_frames', 'message': 'The project has no frames.'}, status=400)
 
     if export_format == 'gif' and total_frames > MAX_EXPORT_GIF_FRAMES:
         return JsonResponse({
             'ok': False,
             'error': 'too_many_frames',
-            'message': f'Слишком много кадров для GIF ({total_frames}). Рекомендуем экспорт в PNG‑последовательность или уменьшить количество кадров.',
+            'message': f'Too many frames for GIF export ({total_frames}). Try PNG sequence export or reduce the frame count.',
             'limits': {'max_gif_frames': MAX_EXPORT_GIF_FRAMES},
         }, status=413)
 
@@ -941,7 +941,7 @@ def project_export(request, pk):
         return JsonResponse({
             'ok': False,
             'error': 'too_many_frames',
-            'message': f'Слишком много кадров для экспорта ({total_frames}). Уменьшите количество кадров.',
+            'message': f'Too many frames for export ({total_frames}). Reduce the frame count.',
             'limits': {'max_png_zip_frames': MAX_EXPORT_PNG_ZIP_FRAMES},
         }, status=413)
 
@@ -960,7 +960,7 @@ def project_export(request, pk):
     safe_title = ''.join(ch for ch in safe_title if ch.isalnum() or ch in (' ', '-', '_')).strip() or 'project'
     safe_title = safe_title.replace(' ', '_')
 
-    # Кадры берём из preview_image (они уже слиты на клиенте при сохранении кадра).
+    # Frames are read from preview_image because they are already flattened client-side.
     source_size = (int(project.width), int(project.height))
 
     if export_format == 'png_zip':
@@ -989,7 +989,7 @@ def project_export(request, pk):
                     os.remove(abs_path)
             except Exception:
                 pass
-            return JsonResponse({'ok': False, 'error': 'export_failed', 'message': 'Не удалось сформировать ZIP‑архив.'}, status=500)
+            return JsonResponse({'ok': False, 'error': 'export_failed', 'message': 'Could not generate the ZIP archive.'}, status=500)
 
         rel_path = f'{rel_dir}/{filename}'
         token = _build_export_token(request.user.id, project.pk, rel_path)
@@ -1010,7 +1010,7 @@ def project_export(request, pk):
         return JsonResponse({
             'ok': False,
             'error': 'gif_too_large',
-            'message': 'Слишком тяжёлый GIF для генерации. Попробуйте уменьшить разрешение/количество кадров или экспортировать PNG‑последовательность.',
+            'message': 'The GIF is too large to generate. Try reducing the resolution or frame count, or export a PNG sequence instead.',
             'limits': {'max_total_pixels': MAX_EXPORT_GIF_TOTAL_PIXELS},
         }, status=413)
 
@@ -1023,12 +1023,12 @@ def project_export(request, pk):
     except RuntimeError as error:
         return JsonResponse({'ok': False, 'error': 'export_unavailable', 'message': str(error)}, status=500)
     except Exception:
-        return JsonResponse({'ok': False, 'error': 'export_failed', 'message': 'Не удалось подготовить кадры для экспорта.'}, status=500)
+        return JsonResponse({'ok': False, 'error': 'export_failed', 'message': 'Could not prepare frames for export.'}, status=500)
 
     duration_ms = int(round(1000 / max(1, fps)))
     gif_buffer = io.BytesIO()
     try:
-        # Pillow сам приведёт кадры к палитре GIF.
+        # Pillow will convert frames to a GIF palette automatically.
         images[0].save(
             gif_buffer,
             format='GIF',
@@ -1040,14 +1040,14 @@ def project_export(request, pk):
             disposal=2,
         )
     except Exception:
-        return JsonResponse({'ok': False, 'error': 'export_failed', 'message': 'Не удалось сформировать GIF.'}, status=500)
+        return JsonResponse({'ok': False, 'error': 'export_failed', 'message': 'Could not generate the GIF.'}, status=500)
 
     gif_bytes = gif_buffer.getvalue()
     if len(gif_bytes) > MAX_EXPORT_GIF_BYTES:
         return JsonResponse({
             'ok': False,
             'error': 'gif_too_large',
-            'message': 'GIF получился слишком тяжёлым. Попробуйте уменьшить разрешение/FPS или экспортировать PNG‑последовательность.',
+            'message': 'The GIF is too large. Try reducing the resolution or FPS, or export a PNG sequence instead.',
             'limits': {'max_gif_bytes': MAX_EXPORT_GIF_BYTES},
         }, status=413)
 
@@ -1075,21 +1075,21 @@ def project_export_download(request, pk, token):
     try:
         data = _decode_export_token(token, EXPORT_TOKEN_MAX_AGE_SECONDS)
     except signing.SignatureExpired:
-        raise Http404('Ссылка на экспорт устарела.')
+        raise Http404('The export link has expired.')
     except signing.BadSignature:
-        raise Http404('Некорректная ссылка.')
+        raise Http404('Invalid link.')
 
     if not isinstance(data, dict):
-        raise Http404('Некорректная ссылка.')
+        raise Http404('Invalid link.')
     if int(data.get('u') or 0) != int(request.user.id):
-        raise Http404('Нет доступа.')
+        raise Http404('Access denied.')
     if int(data.get('p') or 0) != int(project.pk):
-        raise Http404('Нет доступа.')
+        raise Http404('Access denied.')
 
     rel_path = data.get('path')
     abs_path = _safe_media_path(rel_path)
     if not abs_path or not os.path.isfile(abs_path):
-        raise Http404('Файл не найден.')
+        raise Http404('File not found.')
 
     content_type, _ = mimetypes.guess_type(abs_path)
     if not content_type:

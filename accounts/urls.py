@@ -1,6 +1,11 @@
-from django.urls import path
+from django.urls import include, path
+
+from . import views
+
 
 urlpatterns = [
-    # Добавь здесь свои маршруты, например:
-    # path('login/', views.login_view, name='login'),
+    path("signup/", views.signup_view, name="account_signup"),
+    path("profile/", views.profile_view, name="account_profile"),
+    path("profile/edit/", views.profile_edit_view, name="account_profile_edit"),
+    path("", include("allauth.urls")),
 ]

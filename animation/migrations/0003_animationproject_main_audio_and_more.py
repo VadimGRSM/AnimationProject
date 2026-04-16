@@ -17,16 +17,16 @@ class Migration(migrations.Migration):
         migrations.AddField(
             model_name='animationproject',
             name='main_audio',
-            field=models.FileField(blank=True, null=True, upload_to=project_main_audio_upload_to, verbose_name='Основная аудиодорожка'),
+            field=models.FileField(blank=True, null=True, upload_to=project_main_audio_upload_to, verbose_name='Main audio track'),
         ),
         migrations.AddField(
             model_name='animationproject',
             name='main_audio_duration',
-            field=models.FloatField(blank=True, null=True, verbose_name='Длительность аудио (секунды)'),
+            field=models.FloatField(blank=True, null=True, verbose_name='Audio duration (seconds)'),
         ),
         migrations.AddField(
             model_name='animationproject',
             name='main_audio_start_frame',
-            field=models.PositiveIntegerField(default=1, verbose_name='Стартовый кадр аудио'),
+            field=models.PositiveIntegerField(default=1, verbose_name='Audio start frame'),
         ),
     ]

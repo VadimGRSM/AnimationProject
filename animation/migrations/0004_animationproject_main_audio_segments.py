@@ -13,6 +13,6 @@ class Migration(migrations.Migration):
         migrations.AddField(
             model_name='animationproject',
             name='main_audio_segments',
-            field=models.JSONField(blank=True, default=list, verbose_name='Сегменты аудио'),
+            field=models.JSONField(blank=True, default=list, verbose_name='Audio segments'),
         ),
     ]

@@ -3,12 +3,14 @@ import json
 import tempfile
 import zipfile
 
-from django.contrib.auth.models import User
+from django.contrib.auth import get_user_model
 from django.core.files.base import ContentFile
 from django.test import Client, TestCase, override_settings
 from django.urls import reverse
 
 from .models import AnimationProject, Frame
+
+User = get_user_model()
 
 
 def _make_png_bytes(size=(64, 64), color=(255, 0, 0, 255)):
@@ -24,7 +26,7 @@ class ExportSmokeTests(TestCase):
     def test_export_png_zip_and_gif(self):
         with tempfile.TemporaryDirectory() as tmp_media_root:
             with override_settings(MEDIA_ROOT=tmp_media_root):
-                user = User.objects.create_user(username='export_test', password='test')
+                user = User.objects.create_user(email="export_test@example.com", password="test")
                 project = AnimationProject.objects.create(
                     owner=user,
                     title='Export Test',

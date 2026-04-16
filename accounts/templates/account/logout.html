@@ -1,0 +1,23 @@
+{% extends "animation/base.html" %}
+
+{% block title %}Log out{% endblock %}
+{% block body_class %}anim-page anim-page--auth{% endblock %}
+
+{% block content %}
+<section class="auth-shell">
+    <div class="auth-card">
+        <p class="auth-card__eyebrow">AnimStudio</p>
+        <h1 class="auth-card__title">Log out of your account?</h1>
+        <p class="auth-card__subtitle">You will be able to sign back in with email or Google at any time.</p>
+
+        <form method="post" action="{% url 'account_logout' %}" class="auth-form">
+            {% csrf_token %}
+            <button type="submit" class="tool-button auth-submit">Log out</button>
+        </form>
+
+        <div class="auth-links">
+            <a href="{% url 'animation:project_list' %}">Back to projects</a>
+        </div>
+    </div>
+</section>
+{% endblock %}

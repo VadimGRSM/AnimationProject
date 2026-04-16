@@ -1,0 +1,64 @@
+{% extends "animation/base.html" %}
+
+{% block title %}Profile{% endblock %}
+{% block body_class %}anim-page anim-page--auth{% endblock %}
+
+{% block content %}
+<section class="auth-shell">
+    <div class="auth-card auth-card--wide">
+        <p class="auth-card__eyebrow">AnimStudio</p>
+        <h1 class="auth-card__title">User profile</h1>
+        <p class="auth-card__subtitle">This page shows your account details and personal settings.</p>
+
+        {% if messages %}
+            <ul class="messages">
+                {% for message in messages %}
+                    <li class="message message--{{ message.tags|default:'success' }}">{{ message }}</li>
+                {% endfor %}
+            </ul>
+        {% endif %}
+
+        <div class="profile-summary">
+            <div class="profile-summary__avatar">
+                {% if user.avatar_url %}
+                    <img src="{{ user.avatar_url }}" alt="{{ user.display_name }}">
+                {% else %}
+                    <span>{{ user.display_name|slice:":1"|upper }}</span>
+                {% endif %}
+            </div>
+            <dl class="profile-summary__meta">
+                <div>
+                    <dt>Display name</dt>
+                    <dd>{{ user.display_name }}</dd>
+                </div>
+                <div>
+                    <dt>Email</dt>
+                    <dd>{{ user.email }}</dd>
+                </div>
+                <div>
+                    <dt>Created</dt>
+                    <dd>{{ user.created_at|date:"d.m.Y H:i" }}</dd>
+                </div>
+                <div>
+                    <dt>Last login</dt>
+                    <dd>
+                        {% if user.last_login %}
+                            {{ user.last_login|date:"d.m.Y H:i" }}
+                        {% else %}
+                            Never
+                        {% endif %}
+                    </dd>
+                </div>
+                <div>
+                    <dt>Theme</dt>
+                    <dd>{{ profile.get_theme_preference_display }}</dd>
+                </div>
+            </dl>
+        </div>
+
+        <div class="auth-links">
+            <a class="tool-button auth-submit auth-submit--inline" href="{% url 'account_profile_edit' %}">Edit profile</a>
+        </div>
+    </div>
+</section>
+{% endblock %}

@@ -1,5 +1,5 @@
 // =======================
-// Константы инструментов
+// Tool constants
 // =======================
 
 const TOOL_BRUSH = 'brush';
@@ -30,7 +30,7 @@ const TOOL_SET = new Set([
 ]);
 
 // =======================
-// Глобальные ссылки на DOM
+// Global DOM references
 // =======================
 
 const editorRoot = document.querySelector('.editor-root');
@@ -167,7 +167,7 @@ let projectFps = (() => {
 })();
 
 // =======================
-// Состояние рисования
+// Drawing state
 // =======================
 
 let currentTool = TOOL_BRUSH;
@@ -188,7 +188,7 @@ let activePointerButton = 0;
 let toolSettingsAnchorButton = null;
 
 // =======================
-// Состояние слоёв
+// Layer state
 // =======================
 
 let layers = [];
@@ -276,7 +276,7 @@ let wandTolerance = wandSensitivityInput
     : WAND_DEFAULT_TOLERANCE;
 
 // =======================
-// Состояние сохранения
+// Save state
 // =======================
 
 const storedFrameIndex = editorRoot ? editorRoot.dataset.currentFrameIndex : null;
@@ -316,7 +316,7 @@ let playbackPreviewCtx = null;
 const playbackFrameImageCache = new Map();
 
 // =======================
-// Onion-Skin (соседние кадры)
+// Onion-Skin (adjacent frames)
 // =======================
 
 const ONION_SKIN_STORAGE_KEY = `anim.editor.${editorProjectId}.onionSkin`;
@@ -336,7 +336,7 @@ const AUTOSAVE_INTERVAL_MS = 30000;
 const LAST_SAVED_TICK_MS = 1000;
 
 // =======================
-// История действий
+// Action history
 // =======================
 
 const HISTORY_LIMIT = 50;
@@ -349,36 +349,65 @@ let didDrawStroke = false;
 let lastDrawTool = null;
 let historyPending = null;
 
-const LEGACY_HISTORY_LABEL_KEYS = {
-    'Старт кадра': 'frame_start',
-    'Начало истории': 'history_start',
-    'Действие': 'action',
-    'Кисть': 'brush',
-    'Ластик': 'eraser',
-    'Заливка': 'fill',
-    'Линия': 'line',
-    'Прямоугольник': 'rectangle',
-    'Окружность': 'ellipse',
-    'Слой: добавить': 'layer_add',
-    'Слой: удалить': 'layer_delete',
-    'Слой: прозрачность': 'layer_opacity_action',
-    'Слой: показать': 'layer_show_action',
-    'Слой: скрыть': 'layer_hide_action',
-    'Слой: переименовать': 'layer_rename_action',
-    'Слой: порядок': 'layer_order',
-    'Трансформация выделения': 'selection_transform',
-    'Вырезать': 'cut',
-    'Вставка': 'paste',
-    'Вставка изображения': 'paste_image',
+const UI_TEXT = {
+    action: 'Action',
+    frame_start: 'Frame start',
+    history_start: 'History start',
+    brush: 'Brush',
+    eraser: 'Eraser',
+    fill: 'Fill',
+    line: 'Line',
+    rectangle: 'Rectangle',
+    ellipse: 'Ellipse',
+    opacity: 'Opacity',
+    hide_layer: 'Hide layer',
+    show_layer: 'Show layer',
+    rename_layer: 'Rename layer',
+    delete_layer: 'Delete layer',
+    save: 'Save',
+    cancel: 'Cancel',
+    layer_add: 'Layer: add',
+    layer_delete: 'Layer: delete',
+    layer_opacity_action: 'Layer: opacity',
+    layer_show_action: 'Layer: show',
+    layer_hide_action: 'Layer: hide',
+    layer_rename_action: 'Layer: rename',
+    layer_order: 'Layer: order',
+    selection_transform: 'Transform selection',
+    cut: 'Cut',
+    paste: 'Paste',
+    paste_image: 'Paste image',
+    a_few_seconds_ago: 'a few seconds ago',
+    seconds_ago: '%{count}s ago',
+    minutes_ago: '%{count}m ago',
+    hours_ago: '%{count}h ago',
+    last_saved_label: 'Last saved: %{time}',
+    unsaved_changes: 'Unsaved changes',
+    no_changes: 'No changes',
+    project_fps_update_failed: 'Could not update project FPS.',
+    project_fps_updating: 'Updating project FPS...',
+    project_fps_updated: 'Project FPS updated.',
+    project_fps_invalid: 'Enter a valid project FPS (1-60).',
 };
 
+function interpolateText(template, params = null) {
+    if (!params || typeof template !== 'string') return template;
+    return template.replace(/%\{(\w+)\}/g, (_, paramKey) => {
+        const value = params[paramKey];
+        return value === undefined || value === null ? '' : String(value);
+    });
+}
+
+function getText(key, params = null) {
+    return interpolateText(UI_TEXT[key] || key, params);
+}
+
 // =======================
-// Функции установки параметров
+// Parameter setup helpers
 // =======================
 
 /**
- * Устанавливаем активный инструмент
- * и визуально подсвечиваем кнопку
+ * Set the active tool and highlight its button.
  */
 function getToolButtonByName(toolName) {
     for (const button of toolButtons) {
@@ -523,7 +552,7 @@ function setTool(toolName) {
 }
 
 /**
- * Устанавливаем текущий цвет кисти
+ * Set the current brush color.
  */
 function setColor(colorValue, options = {}) {
     const useSecondary = Boolean(options.secondary);
@@ -541,7 +570,7 @@ function setColor(colorValue, options = {}) {
 }
 
 /**
- * Устанавливаем толщину кисти
+ * Set the brush size.
  */
 function setBrushSize(size) {
     currentSize = size;
@@ -593,22 +622,6 @@ function setSelectionMode(mode) {
     if (toolSettingsPopover && !toolSettingsPopover.hidden && toolSettingsAnchorButton) {
         positionToolSettingsPopover(toolSettingsAnchorButton);
     }
-}
-
-function getI18nText(key, fallback, params = null) {
-    if (typeof t === 'function') {
-        try {
-            const translated = t(key, params || undefined);
-            if (translated && translated !== key) return translated;
-        } catch (error) {
-            // ignore and fallback
-        }
-    }
-    if (!params || typeof fallback !== 'string') return fallback;
-    return fallback.replace(/%\{(\w+)\}/g, (_, paramKey) => {
-        const value = params[paramKey];
-        return value === undefined || value === null ? '' : String(value);
-    });
 }
 
 function isPlaybackSessionActive() {
@@ -686,7 +699,7 @@ function hideTransformHint() {
 }
 
 // =======================
-// История действий
+// Action history
 // =======================
 
 function getHistoryKey() {
@@ -728,7 +741,7 @@ function getToolHistoryLabel(toolName) {
 
 function resolveHistoryLabelKey(label) {
     if (!label) return 'action';
-    return LEGACY_HISTORY_LABEL_KEYS[label] || label;
+    return label;
 }
 
 function captureLayerImage(layer) {
@@ -736,7 +749,7 @@ function captureLayerImage(layer) {
     try {
         return layer.bufferCtx.getImageData(0, 0, layer.bufferCanvas.width, layer.bufferCanvas.height);
     } catch (error) {
-        console.warn('Не удалось сохранить слой для истории', error);
+        console.warn('Could not save the layer for history', error);
         return null;
     }
 }
@@ -900,11 +913,11 @@ function updateHistoryPanel() {
         } else if (isFuture) {
             item.classList.add('history-item--future');
         }
-        item.textContent = t(row.label || 'action');
+        item.textContent = getText(row.label || 'action');
         historyList.appendChild(item);
     }
 
-    // ограничиваем видимую высоту (5 действий + базовая строка) и включаем скролл внутри списка
+    // Limit the visible height (5 actions + baseline row) and enable internal scrolling.
     applyListMaxVisibleHeight(historyList, '.history-item', HISTORY_VISIBLE_ACTIONS + 1);
 }
 
@@ -942,7 +955,7 @@ function applyFullSnapshot(snapshot) {
             try {
                 layer.bufferCtx.putImageData(layerSnapshot.imageData, 0, 0);
             } catch (error) {
-                console.warn('Не удалось восстановить слой из истории', error);
+                console.warn('Could not restore the layer from history', error);
             }
         }
     });
@@ -973,7 +986,7 @@ function applyLayerEntry(entry, direction) {
         try {
             layer.bufferCtx.putImageData(imageData, 0, 0);
         } catch (error) {
-            console.warn('Не удалось восстановить слой из истории', error);
+            console.warn('Could not restore the layer from history', error);
         }
     }
     activeLayerId = layer.id;
@@ -1056,7 +1069,7 @@ function bindHistoryEvents() {
 }
 
 // =======================
-// Работа со слоями
+// Layer operations
 // =======================
 
 function fillLayerUrl(template, frameIndex, layerId) {
@@ -1072,7 +1085,7 @@ function fillLayerUrl(template, frameIndex, layerId) {
 }
 
 // =======================
-// Работа с кадрами (таймлайн)
+// Frame and timeline operations
 // =======================
 
 function fillFrameUrl(template, frameIndex) {
@@ -1399,7 +1412,7 @@ function renderLayerList() {
 
         const opacityWrap = document.createElement('label');
         opacityWrap.className = 'layer-opacity';
-        opacityWrap.innerHTML = `<span>${t('opacity')}</span>`;
+        opacityWrap.innerHTML = `<span>${getText('opacity')}</span>`;
         const opacityInput = document.createElement('input');
         opacityInput.type = 'range';
         opacityInput.min = '0';
@@ -1415,7 +1428,7 @@ function renderLayerList() {
         visibilityButton.type = 'button';
         visibilityButton.className = 'layer-visibility';
         visibilityButton.dataset.action = 'toggle-visibility';
-        visibilityButton.title = layer.visible ? t('hide_layer') : t('show_layer');
+        visibilityButton.title = layer.visible ? getText('hide_layer') : getText('show_layer');
         visibilityButton.setAttribute('aria-label', visibilityButton.title);
         if (!layer.visible) {
             visibilityButton.classList.add('is-hidden');
@@ -1430,7 +1443,7 @@ function renderLayerList() {
         renameButton.type = 'button';
         renameButton.className = 'layer-action';
         renameButton.dataset.action = 'rename';
-        renameButton.title = t('rename_layer');
+        renameButton.title = getText('rename_layer');
         renameButton.setAttribute('aria-label', renameButton.title);
         const renameIcon = document.createElement('img');
         renameIcon.className = 'layer-icon';
@@ -1441,7 +1454,7 @@ function renderLayerList() {
         deleteButton.type = 'button';
         deleteButton.className = 'layer-action layer-action--danger';
         deleteButton.dataset.action = 'delete';
-        deleteButton.title = t('delete_layer');
+        deleteButton.title = getText('delete_layer');
         deleteButton.setAttribute('aria-label', deleteButton.title);
         const deleteIcon = document.createElement('img');
         deleteIcon.className = 'layer-icon';
@@ -1466,12 +1479,12 @@ function renderLayerList() {
         saveRename.type = 'button';
         saveRename.className = 'layer-action';
         saveRename.dataset.action = 'rename-save';
-        saveRename.textContent = t('save');
+        saveRename.textContent = getText('save');
         const cancelRename = document.createElement('button');
         cancelRename.type = 'button';
         cancelRename.className = 'layer-action';
         cancelRename.dataset.action = 'rename-cancel';
-        cancelRename.textContent = t('cancel');
+        cancelRename.textContent = getText('cancel');
         renameActions.appendChild(saveRename);
         renameActions.appendChild(cancelRename);
         renameBlock.appendChild(renameInput);
@@ -1575,11 +1588,11 @@ async function loadLayers() {
         const response = await fetch(listUrl, { credentials: 'same-origin' });
         const data = await response.json();
         if (!response.ok || !data || !data.ok) {
-            throw new Error('Не удалось загрузить слои.');
+            throw new Error('Could not load layers.');
         }
         mergeLayerList(data.layers || []);
     } catch (error) {
-        console.error('Ошибка загрузки слоёв', error);
+        console.error('Layer loading error', error);
     }
 }
 
@@ -1612,7 +1625,7 @@ async function createLayer() {
         });
         const data = await response.json();
         if (!response.ok || !data || !data.ok) {
-            throw new Error('Не удалось создать слой.');
+            throw new Error('Could not create layer.');
         }
         const layer = addLayerFromPayload(data.layer);
         applyAllLayerStyles();
@@ -1621,7 +1634,7 @@ async function createLayer() {
         commitFullHistory();
     } catch (error) {
         cancelPendingHistory();
-        console.error('Ошибка создания слоя', error);
+        console.error('Layer creation error', error);
     }
 }
 
@@ -1641,11 +1654,11 @@ async function updateLayer(layerId, updates) {
         });
         const data = await response.json();
         if (!response.ok || !data || !data.ok) {
-            throw new Error('Не удалось обновить слой.');
+            throw new Error('Could not update layer.');
         }
         return data.layer || null;
     } catch (error) {
-        console.error('Ошибка обновления слоя', error);
+        console.error('Layer update error', error);
         return null;
     }
 }
@@ -1667,13 +1680,13 @@ async function deleteLayer(layerId) {
         });
         const data = await response.json();
         if (!response.ok || !data || !data.ok) {
-            throw new Error('Не удалось удалить слой.');
+            throw new Error('Could not delete layer.');
         }
         mergeLayerList(data.layers || []);
         commitFullHistory();
     } catch (error) {
         cancelPendingHistory();
-        console.error('Ошибка удаления слоя', error);
+        console.error('Layer deletion error', error);
     }
 }
 
@@ -1692,13 +1705,13 @@ async function saveLayerOrder(orderedIds) {
         });
         const data = await response.json();
         if (!response.ok || !data || !data.ok) {
-            throw new Error('Не удалось сохранить порядок слоёв.');
+            throw new Error('Could not save layer order.');
         }
         mergeLayerList(data.layers || []);
         commitFullHistory();
     } catch (error) {
         cancelPendingHistory();
-        console.error('Ошибка сохранения порядка слоёв', error);
+        console.error('Layer order save error', error);
     }
 }
 
@@ -1958,8 +1971,8 @@ function applyListMaxVisibleHeight(listEl, itemSelector, maxVisible) {
 }
 
 /**
- * Подгоняем отображаемую высоту canvas под высоту экрана,
- * чтобы на экране помещались тулбар + таймлайн.
+ * Fit the visible canvas height to the available screen space
+ * so the toolbar and timeline still fit on screen.
  */
 function syncResponsiveCanvasSize() {
     if (!editorRoot || !canvas) return;
@@ -1986,7 +1999,7 @@ function syncResponsiveCanvasSize() {
     let availableForMain = availableFromRootTop - paddingTop - paddingBottom - gapsTotal - fixedHeight;
     if (!Number.isFinite(availableForMain)) return;
 
-    // вычитаем внутренние отступы обертки canvas, чтобы сам canvas мог влезть целиком
+    // Subtract wrapper padding so the canvas still fits fully inside.
     let wrapperPaddingY = 24;
     let wrapperBorderY = 0;
     if (canvasWrapper) {
@@ -2002,7 +2015,7 @@ function syncResponsiveCanvasSize() {
 
 function syncEditorLayout() {
     syncResponsiveCanvasSize();
-    // после изменения размеров даём браузеру пересчитать layout и синхронизируем оверлей/слои
+    // Let the browser recalculate layout, then sync overlays and layers.
     requestAnimationFrame(() => {
         syncOverlayPlacement();
         hydratePanelPositions();
@@ -2018,11 +2031,11 @@ function updateCursor() {
 }
 
 // =======================
-// Функции рисования
+// Drawing helpers
 // =======================
 
 /**
- * Начало рисования
+ * Start drawing.
  */
 function startDrawing(x, y, toolName) {
     isDrawing = true;
@@ -2060,8 +2073,7 @@ function startDrawing(x, y, toolName) {
 }
 
 /**
- * Продолжение рисования
- * Рисуем линию от предыдущей точки до новой
+ * Continue drawing by connecting the previous point to the new one.
  */
 function continueDrawing(x, y) {
     if (!isDrawing) return;
@@ -2096,7 +2108,7 @@ function continueDrawing(x, y) {
 }
 
 /**
- * Завершение рисования
+ * Finish drawing.
  */
 function stopDrawing() {
     isDrawing = false;
@@ -2710,14 +2722,14 @@ function getTransformHandleCursor(handleId) {
 function getTransformHandleHint(handleId) {
     if (!handleId) return '';
     const hints = {
-        nw: 'Растягивание: левый верхний угол',
-        n: 'Растягивание: верхняя грань',
-        ne: 'Растягивание: правый верхний угол',
-        e: 'Растягивание: правая грань',
-        se: 'Растягивание: правый нижний угол',
-        s: 'Растягивание: нижняя грань',
-        sw: 'Растягивание: левый нижний угол',
-        w: 'Растягивание: левая грань',
+        nw: 'Resize: top-left corner',
+        n: 'Resize: top edge',
+        ne: 'Resize: top-right corner',
+        e: 'Resize: right edge',
+        se: 'Resize: bottom-right corner',
+        s: 'Resize: bottom edge',
+        sw: 'Resize: bottom-left corner',
+        w: 'Resize: left edge',
     };
     return hints[handleId] || '';
 }
@@ -3178,7 +3190,7 @@ function updateSelectionTransformHover(event, x, y) {
 
     if (isPointInSelection(x, y, selection)) {
         setCanvasCursorOverride('move');
-        showTransformHint('Перемещение: потяните выделение мышью', event);
+        showTransformHint('Move: drag the selection with the mouse', event);
         if (hoverTransformHandle) {
             hoverTransformHandle = null;
             renderOverlay();
@@ -3557,11 +3569,11 @@ function logCoordDebug(label, event, extra = {}) {
 }
 
 // =======================
-// Получение координат внутри canvas
+// Canvas coordinate helpers
 // =======================
 
 /**
- * Переводим координаты мыши в систему координат canvas
+ * Convert mouse coordinates into the canvas coordinate system.
  */
 function getCanvasMetrics() {
     const rect = canvas.getBoundingClientRect();
@@ -3596,9 +3608,9 @@ function getCanvasRawCoords(event) {
         scaleX,
         scaleY,
     } = getCanvasMetrics();
-    // `offsetX/offsetY` корректны только когда target — сам canvas.
-    // При drag за пределами canvas события приходят с target=document/body/etc,
-    // и offsetX/offsetY начинают "прыгать" -> фигуры/выделение ведут себя странно.
+    // `offsetX/offsetY` are only reliable when the target is the canvas itself.
+    // During drags outside the canvas the event target may become document/body/etc,
+    // which makes offsets jump and causes odd shape or selection behavior.
     const isCanvasEventTarget = event && (event.target === canvas || event.currentTarget === canvas);
     const hasOffset = isCanvasEventTarget
         && typeof event.offsetX === 'number'
@@ -3831,7 +3843,7 @@ function floodFill(startX, startY, options = {}) {
 }
 
 // =======================
-// Сохранение проекта
+// Project saving
 // =======================
 
 function getCookie(name) {
@@ -3896,19 +3908,19 @@ function formatTimeAgo(date) {
     const diffSeconds = Math.max(0, Math.floor((Date.now() - date.getTime()) / 1000));
 
     if (diffSeconds < 5) {
-        return getI18nText('a_few_seconds_ago', 'несколько секунд назад');
+        return getText('a_few_seconds_ago');
     }
     if (diffSeconds < 60) {
-        return getI18nText('seconds_ago', '%{count} сек. назад', { count: diffSeconds });
+        return getText('seconds_ago', { count: diffSeconds });
     }
 
     const diffMinutes = Math.floor(diffSeconds / 60);
     if (diffMinutes < 60) {
-        return getI18nText('minutes_ago', '%{count} мин. назад', { count: diffMinutes });
+        return getText('minutes_ago', { count: diffMinutes });
     }
 
     const diffHours = Math.floor(diffMinutes / 60);
-    return getI18nText('hours_ago', '%{count} ч. назад', { count: diffHours });
+    return getText('hours_ago', { count: diffHours });
 }
 
 function updateLastSavedLabel() {
@@ -3920,11 +3932,7 @@ function updateLastSavedLabel() {
     }
 
     const agoText = formatTimeAgo(lastSavedAt);
-    lastSavedLabel.textContent = getI18nText(
-        'last_saved_label',
-        'Последнее сохранение: %{time}',
-        { time: agoText },
-    );
+    lastSavedLabel.textContent = getText('last_saved_label', { time: agoText });
 }
 
 function updateSaveButtonState() {
@@ -3933,20 +3941,20 @@ function updateSaveButtonState() {
 }
 
 /**
- * Помечаем, что в проекте появились несохраненные изменения.
+ * Mark that the project has unsaved changes.
  */
 function markUnsavedChanges() {
     if (hasUnsavedChanges) return;
 
     hasUnsavedChanges = true;
     setSaveIndicator('dirty');
-    setSaveStatus('Есть несохраненные изменения', 'dirty');
+    setSaveStatus(getText('unsaved_changes'), 'dirty');
     updateSaveButtonState();
 }
 
 function initSaveState() {
     setSaveIndicator('idle');
-    setSaveStatus('Нет изменений');
+    setSaveStatus(getText('no_changes'));
     updateLastSavedLabel();
     updateSaveButtonState();
 }
@@ -3970,10 +3978,7 @@ function syncPlaybackFpsControlState() {
 
 async function updateProjectFpsOnServer(nextFps) {
     if (!projectUpdateUrl) {
-        setSaveStatus(
-            getI18nText('project_fps_update_failed', 'Не удалось обновить FPS проекта.'),
-            'error',
-        );
+        setSaveStatus(getText('project_fps_update_failed'), 'error');
         setSaveIndicator('error');
         return false;
     }
@@ -3982,10 +3987,7 @@ async function updateProjectFpsOnServer(nextFps) {
 
     isUpdatingProjectFps = true;
     syncPlaybackFpsControlState();
-    setSaveStatus(
-        getI18nText('project_fps_updating', 'Обновляем FPS проекта…'),
-        'saving',
-    );
+    setSaveStatus(getText('project_fps_updating'), 'saving');
     setSaveIndicator('saving');
 
     try {
@@ -4007,7 +4009,7 @@ async function updateProjectFpsOnServer(nextFps) {
         }
 
         if (!response.ok || !data || !data.ok || !data.project) {
-            const errorMessage = data && data.error ? data.error : 'Не удалось обновить FPS проекта.';
+            const errorMessage = data && data.error ? data.error : getText('project_fps_update_failed');
             throw new Error(errorMessage);
         }
 
@@ -4023,36 +4025,27 @@ async function updateProjectFpsOnServer(nextFps) {
         }
 
         if (hasUnsavedChanges) {
-            setSaveStatus('Есть несохраненные изменения', 'dirty');
+            setSaveStatus(getText('unsaved_changes'), 'dirty');
             setSaveIndicator('dirty');
         } else {
-            setSaveStatus(
-                getI18nText('project_fps_updated', 'FPS проекта обновлён'),
-                'saved',
-            );
+            setSaveStatus(getText('project_fps_updated'), 'saved');
             setSaveIndicator('saved');
         }
 
         updatePlaybackControlsState();
         return true;
     } catch (error) {
-        console.error('Ошибка обновления FPS проекта', error);
-        let errorText = getI18nText(
-            'project_fps_update_failed',
-            'Не удалось обновить FPS проекта.',
-        );
+        console.error('Project FPS update error', error);
+        let errorText = getText('project_fps_update_failed');
         if (error instanceof Error && error.message) {
             if (error.message === 'invalid_fps') {
-                errorText = getI18nText(
-                    'project_fps_invalid',
-                    'Укажите корректный FPS проекта (1-60).',
-                );
+                errorText = getText('project_fps_invalid');
             } else if (error.message !== 'Failed to fetch') {
                 errorText = error.message;
             }
         }
         if (error instanceof Error && error.message === 'Failed to fetch') {
-            errorText = 'Не удалось связаться с сервером.';
+            errorText = 'Could not reach the server.';
         }
         if (playbackFpsInput) {
             playbackFpsInput.value = String(projectFps);
@@ -4072,10 +4065,7 @@ async function commitPlaybackFpsInputValue() {
     const parsed = parseInt(playbackFpsInput.value, 10);
     if (!Number.isFinite(parsed) || parsed <= 0) {
         playbackFpsInput.value = String(projectFps);
-        setSaveStatus(
-            getI18nText('project_fps_invalid', 'Укажите корректный FPS проекта (1-60).'),
-            'error',
-        );
+        setSaveStatus(getText('project_fps_invalid'), 'error');
         setSaveIndicator('error');
         return false;
     }
@@ -4157,7 +4147,7 @@ function loadOnionSkinSettings() {
         onionOpacityNext = coerceIntInRange(parsed.opacityNext, 0, 100, onionOpacityNext);
         onionMode = coerceOnionMode(parsed.mode);
     } catch (error) {
-        // localStorage может быть недоступен (private mode / блокировки) — не падаем
+        // localStorage may be unavailable (private mode, blocked storage, etc.).
     }
 }
 
@@ -4170,7 +4160,7 @@ function storeOnionSkinSettings() {
             mode: onionMode,
         }));
     } catch (error) {
-        // localStorage может быть недоступен — не падаем
+        // localStorage may be unavailable.
     }
 }
 
@@ -4362,11 +4352,11 @@ function setOnionEnabled(nextEnabled) {
         stopOnionPanelDrag();
         clearOnionCanvases();
     } else {
-        // на всякий случай синхронизируем размещение, т.к. canvases могут быть скрыты/показаны
+        // Keep panel placement in sync because canvases may be hidden or shown.
         syncOverlayPlacement();
     }
     if (onionEnabled && onionPanel) {
-        // скрываем визуально, но оставляем в layout, чтобы корректно измерить размеры
+        // Hide visually but keep the element in layout so measurements remain valid.
         onionPanel.style.visibility = 'hidden';
     }
     syncOnionUI();
@@ -4445,8 +4435,8 @@ async function fetchOnionFrameDetail(frameIndex) {
 
 function shouldRefetchOnionDetail(entry, hint) {
     if (!entry) return true;
-    // Если в таймлайне уже есть превью — этого достаточно для onion-skin,
-    // не тратим лишний запрос на detail.
+    // If the timeline already has a preview, that is enough for onion-skin,
+    // so skip an extra detail request.
     if (hint && hint.previewUrl) return false;
     if (!entry.didFetchDetail) return true;
     return false;
@@ -4462,8 +4452,8 @@ function ensureOnionFrameImage(frameIndex) {
         updatedAt: timelineFrame && timelineFrame.updated_at ? timelineFrame.updated_at : '',
     };
 
-    // Подтягиваем значения из таймлайна (быстрее, чем API).
-    // Если они меняются — сбрасываем изображение, чтобы перезагрузить.
+    // Reuse values from the timeline when possible because it is faster than the API.
+    // If they change, reset the image so it can be reloaded.
     if (hint.previewUrl && hint.previewUrl !== entry.previewUrl) {
         entry.previewUrl = hint.previewUrl;
         entry.image = null;
@@ -4493,7 +4483,7 @@ function ensureOnionFrameImage(frameIndex) {
                 entry.detailPromise = null;
             });
         entry.detailPromise.then(() => {
-            // после получения detail пробуем догрузить изображение
+            // After the detail request completes, try loading the image again.
             ensureOnionFrameImage(entry.index);
         });
         return;
@@ -4600,8 +4590,8 @@ function renderOnionSkin() {
     if (!onionPrevCanvas && !onionNextCanvas) return;
 
     const { prev, next } = getOnionNeighborFrameIndices();
-    const prevOrder = [...prev].reverse(); // дальние → ближние
-    const nextOrder = [...next].reverse(); // дальние → ближние
+    const prevOrder = [...prev].reverse(); // farthest -> nearest
+    const nextOrder = [...next].reverse(); // farthest -> nearest
 
     if (shouldShowOnionPrev() && onionPrevCtx && onionPrevCanvas && !onionPrevCanvas.hidden) {
         clearCanvas(onionPrevCtx, onionPrevCanvas);
@@ -4715,7 +4705,7 @@ function bindOnionSkinEvents() {
         });
     }
 
-    // Поддержка "playback": пока в проекте нет явного плеера, но слушаем события на будущее.
+    // Playback event support for future integrations.
     window.addEventListener('anim-playback-start', () => setOnionSuppressed(true));
     window.addEventListener('anim-playback-stop', () => setOnionSuppressed(false));
     window.addEventListener('anim-playback', (event) => {
@@ -4927,7 +4917,7 @@ function playbackAudioPlay(options = {}) {
     const playPromise = audio.play();
     if (playPromise && typeof playPromise.catch === 'function') {
         playPromise.catch(() => {
-            // браузер может запретить autoplay без пользовательского жеста
+            // Browsers may block autoplay without a user gesture.
         });
     }
 }
@@ -4985,9 +4975,7 @@ function updatePlaybackControlsState() {
     if (playbackPlayButton) {
         const isPlaying = isPlaybackRunning();
         const isPaused = playbackMode === PLAYBACK_PAUSED;
-        playbackPlayButton.textContent = isPlaying
-            ? getI18nText('pause', 'Pause')
-            : getI18nText('play', 'Play');
+        playbackPlayButton.textContent = isPlaying ? 'Pause' : 'Play';
         playbackPlayButton.setAttribute('aria-label', playbackPlayButton.textContent);
         playbackPlayButton.classList.toggle('tool-button--active', isPlaying);
         const idleBlocked = playbackMode === PLAYBACK_IDLE && (isSwitchingFrame || isSaving || isAutosaving || !hasFrames);
@@ -5258,7 +5246,7 @@ function renderTimelineFrames() {
         button.dataset.frameId = String(frame.id);
         button.dataset.frameIndex = String(frame.index);
         button.draggable = !shouldDisableTimelineControls();
-        button.title = `Кадр ${frame.index}`;
+        button.title = `Frame ${frame.index}`;
 
         const number = document.createElement('span');
         number.className = 'timeline-frame__number';
@@ -5268,7 +5256,7 @@ function renderTimelineFrames() {
         if (frame.preview_url) {
             const img = document.createElement('img');
             img.className = 'timeline-frame__img';
-            img.alt = `Кадр ${frame.index}`;
+            img.alt = `Frame ${frame.index}`;
             img.src = normalizeAssetUrl(frame.preview_url);
             img.onerror = () => {
                 img.remove();
@@ -5359,7 +5347,7 @@ function updateTimelineFramePreview(framePayload) {
         if (!img) {
             img = document.createElement('img');
             img.className = 'timeline-frame__img';
-            img.alt = `Кадр ${frameIndex || ''}`.trim();
+            img.alt = `Frame ${frameIndex || ''}`.trim();
             const placeholder = el.querySelector('.timeline-frame__placeholder');
             if (placeholder) placeholder.remove();
             el.appendChild(img);
@@ -5385,14 +5373,14 @@ async function loadTimelineFrames() {
         const response = await fetch(framesListUrl, { credentials: 'same-origin' });
         const data = await response.json();
         if (!response.ok || !data || !data.ok) {
-            throw new Error('Не удалось загрузить кадры.');
+            throw new Error('Could not load frames.');
         }
         timelineFrames = Array.isArray(data.frames) ? data.frames : [];
         playbackFrameImageCache.clear();
         syncCurrentFrameIdFromTimeline();
         renderTimelineFrames();
     } catch (error) {
-        console.error('Ошибка загрузки таймлайна', error);
+        console.error('Timeline loading error', error);
     }
 }
 
@@ -5410,7 +5398,7 @@ async function loadFrameByIndex(targetIndex) {
         const response = await fetch(url, { credentials: 'same-origin' });
         const data = await response.json();
         if (!response.ok || !data || !data.ok) {
-            throw new Error('Не удалось загрузить кадр.');
+            throw new Error('Could not load the frame.');
         }
 
         currentFrameIndex = index;
@@ -5448,8 +5436,8 @@ async function loadFrameByIndex(targetIndex) {
         requestOnionSkinRender();
         return true;
     } catch (error) {
-        console.error('Ошибка загрузки кадра', error);
-        setSaveStatus('Не удалось загрузить кадр', 'error');
+        console.error('Frame loading error', error);
+        setSaveStatus('Could not load the frame.', 'error');
         setSaveIndicator('error');
         return false;
     } finally {
@@ -5502,7 +5490,7 @@ async function createFrameOnServer(options = {}) {
         });
         const data = await response.json();
         if (!response.ok || !data || !data.ok) {
-            throw new Error('Не удалось создать кадр.');
+            throw new Error('Could not create the frame.');
         }
 
         timelineFrames = Array.isArray(data.frames) ? data.frames : timelineFrames;
@@ -5512,8 +5500,8 @@ async function createFrameOnServer(options = {}) {
         renderTimelineFrames();
         await loadFrameByIndex(currentFrameIndex);
     } catch (error) {
-        console.error('Ошибка создания кадра', error);
-        setSaveStatus('Не удалось создать кадр', 'error');
+        console.error('Frame creation error', error);
+        setSaveStatus('Could not create the frame.', 'error');
         setSaveIndicator('error');
     } finally {
         setTimelineControlsDisabled(false);
@@ -5526,7 +5514,7 @@ async function deleteCurrentFrameOnServer() {
     const deleteUrl = getFrameDeleteUrl(currentFrameIndex);
     if (!deleteUrl) return;
 
-    const confirmDelete = window.confirm(`Удалить кадр ${currentFrameIndex}?`);
+    const confirmDelete = window.confirm(`Delete frame ${currentFrameIndex}?`);
     if (!confirmDelete) return;
 
     setTimelineControlsDisabled(true);
@@ -5549,7 +5537,7 @@ async function deleteCurrentFrameOnServer() {
         });
         const data = await response.json();
         if (!response.ok || !data || !data.ok) {
-            throw new Error('Не удалось удалить кадр.');
+            throw new Error('Could not delete the frame.');
         }
 
         timelineFrames = Array.isArray(data.frames) ? data.frames : [];
@@ -5560,8 +5548,8 @@ async function deleteCurrentFrameOnServer() {
         renderTimelineFrames();
         await loadFrameByIndex(nextIndex);
     } catch (error) {
-        console.error('Ошибка удаления кадра', error);
-        setSaveStatus('Не удалось удалить кадр', 'error');
+        console.error('Frame deletion error', error);
+        setSaveStatus('Could not delete the frame.', 'error');
         setSaveIndicator('error');
     } finally {
         setTimelineControlsDisabled(false);
@@ -5585,7 +5573,7 @@ async function saveFrameOrder(orderedIds) {
         });
         const data = await response.json();
         if (!response.ok || !data || !data.ok) {
-            throw new Error('Не удалось сохранить порядок кадров.');
+            throw new Error('Could not save frame order.');
         }
 
         const activeId = currentFrameId;
@@ -5603,7 +5591,7 @@ async function saveFrameOrder(orderedIds) {
         prefetchOnionFramesForCurrent();
         requestOnionSkinRender();
     } catch (error) {
-        console.error('Ошибка сохранения порядка кадров', error);
+        console.error('Frame order save error', error);
     }
 }
 
@@ -5779,7 +5767,7 @@ function parseFrameContentPayload(rawValue) {
         }
         return parsed;
     } catch (error) {
-        console.warn('Не удалось разобрать content_json кадра', error);
+        console.warn('Could not parse frame content_json', error);
         return null;
     }
 }
@@ -5866,7 +5854,7 @@ async function restoreLayersFromContentPayload(payload, expectedToken) {
             const image = await loadImageAsync(entry.image_data);
             return { layer, image };
         } catch (error) {
-            console.warn('Не удалось восстановить слой из content_json', error);
+            console.warn('Could not restore the layer from content_json', error);
             return { layer, image: null };
         }
     }));
@@ -5902,7 +5890,7 @@ function finalizeHydratedFrameState() {
         lastSavedAt = new Date();
     }
     setSaveIndicator('saved');
-    setSaveStatus('Сохранено', 'saved');
+    setSaveStatus('Saved', 'saved');
     updateLastSavedLabel();
     updateSaveButtonState();
     ensureHistoryBaseline();
@@ -5946,7 +5934,7 @@ async function hydrateSavedFrame() {
     if (!currentFramePreviewUrl) {
         if (lastSavedAt) {
             setSaveIndicator('saved');
-            setSaveStatus('Сохранено', 'saved');
+            setSaveStatus('Saved', 'saved');
             updateLastSavedLabel();
         }
         ensureHistoryBaseline();
@@ -5963,15 +5951,15 @@ async function hydrateSavedFrame() {
         finalizeHydratedFrameState();
     } catch (error) {
         if (expectedToken !== frameHydrationToken) return;
-        console.warn('Не удалось загрузить сохраненный кадр', error);
+        console.warn('Could not load the saved frame', error);
         setSaveIndicator('error');
-        setSaveStatus('Не удалось загрузить сохраненный кадр', 'error');
+        setSaveStatus('Could not load the saved frame.', 'error');
         ensureHistoryBaseline();
     }
 }
 
 /**
- * Собираем данные текущего кадра для сохранения.
+ * Build the current frame payload for saving.
  */
 function getCurrentFramePayload() {
     const flattened = flattenLayers();
@@ -5986,11 +5974,11 @@ function getCurrentFramePayload() {
 }
 
 /**
- * Отправляем текущий кадр на сервер.
+ * Send the current frame to the server.
  */
 async function saveCurrentFrame(options = {}) {
     if (!frameSaveUrlTemplate) {
-        setSaveStatus('Не найден адрес сохранения кадра', 'error');
+        setSaveStatus('Frame save URL was not found.', 'error');
         setSaveIndicator('error');
         return false;
     }
@@ -6000,14 +5988,14 @@ async function saveCurrentFrame(options = {}) {
 
     const saveUrl = getFrameSaveUrl(currentFrameIndex);
     if (!saveUrl) {
-        setSaveStatus('Не найден адрес сохранения кадра', 'error');
+        setSaveStatus('Frame save URL was not found.', 'error');
         setSaveIndicator('error');
         return false;
     }
 
     const payload = getCurrentFramePayload();
     if (!payload) {
-        setSaveStatus('Нет данных для сохранения', 'error');
+        setSaveStatus('There is no data to save.', 'error');
         setSaveIndicator('error');
         return false;
     }
@@ -6020,7 +6008,7 @@ async function saveCurrentFrame(options = {}) {
     }
 
     updateSaveButtonState();
-    setSaveStatus('Идёт сохранение…', 'saving');
+    setSaveStatus('Saving...', 'saving');
     setSaveIndicator('saving');
 
     try {
@@ -6042,7 +6030,7 @@ async function saveCurrentFrame(options = {}) {
         }
 
         if (!response.ok || !data || !data.ok) {
-            const errorMessage = data && data.error ? data.error : 'Не удалось сохранить кадр.';
+            const errorMessage = data && data.error ? data.error : 'Could not save the frame.';
             throw new Error(errorMessage);
         }
 
@@ -6056,18 +6044,18 @@ async function saveCurrentFrame(options = {}) {
             currentFrameUpdatedAt = data.frame.updated_at || currentFrameUpdatedAt || '';
             updateTimelineFramePreview(data.frame);
         }
-        setSaveStatus('Сохранено', 'saved');
+        setSaveStatus('Saved', 'saved');
         setSaveIndicator('saved');
         updateLastSavedLabel();
         return true;
     } catch (error) {
-        console.error('Ошибка сохранения кадра', error);
-        let errorText = 'Не удалось сохранить кадр.';
+        console.error('Frame save error', error);
+        let errorText = 'Could not save the frame.';
         if (error instanceof Error && error.message) {
             errorText = error.message;
         }
         if (errorText === 'Failed to fetch') {
-            errorText = 'Не удалось связаться с сервером.';
+            errorText = 'Could not reach the server.';
         }
         setSaveStatus(errorText, 'error');
         setSaveIndicator('error');
@@ -6083,7 +6071,7 @@ async function saveCurrentFrame(options = {}) {
 }
 
 // =======================
-// Привязка событий к Canvas
+// Canvas event binding
 // =======================
 
 function isTextInputElement(element) {
@@ -6129,7 +6117,7 @@ function stopPan() {
 
 function handlePointerDown(event) {
     if (isEditingLockedByPlayback()) return;
-    // Средняя кнопка мыши (колёсико): временная панорама без смены инструмента.
+    // Middle mouse button: temporary panning without switching tools.
     if (event.button === 1) {
         event.preventDefault();
         if (isTransformingSelection) return;
@@ -6282,7 +6270,7 @@ function handlePointerUp(event) {
         return;
     }
     if (isPanning) {
-        // Если панорама запущена средней кнопкой, останавливаем только при её отпускании.
+        // If panning started with the middle mouse button, stop only on its release.
         if (panStartedByMiddle) {
             const buttons = typeof event.buttons === 'number' ? event.buttons : 0;
             const middleStillDown = (buttons & 4) === 4;
@@ -6372,7 +6360,7 @@ function handleWindowPointerDown(event) {
         : (event.target && event.target.parentElement ? event.target.parentElement : null);
     const startedOnCanvas = Boolean(target && target === canvas);
 
-    // Если нажали прямо на canvas — обычный обработчик mousedown на canvas всё сделает сам.
+    // If the press started directly on the canvas, the regular mousedown handler handles it.
     if (startedOnCanvas) {
         pendingCanvasStartFromOutside = { allow: false };
         return;
@@ -6414,13 +6402,13 @@ function tryStartCanvasInteractionFromOutside(event) {
         return false;
     }
 
-    // Если mousedown был внутри окна и мы точно знаем, что он был на UI — не стартуем.
-    // Если mousedown не поймали (например, старт за пределами окна) — разрешаем.
+    // If mousedown happened inside the window and we know it was on UI, do not start.
+    // If mousedown was missed entirely (for example it started outside the window), allow it.
     if (pendingCanvasStartFromOutside && pendingCanvasStartFromOutside.allow !== true) {
         return false;
     }
 
-    // Стартуем только если под курсором реально canvas (не панель onion/layers/history).
+    // Only start when the cursor is actually over the canvas, not over UI panels.
     const topEl = document.elementFromPoint(event.clientX, event.clientY);
     if (topEl !== canvas) return false;
 
@@ -6548,7 +6536,7 @@ function pasteImageFile(file) {
     };
     image.onerror = () => {
         URL.revokeObjectURL(url);
-        console.warn('Не удалось вставить изображение из буфера обмена.');
+        console.warn('Could not paste the image from the clipboard.');
     };
     image.src = url;
 }
@@ -6674,7 +6662,7 @@ function handleKeyUp(event) {
 }
 
 /**
- * Навешиваем обработчики мыши на canvas
+ * Bind mouse handlers to the canvas.
  */
 function bindCanvasEvents() {
     if (!canvas) return;
@@ -6696,12 +6684,11 @@ function bindCanvasEvents() {
 }
 
 // =======================
-// Привязка UI элементов панели инструментов
+// Toolbar UI binding
 // =======================
 
 /**
- * Навешиваем обработчики на кнопки инструментов
- * и контролы цвета/размера
+ * Bind handlers to tool buttons and color/size controls.
  */
 function bindToolbarEvents() {
     if (toolbar) {
@@ -6834,7 +6821,7 @@ function bindToolbarEvents() {
 }
 
 // =======================
-// Привязка UI слоёв
+// Layers UI binding
 // =======================
 
 function bindLayerEvents() {
@@ -7074,7 +7061,7 @@ function storePanelPosition(panelName, position) {
             container: PANEL_POSITION_CONTAINER,
         }));
     } catch (error) {
-        // localStorage может быть недоступен (private mode / блокировки) — не падаем
+        // localStorage may be unavailable (private mode, blocked storage, etc.).
     }
 }
 
@@ -7083,7 +7070,7 @@ function normalizeLoadedPanelPosition(position) {
     if (position.container === PANEL_POSITION_CONTAINER) {
         return { position: { left: position.left, top: position.top }, didMigrate: false };
     }
-    // Легаси-значения (до расширения области drag): были относительно `.canvas-wrapper`.
+    // Legacy values from before the drag area was expanded were relative to `.canvas-wrapper`.
     if (!editorMain || !canvasWrapper) {
         return { position: { left: position.left, top: position.top }, didMigrate: false };
     }
@@ -7304,7 +7291,7 @@ function bindHistoryPanelDrag() {
 }
 
 // =======================
-// Привязка UI сохранения
+// Save UI binding
 // =======================
 
 function bindSaveEvents() {
@@ -7316,7 +7303,7 @@ function bindSaveEvents() {
 }
 
 // =======================
-// Экспорт (модалка)
+// Export modal
 // =======================
 
 function isExportModalOpen() {
@@ -7453,7 +7440,7 @@ function triggerDownload(url) {
 async function performProjectExport() {
     if (isExporting) return;
     if (!projectExportUrl) {
-        setExportError('Не найден адрес экспорта.');
+        setExportError('Export URL was not found.');
         return;
     }
 
@@ -7463,7 +7450,7 @@ async function performProjectExport() {
     if (format === 'gif') {
         const fpsRaw = exportFpsInput ? parseInt(exportFpsInput.value, 10) : projectFps;
         if (!Number.isFinite(fpsRaw) || fpsRaw <= 0) {
-            setExportError('Укажите корректный FPS (1–60).');
+            setExportError('Enter a valid FPS value (1-60).');
             return;
         }
         fps = clamp(fpsRaw, 1, 60);
@@ -7472,14 +7459,14 @@ async function performProjectExport() {
         }
     }
 
-    // Быстрые клиентские подсказки (сервер всё равно проверит).
+    // Quick client-side guardrails; the server still validates everything.
     const totalFrames = Array.isArray(timelineFrames) ? timelineFrames.length : 0;
     if (format === 'gif' && totalFrames && totalFrames > 250) {
-        setExportError(`Слишком много кадров для GIF (${totalFrames}). Рекомендуем PNG‑последовательность.`);
+        setExportError(`Too many frames for GIF export (${totalFrames}). Try PNG sequence export instead.`);
         return;
     }
     if (format === 'png_zip' && totalFrames && totalFrames > 2000) {
-        setExportError(`Слишком много кадров для экспорта (${totalFrames}). Уменьшите количество кадров.`);
+        setExportError(`Too many frames for export (${totalFrames}). Reduce the frame count.`);
         return;
     }
 
@@ -7502,7 +7489,7 @@ async function performProjectExport() {
     try {
         const savedOk = await saveCurrentFrame();
         if (!savedOk && hasUnsavedChanges) {
-            throw new Error('Не удалось сохранить текущий кадр перед экспортом.');
+            throw new Error('Could not save the current frame before export.');
         }
 
         const payload = {
@@ -7534,14 +7521,14 @@ async function performProjectExport() {
 
         if (!response.ok || !data || !data.ok) {
             const serverMessage = data && (data.message || data.error) ? (data.message || data.error) : '';
-            const fallback = 'Не удалось экспортировать.';
+            const fallback = 'Could not export the project.';
             throw new Error(serverMessage || fallback);
         }
 
         const downloadUrl = data.download_url || '';
         const filename = data.filename || '';
         if (!downloadUrl) {
-            throw new Error('Сервер не вернул ссылку для скачивания.');
+            throw new Error('The server did not return a download link.');
         }
 
         setExportProgressVisible(false);
@@ -7549,13 +7536,13 @@ async function performProjectExport() {
         setExportResult(downloadUrl, filename);
         triggerDownload(downloadUrl);
     } catch (error) {
-        console.error('Ошибка экспорта', error);
-        let errorText = 'Не удалось экспортировать.';
+        console.error('Export error', error);
+        let errorText = 'Could not export the project.';
         if (error instanceof Error && error.message) {
             errorText = error.message;
         }
         if (errorText === 'Failed to fetch') {
-            errorText = 'Не удалось связаться с сервером.';
+            errorText = 'Could not reach the server.';
         }
         setExportError(errorText);
     } finally {
@@ -7614,7 +7601,7 @@ function bindExportEvents() {
 }
 
 // =======================
-// Автосохранение и таймеры
+// Autosave and timers
 // =======================
 
 function startAutosave() {
@@ -7639,16 +7626,15 @@ function startLastSavedTicker() {
 }
 
 // =======================
-// Инициализация редактора
+// Editor initialization
 // =======================
 
 /**
- * Главная точка входа
- * Настраиваем canvas и панель инструментов
+ * Main entry point. Set up the canvas and toolbar.
  */
 async function initEditor() {
     if (!canvas || !overlayCanvas) {
-        console.warn('Canvas редактора не найден');
+        console.warn('Editor canvas was not found');
         return;
     }
 
@@ -7661,7 +7647,7 @@ async function initEditor() {
     syncEditorLayout();
     await loadFrameByIndex(currentFrameIndex);
 
-    // устанавливаем стартовые значения
+    // Apply initial values.
     setTool(currentTool);
     setColor(currentColor);
     setColor(secondaryColor, { secondary: true });
@@ -7682,17 +7668,11 @@ async function initEditor() {
     syncEditorInteractionLockUi();
     updatePlaybackControlsState();
     hydratePanelPositions();
-    window.addEventListener('i18n:language-changed', () => {
-        renderLayerList();
-        updateHistoryPanel();
-        updateLastSavedLabel();
-        updatePlaybackControlsState();
-    });
     startLastSavedTicker();
     window.addEventListener('resize', syncEditorLayout);
 }
 
-// Запускаем после загрузки скрипта
+// Run after the script loads.
 initEditor().catch((error) => {
-    console.error('Ошибка инициализации редактора', error);
+    console.error('Editor initialization error', error);
 });

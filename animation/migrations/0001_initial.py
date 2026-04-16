@@ -28,34 +28,34 @@ class Migration(migrations.Migration):
                 ),
                 (
                     "title",
-                    models.CharField(max_length=200, verbose_name="Название проекта"),
+                    models.CharField(max_length=200, verbose_name="Project title"),
                 ),
-                ("description", models.TextField(blank=True, verbose_name="Описание")),
+                ("description", models.TextField(blank=True, verbose_name="Description")),
                 (
                     "width",
                     models.PositiveIntegerField(
-                        default=1280, verbose_name="Ширина холста (px)"
+                        default=1280, verbose_name="Canvas width (px)"
                     ),
                 ),
                 (
                     "height",
                     models.PositiveIntegerField(
-                        default=720, verbose_name="Высота холста (px)"
+                        default=720, verbose_name="Canvas height (px)"
                     ),
                 ),
                 (
                     "fps",
                     models.PositiveIntegerField(
-                        default=12, verbose_name="Кадров в секунду"
+                        default=12, verbose_name="Frames per second"
                     ),
                 ),
                 (
                     "created_at",
-                    models.DateTimeField(auto_now_add=True, verbose_name="Создано"),
+                    models.DateTimeField(auto_now_add=True, verbose_name="Created at"),
                 ),
                 (
                     "updated_at",
-                    models.DateTimeField(auto_now=True, verbose_name="Обновлено"),
+                    models.DateTimeField(auto_now=True, verbose_name="Updated at"),
                 ),
                 (
                     "owner",
@@ -79,10 +79,10 @@ class Migration(migrations.Migration):
                         verbose_name="ID",
                     ),
                 ),
-                ("index", models.PositiveIntegerField(verbose_name="Номер кадра")),
+                ("index", models.PositiveIntegerField(verbose_name="Frame number")),
                 (
                     "content_json",
-                    models.TextField(blank=True, verbose_name="JSON содержимого кадра"),
+                    models.TextField(blank=True, verbose_name="Frame content JSON"),
                 ),
                 (
                     "preview_image",
@@ -90,16 +90,16 @@ class Migration(migrations.Migration):
                         blank=True,
                         null=True,
                         upload_to="frames/",
-                        verbose_name="Превью кадра",
+                        verbose_name="Frame preview",
                     ),
                 ),
                 (
                     "created_at",
-                    models.DateTimeField(auto_now_add=True, verbose_name="Создано"),
+                    models.DateTimeField(auto_now_add=True, verbose_name="Created at"),
                 ),
                 (
                     "updated_at",
-                    models.DateTimeField(auto_now=True, verbose_name="Обновлено"),
+                    models.DateTimeField(auto_now=True, verbose_name="Updated at"),
                 ),
                 (
                     "project",

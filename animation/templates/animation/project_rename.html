@@ -1,12 +1,12 @@
 {% extends 'animation/base.html' %}
 
-{% block title %}Переименовать {{ project.title }}{% endblock %}
+{% block title %}Rename {{ project.title }}{% endblock %}
 
 {% block content %}
-<h2>Переименовать проект</h2>
+<h2>Rename project</h2>
 
 <p class="project-current-title">
-    Текущее название: <strong>{{ project.title }}</strong>
+    Current title: <strong>{{ project.title }}</strong>
 </p>
 
 <form method="post" class="project-rename-form">
@@ -14,7 +14,7 @@
     <input type="hidden" name="project_id" value="{{ project.id }}">
 
     <label class="form-field">
-        Новое название
+        New title
         <input type="text"
                name="new_title"
                value="{{ project.title }}"
@@ -27,8 +27,8 @@
     {% endif %}
 
     <div class="form-actions">
-        <button type="submit" class="tool-button">Сохранить</button>
-        <a class="project-action" href="{% url 'animation:project_list' %}">Отмена</a>
+        <button type="submit" class="tool-button">Save</button>
+        <a class="project-action" href="{% url 'animation:project_list' %}">Cancel</a>
     </div>
 </form>
 {% endblock %}

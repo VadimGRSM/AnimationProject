@@ -1,0 +1,18 @@
+{% extends "animation/base.html" %}
+
+{% block title %}Confirm your email{% endblock %}
+{% block body_class %}anim-page anim-page--auth{% endblock %}
+
+{% block content %}
+<section class="auth-shell">
+    <div class="auth-card">
+        <p class="auth-card__eyebrow">AnimStudio</p>
+        <h1 class="auth-card__title">Check your email</h1>
+        <p class="auth-card__subtitle">We sent an email confirmation link. In local development it will also appear in the server console.</p>
+
+        <div class="auth-links">
+            <a href="{% url 'account_login' %}">Back to log in</a>
+        </div>
+    </div>
+</section>
+{% endblock %}

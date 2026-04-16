@@ -1,0 +1,48 @@
+{% extends "animation/base.html" %}
+
+{% block title %}
+    {% if process == "connect" %}
+        Connect {{ provider.name }}
+    {% else %}
+        Sign in with {{ provider.name }}
+    {% endif %}
+{% endblock %}
+{% block body_class %}anim-page anim-page--auth{% endblock %}
+
+{% block content %}
+<section class="auth-shell">
+    <div class="auth-card">
+        <p class="auth-card__eyebrow">AnimStudio</p>
+
+        {% if messages %}
+            <ul class="messages">
+                {% for message in messages %}
+                    <li class="message message--{{ message.tags|default:'success' }}">{{ message }}</li>
+                {% endfor %}
+            </ul>
+        {% endif %}
+
+        {% if process == "connect" %}
+            <h1 class="auth-card__title">Connect {{ provider.name }}</h1>
+            <p class="auth-card__subtitle">You are about to connect a new third-party account from {{ provider.name }}.</p>
+        {% else %}
+            <h1 class="auth-card__title">Sign in with {{ provider.name }}</h1>
+            <p class="auth-card__subtitle">Confirm the sign-in with {{ provider.name }} to continue working on your projects.</p>
+        {% endif %}
+
+        <div class="projects-shortcut auth-google-button" aria-hidden="true">
+            <span class="projects-shortcut__icon">{{ provider.name|slice:":1" }}</span>
+            <span class="projects-shortcut__text">{{ provider.name }}</span>
+        </div>
+
+        <form method="post" class="auth-form">
+            {% csrf_token %}
+            <button type="submit" class="tool-button auth-submit">Continue</button>
+        </form>
+
+        <div class="auth-links">
+            <a href="{% url 'account_login' %}">Back to log in</a>
+        </div>
+    </div>
+</section>
+{% endblock %}

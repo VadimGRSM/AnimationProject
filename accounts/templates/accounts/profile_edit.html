@@ -1,0 +1,42 @@
+{% extends "animation/base.html" %}
+
+{% block title %}Edit profile{% endblock %}
+{% block body_class %}anim-page anim-page--auth{% endblock %}
+
+{% block content %}
+<section class="auth-shell">
+    <div class="auth-card auth-card--wide">
+        <p class="auth-card__eyebrow">AnimStudio</p>
+        <h1 class="auth-card__title">Edit profile</h1>
+        <p class="auth-card__subtitle">Update your display name, avatar, and personal settings.</p>
+
+        {% if form.non_field_errors %}
+            <ul class="messages">
+                {% for error in form.non_field_errors %}
+                    <li class="message message--error">{{ error }}</li>
+                {% endfor %}
+            </ul>
+        {% endif %}
+
+        <form method="post" enctype="multipart/form-data" class="auth-form">
+            {% csrf_token %}
+            {% for field in form %}
+                <label class="form-field auth-field">
+                    <span>{{ field.label }}</span>
+                    {{ field }}
+                    {% if field.help_text %}
+                        <small class="auth-field__help">{{ field.help_text }}</small>
+                    {% endif %}
+                    {% for error in field.errors %}
+                        <span class="form-error">{{ error }}</span>
+                    {% endfor %}
+                </label>
+            {% endfor %}
+            <div class="auth-actions">
+                <button type="submit" class="tool-button auth-submit auth-submit--inline">Save profile</button>
+                <a class="project-action" href="{% url 'account_profile' %}">Cancel</a>
+            </div>
+        </form>
+    </div>
+</section>
+{% endblock %}

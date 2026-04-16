@@ -1,4 +1,4 @@
-/* Общие стили */
+/* Global styles */
 
 *,
 *::before,
@@ -21,7 +21,7 @@ body {
     flex-direction: column;
 }
 
-/* Важно: `hidden` должен всегда скрывать элементы, даже если у класса задан `display`. */
+/* Keep `hidden` authoritative even when a class sets `display`. */
 [hidden] {
     display: none !important;
 }
@@ -131,8 +131,7 @@ body {
     max-width: min(32vw, 360px);
 }
 
-.anim-header__user,
-.anim-header__language {
+.anim-header__user {
     margin: 0;
     font-size: 13px;
     color: #cbd5e1;
@@ -145,21 +144,6 @@ body {
 
 .anim-header__user a:hover {
     color: #ddd6fe;
-}
-
-.language-picker label {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-}
-
-.anim-header .language-picker select {
-    border-radius: 999px;
-    border: 1px solid rgba(148, 163, 184, 0.16);
-    background-color: rgba(30, 41, 59, 0.86);
-    color: #f8fafc;
-    font-size: 13px;
-    padding: 6px 10px;
 }
 
 .anim-page--projects {
@@ -179,7 +163,7 @@ main {
     flex-direction: column;
 }
 
-/* Сообщения */
+/* Messages */
 
 .messages {
     list-style: none;
@@ -207,7 +191,7 @@ main {
     color: #991b1b;
 }
 
-/* Дашборд проектов */
+/* Project dashboard */
 
 .projects-dashboard {
     display: grid;
@@ -529,7 +513,7 @@ main {
     font-size: 14px;
 }
 
-/* Модальные окна */
+/* Modals */
 
 body.modal-open {
     overflow: hidden;
@@ -620,7 +604,7 @@ body.modal-open {
     flex-wrap: wrap;
 }
 
-/* Экспорт (модалка) */
+/* Export modal */
 
 .export-fieldset {
     border: 1px solid #e5e7eb;
@@ -687,7 +671,7 @@ body.modal-open {
     }
 }
 
-/* Форма переименования */
+/* Rename form */
 
 .project-rename-form {
     margin-top: 12px;
@@ -752,7 +736,7 @@ body.modal-open {
     font-size: 13px;
 }
 
-/* Корень редактора */
+/* Editor root */
 
 .editor-root {
     display: flex;
@@ -763,7 +747,7 @@ body.modal-open {
     min-height: 0;
 }
 
-/* Элементы редактора в основном header */
+/* Editor controls in the main header */
 
 .anim-header__editor,
 .site-header__editor {
@@ -827,7 +811,7 @@ body.modal-open {
     display: grid;
 }
 
-/* Панель инструментов */
+/* Toolbar panel */
 
 .editor-toolbar-panel {
     position: absolute;
@@ -1072,7 +1056,7 @@ body.modal-open {
     display: none;
 }
 
-/* Основная область редактора */
+/* Main editor area */
 
 .editor-main {
     margin-top: 0;
@@ -1096,19 +1080,19 @@ body.modal-open {
     line-height: 0;
 }
 
-/* Сам Canvas */
+/* Canvas itself */
 
 #editor-canvas,
 #editor-overlay,
 .layer-canvas,
 .onion-canvas {
     display: block;
-    /* чтобы на маленьком экране не вылезал */
+    /* Prevent overflow on smaller screens. */
     max-width: 100%;
 }
 
 #editor-canvas {
-    /* по умолчанию немного ужимаем по высоте, а точное значение выставит JS */
+    /* Slightly constrain the default height; JS sets the exact value. */
     max-height: 70vh;
     width: auto;
     height: auto;
@@ -1159,12 +1143,12 @@ body.modal-open {
 }
 
 .onion-canvas--prev {
-    /* выше слоёв (10+), но ниже overlay (1000) */
+    /* Above layers (10+) but below the overlay (1000). */
     z-index: 900;
 }
 
 .onion-canvas--next {
-    /* выше prev, но всё ещё ниже overlay */
+    /* Above prev but still below the overlay. */
     z-index: 901;
 }
 
@@ -1222,7 +1206,7 @@ body.modal-open {
     font-size: 13px;
 }
 
-/* Панель слоёв */
+/* Layers panel */
 
 .layers-panel {
     position: absolute;
@@ -1243,7 +1227,7 @@ body.modal-open {
     --layer-preview-size: 32px;
 }
 
-/* Панель истории */
+/* History panel */
 
 .history-panel {
     position: absolute;
@@ -1537,7 +1521,7 @@ body.modal-open {
     white-space: nowrap;
 }
 
-/* Таймлайн кадров */
+/* Frame timeline */
 
 .timeline-wrapper {
     margin-top: 10px;
@@ -1870,5 +1854,242 @@ body.modal-open {
 
     .anim-header__editor {
         width: 100%;
+    }
+}
+
+/* Authentication and profile */
+
+.anim-page--auth {
+    background:
+        radial-gradient(circle at top right, rgba(56, 189, 248, 0.12), transparent 22%),
+        radial-gradient(circle at bottom left, rgba(99, 102, 241, 0.18), transparent 26%),
+        linear-gradient(180deg, #0b1120 0%, #0f172a 100%);
+}
+
+.anim-page--auth main {
+    padding: 40px 20px 56px;
+    align-items: center;
+}
+
+.auth-shell {
+    width: 100%;
+    display: flex;
+    justify-content: center;
+}
+
+.auth-card {
+    width: min(100%, 520px);
+    padding: 28px;
+    border-radius: 24px;
+    border: 1px solid rgba(148, 163, 184, 0.16);
+    background: rgba(15, 23, 42, 0.9);
+    box-shadow: 0 24px 48px rgba(2, 6, 23, 0.34);
+    display: grid;
+    gap: 18px;
+    color: #e2e8f0;
+}
+
+.auth-card--wide {
+    width: min(100%, 720px);
+}
+
+.auth-card__eyebrow {
+    margin: 0;
+    color: #93c5fd;
+    font-size: 13px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+}
+
+.auth-card__title {
+    margin: 0;
+    color: #f8fafc;
+    font-size: 34px;
+    line-height: 1.05;
+}
+
+.auth-card__subtitle {
+    margin: 0;
+    color: #cbd5e1;
+    line-height: 1.5;
+}
+
+.auth-card__hint {
+    margin: 0;
+    color: #94a3b8;
+    font-size: 14px;
+    line-height: 1.5;
+}
+
+.auth-form {
+    display: grid;
+    gap: 16px;
+}
+
+.auth-field {
+    color: #e2e8f0;
+}
+
+.auth-field__input {
+    width: 100%;
+    min-height: 44px;
+    padding: 10px 12px;
+    border-radius: 12px;
+    border: 1px solid rgba(148, 163, 184, 0.28);
+    background: rgba(15, 23, 42, 0.78);
+    color: #f8fafc;
+    box-sizing: border-box;
+}
+
+.auth-field__input:focus {
+    border-color: rgba(96, 165, 250, 0.9);
+    box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.16);
+}
+
+.auth-field__help {
+    color: #94a3b8;
+    font-size: 12px;
+}
+
+.auth-submit {
+    width: 100%;
+    justify-content: center;
+}
+
+.auth-submit--inline {
+    width: auto;
+}
+
+.auth-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    align-items: center;
+}
+
+.auth-links {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+}
+
+.auth-links a {
+    color: #93c5fd;
+    text-decoration: none;
+}
+
+.auth-links a:hover {
+    text-decoration: underline;
+}
+
+.auth-divider {
+    position: relative;
+    text-align: center;
+    color: #94a3b8;
+    font-size: 13px;
+}
+
+.auth-divider::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 50%;
+    border-top: 1px solid rgba(148, 163, 184, 0.16);
+}
+
+.auth-divider span {
+    position: relative;
+    padding: 0 12px;
+    background: rgba(15, 23, 42, 0.9);
+}
+
+.auth-google-button {
+    width: 100%;
+    box-sizing: border-box;
+}
+
+.profile-summary {
+    display: grid;
+    grid-template-columns: 88px minmax(0, 1fr);
+    gap: 18px;
+    align-items: center;
+    padding: 18px;
+    border-radius: 18px;
+    background: rgba(30, 41, 59, 0.72);
+    border: 1px solid rgba(148, 163, 184, 0.12);
+}
+
+.profile-summary__avatar {
+    width: 88px;
+    height: 88px;
+    border-radius: 999px;
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: linear-gradient(135deg, #38bdf8, #6366f1);
+    color: #ffffff;
+    font-size: 32px;
+    font-weight: 700;
+}
+
+.profile-summary__avatar img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+.profile-summary__meta {
+    margin: 0;
+    display: grid;
+    gap: 10px;
+}
+
+.profile-summary__meta div {
+    display: grid;
+    gap: 4px;
+}
+
+.profile-summary__meta dt {
+    color: #94a3b8;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+}
+
+.profile-summary__meta dd {
+    margin: 0;
+    color: #f8fafc;
+}
+
+.anim-header__logout-form {
+    display: inline;
+    margin: 0;
+}
+
+.anim-header__link-button {
+    padding: 0;
+    border: 0;
+    background: none;
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+    text-decoration: underline;
+}
+
+@media (max-width: 720px) {
+    .auth-card {
+        padding: 22px;
+        border-radius: 18px;
+    }
+
+    .auth-card__title {
+        font-size: 28px;
+    }
+
+    .profile-summary {
+        grid-template-columns: 1fr;
+        justify-items: start;
     }
 }

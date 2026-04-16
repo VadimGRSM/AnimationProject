@@ -1,6 +1,6 @@
 {% load static %}
 <!DOCTYPE html>
-<html lang="ru" data-current-user-id="{% if user.is_authenticated %}{{ user.id }}{% endif %}">
+<html lang="en" data-current-user-id="{% if user.is_authenticated %}{{ user.id }}{% endif %}">
 <head>
     <meta charset="UTF-8">
     <title>{% block title %}AnimStudio{% endblock %}</title>
@@ -8,9 +8,7 @@
     <script>
         const currentUserIdRaw = document.documentElement.dataset.currentUserId || '';
         window.CURRENT_USER_ID = currentUserIdRaw ? Number(currentUserIdRaw) : null;
-        window.I18N_URL = "{% static 'animation/i18n.json' %}?v=20260330";
     </script>
-    <script src="{% static 'animation/i18n.js' %}?v=20260330" defer></script>
 </head>
 <body class="{% block body_class %}{% endblock %}">
 <header class="anim-header">
@@ -26,25 +24,21 @@
             {% block header_project_controls %}{% endblock %}
             <div class="anim-header__meta">
                 {% if user.is_authenticated %}
-                    <p class="anim-header__user">
-                        <span data-i18n="logged_in_as">Вы вошли как</span> {{ user.username }}
-                        | <a href="{% url 'logout' %}" data-i18n="log_out">Выйти</a>
-                    </p>
+                    <div class="anim-header__user">
+                        <span>Logged in as</span> {{ user.display_name }}
+                        | <a href="{% url 'account_profile' %}">Profile</a>
+                        | <form method="post" action="{% url 'account_logout' %}" class="anim-header__logout-form">
+                            {% csrf_token %}
+                            <button type="submit" class="anim-header__link-button">Log out</button>
+                        </form>
+                    </div>
                 {% else %}
-                    <p class="anim-header__user">
-                        <a href="{% url 'login' %}" data-i18n="log_in">Войти</a>
-                    </p>
+                    <div class="anim-header__user">
+                        <a href="{% url 'account_login' %}">Log in</a>
+                        |
+                        <a href="{% url 'account_signup' %}">Sign up</a>
+                    </div>
                 {% endif %}
-                <p class="language-picker anim-header__language">
-                    <label>
-                        <span data-i18n="language">Язык</span>
-                        <select id="language-select">
-                            <option value="ru" data-i18n="russian">Русский</option>
-                            <option value="uk" data-i18n="ukrainian">Українська</option>
-                            <option value="en" data-i18n="english">English</option>
-                        </select>
-                    </label>
-                </p>
             </div>
         </div>
     </div>
