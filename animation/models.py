@@ -1,15 +1,5 @@
-from pathlib import Path
-
-from django.contrib.auth.models import User
 from django.db import models
-from django.utils import timezone
-
-
-def project_main_audio_upload_to(instance, filename):
-    extension = Path(filename or '').suffix.lower() or '.bin'
-    timestamp = timezone.now().strftime('%Y%m%d%H%M%S%f')
-    project_id = instance.pk or 'new'
-    return f'projects/project_{project_id}/audio/main_audio_{timestamp}{extension}'
+from django.contrib.auth.models import User
 
 
 class AnimationProject(models.Model):
@@ -19,21 +9,9 @@ class AnimationProject(models.Model):
     width = models.PositiveIntegerField(default=1280, verbose_name='Ширина холста (px)')
     height = models.PositiveIntegerField(default=720, verbose_name='Высота холста (px)')
     fps = models.PositiveIntegerField(default=12, verbose_name='Кадров в секунду')
-    main_audio = models.FileField(
-        upload_to=project_main_audio_upload_to,
-        blank=True,
-        null=True,
-        verbose_name='Основная аудиодорожка',
-    )
-    main_audio_duration = models.FloatField(
-        blank=True,
-        null=True,
-        verbose_name='Длительность аудио (секунды)',
-    )
-    main_audio_segments = models.JSONField(default=list, blank=True, verbose_name='Сегменты аудио')
-    main_audio_start_frame = models.PositiveIntegerField(default=1, verbose_name='Стартовый кадр аудио')
     created_at = models.DateTimeField(auto_now_add=True, verbose_name='Создано')
     updated_at = models.DateTimeField(auto_now=True, verbose_name='Обновлено')
+    # на будущее можно добавить audio = FileField(...)
 
     def __str__(self):
         return self.title

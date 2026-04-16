@@ -86,9 +86,6 @@ const exportDownloadLink = document.getElementById('export-download-link');
 const exportFormatInputs = exportModal
     ? exportModal.querySelectorAll('input[name="export-format"]')
     : [];
-const exportMp4Input = exportModal
-    ? exportModal.querySelector('input[name="export-format"][value="mp4"]')
-    : null;
 const eyedropperZoom = document.getElementById('eyedropper-zoom');
 const eyedropperZoomCanvas = document.getElementById('eyedropper-zoom-canvas');
 const eyedropperZoomCtx = eyedropperZoomCanvas ? eyedropperZoomCanvas.getContext('2d') : null;
@@ -127,28 +124,11 @@ const playbackPlayButton = document.getElementById('playback-play-button');
 const playbackStopButton = document.getElementById('playback-stop-button');
 const playbackLoopToggle = document.getElementById('playback-loop-toggle');
 const playbackFpsInput = document.getElementById('playback-fps-input');
-const audioTrackRoot = document.getElementById('timeline-audio-track');
-const audioTrackLane = document.getElementById('audio-track-lane');
-const audioTrackContent = document.getElementById('audio-track-content');
-const audioTrackEmpty = document.getElementById('audio-track-empty');
-const audioTrackClips = document.getElementById('audio-track-clips');
-const audioTrackPlayhead = document.getElementById('audio-track-playhead');
-const audioTrackClip = document.getElementById('audio-track-clip');
-const audioTrackName = document.getElementById('audio-track-name');
-const audioTrackMeta = document.getElementById('audio-track-meta');
-const audioUploadButton = document.getElementById('audio-upload-button');
-const audioDeleteButton = document.getElementById('audio-delete-button');
-const audioSplitButton = document.getElementById('audio-split-button');
-const audioFileInput = document.getElementById('audio-file-input');
-const audioStartFrameInput = document.getElementById('audio-start-frame-input');
 
 const projectSaveUrl = (editorRoot && editorRoot.dataset.projectSaveUrl)
     || window.ANIM_PROJECT_SAVE_URL
     || '';
 const projectUpdateUrl = (editorRoot && editorRoot.dataset.projectUpdateUrl) || '';
-const projectAudioInfoUrl = (editorRoot && editorRoot.dataset.projectAudioInfoUrl) || '';
-const projectAudioUploadUrl = (editorRoot && editorRoot.dataset.projectAudioUploadUrl) || '';
-const projectAudioDeleteUrl = (editorRoot && editorRoot.dataset.projectAudioDeleteUrl) || projectAudioInfoUrl;
 const projectExportUrl = (editorRoot && editorRoot.dataset.projectExportUrl)
     || window.ANIM_PROJECT_EXPORT_URL
     || '';
@@ -184,27 +164,6 @@ let projectFps = (() => {
     const raw = editorRoot ? editorRoot.dataset.projectFps : null;
     const parsed = parseInt(raw, 10);
     return Number.isFinite(parsed) && parsed > 0 ? parsed : 12;
-})();
-let projectAudioUrl = (editorRoot && editorRoot.dataset.projectAudioUrl)
-    || window.ANIM_PROJECT_AUDIO_URL
-    || '';
-let projectAudioFilename = (editorRoot && editorRoot.dataset.projectAudioFilename) || '';
-let projectAudioDurationSeconds = (() => {
-    const raw = editorRoot ? parseFloat(editorRoot.dataset.projectAudioDuration || '') : NaN;
-    return Number.isFinite(raw) && raw > 0 ? raw : null;
-})();
-let projectAudioSegments = (() => {
-    if (!editorRoot) return [];
-    try {
-        const parsed = JSON.parse(editorRoot.dataset.projectAudioSegments || '[]');
-        return Array.isArray(parsed) ? parsed : [];
-    } catch (error) {
-        return [];
-    }
-})();
-let projectAudioStartFrame = (() => {
-    const raw = editorRoot ? parseInt(editorRoot.dataset.projectAudioStartFrame || '', 10) : NaN;
-    return Number.isFinite(raw) && raw > 0 ? raw : 1;
 })();
 
 // =======================
@@ -311,11 +270,7 @@ const DEBUG_COORDS = true;
 const DEBUG_COORDS_THROTTLE_MS = 200;
 const TRANSFORM_HANDLE_SIZE_PX = 10;
 const TRANSFORM_HANDLE_HIT_PX = 16;
-const TRANSFORM_ROTATE_HANDLE_SIZE_PX = 18;
-const TRANSFORM_ROTATE_HANDLE_HIT_PX = 22;
-const TRANSFORM_ROTATE_HANDLE_OFFSET_PX = 18;
 const TRANSFORM_HINT_OFFSET = 14;
-const ELLIPSE_SELECTION_SEGMENTS = 32;
 let wandTolerance = wandSensitivityInput
     ? parseInt(wandSensitivityInput.value, 10) || WAND_DEFAULT_TOLERANCE
     : WAND_DEFAULT_TOLERANCE;
@@ -340,21 +295,6 @@ let panStartedByMiddle = false;
 let isExporting = false;
 let timelineControlsTemporarilyDisabled = false;
 let isUpdatingProjectFps = false;
-let isUpdatingAudioSegments = false;
-let isUploadingAudio = false;
-let isDeletingAudio = false;
-let selectedAudioSegmentId = null;
-let audioSegmentInteraction = null;
-let audioPlayheadInteraction = null;
-let isSyncingTimelineScroll = false;
-let timelineStripScrollDrag = null;
-const playbackAudioInstances = new Map();
-
-const TIMELINE_FRAME_WIDTH_PX = 104;
-const TIMELINE_FRAME_GAP_PX = 10;
-const TIMELINE_FRAME_PITCH_PX = TIMELINE_FRAME_WIDTH_PX + TIMELINE_FRAME_GAP_PX;
-const AUDIO_ROW_HEIGHT_PX = 36;
-const AUDIO_ROW_GAP_PX = 8;
 
 const PLAYBACK_IDLE = 'idle';
 const PLAYBACK_PLAYING = 'playing';
@@ -370,7 +310,6 @@ let playbackMarkerFrameIndex = null;
 let playbackAudioElement = null;
 let playbackStopping = false;
 let playbackFrameOrder = [];
-let playbackTimelineFrameOrder = [];
 let playbackFramePosition = -1;
 let playbackPreviewCanvas = null;
 let playbackPreviewCtx = null;
@@ -1360,7 +1299,16 @@ function renderLayer(layer) {
         && selectionTransform
         && transformClipboard
         && transformClipboard.canvas) {
-        drawFloatingSelectionCanvas(layer.ctx);
+        const bounds = selectionTransform.currentBounds || selectionTransform.startBounds;
+        if (bounds && bounds.width > 0 && bounds.height > 0) {
+            layer.ctx.drawImage(
+                transformClipboard.canvas,
+                bounds.x,
+                bounds.y,
+                bounds.width,
+                bounds.height,
+            );
+        }
     }
     layer.ctx.restore();
     updateLayerPreview(layer);
@@ -2683,161 +2631,6 @@ function getSelectionBounds(selectionShape) {
     return null;
 }
 
-function getBoundsCenter(bounds) {
-    if (!bounds) {
-        return { x: 0, y: 0 };
-    }
-    return {
-        x: bounds.x + bounds.width / 2,
-        y: bounds.y + bounds.height / 2,
-    };
-}
-
-function createTransformMatrix(a = 1, b = 0, c = 0, d = 1, e = 0, f = 0) {
-    return { a, b, c, d, e, f };
-}
-
-function createTranslationMatrix(tx, ty) {
-    return createTransformMatrix(1, 0, 0, 1, tx, ty);
-}
-
-function createScaleMatrix(scaleXValue, scaleYValue) {
-    return createTransformMatrix(scaleXValue, 0, 0, scaleYValue, 0, 0);
-}
-
-function createRotationMatrix(angle) {
-    const cos = Math.cos(angle);
-    const sin = Math.sin(angle);
-    return createTransformMatrix(cos, sin, -sin, cos, 0, 0);
-}
-
-function multiplyTransformMatrices(left, right) {
-    return createTransformMatrix(
-        left.a * right.a + left.c * right.b,
-        left.b * right.a + left.d * right.b,
-        left.a * right.c + left.c * right.d,
-        left.b * right.c + left.d * right.d,
-        left.a * right.e + left.c * right.f + left.e,
-        left.b * right.e + left.d * right.f + left.f,
-    );
-}
-
-function createScaleAroundPointMatrix(scaleXValue, scaleYValue, anchorX, anchorY) {
-    return multiplyTransformMatrices(
-        createTranslationMatrix(anchorX, anchorY),
-        multiplyTransformMatrices(
-            createScaleMatrix(scaleXValue, scaleYValue),
-            createTranslationMatrix(-anchorX, -anchorY),
-        ),
-    );
-}
-
-function createRotationAroundPointMatrix(angle, centerX, centerY) {
-    return multiplyTransformMatrices(
-        createTranslationMatrix(centerX, centerY),
-        multiplyTransformMatrices(
-            createRotationMatrix(angle),
-            createTranslationMatrix(-centerX, -centerY),
-        ),
-    );
-}
-
-function applyMatrixToPoint(matrix, x, y) {
-    if (!matrix) {
-        return { x, y };
-    }
-    return {
-        x: matrix.a * x + matrix.c * y + matrix.e,
-        y: matrix.b * x + matrix.d * y + matrix.f,
-    };
-}
-
-function getSelectionLocalPathPoints(selectionShape, bounds) {
-    if (!selectionShape || !bounds) return [];
-
-    if (selectionShape.type === SELECT_RECT) {
-        return [
-            { x: selectionShape.x - bounds.x, y: selectionShape.y - bounds.y },
-            { x: selectionShape.x + selectionShape.width - bounds.x, y: selectionShape.y - bounds.y },
-            { x: selectionShape.x + selectionShape.width - bounds.x, y: selectionShape.y + selectionShape.height - bounds.y },
-            { x: selectionShape.x - bounds.x, y: selectionShape.y + selectionShape.height - bounds.y },
-        ];
-    }
-
-    if (selectionShape.type === SELECT_ELLIPSE) {
-        const points = [];
-        const centerX = selectionShape.centerX - bounds.x;
-        const centerY = selectionShape.centerY - bounds.y;
-        for (let i = 0; i < ELLIPSE_SELECTION_SEGMENTS; i += 1) {
-            const angle = (i / ELLIPSE_SELECTION_SEGMENTS) * Math.PI * 2;
-            points.push({
-                x: centerX + Math.cos(angle) * selectionShape.radiusX,
-                y: centerY + Math.sin(angle) * selectionShape.radiusY,
-            });
-        }
-        return points;
-    }
-
-    if (selectionShape.type === SELECT_LASSO) {
-        return (selectionShape.points || []).map((point) => ({
-            x: point.x - bounds.x,
-            y: point.y - bounds.y,
-        }));
-    }
-
-    return [];
-}
-
-function buildLassoSelectionFromPoints(points) {
-    if (!Array.isArray(points) || points.length < 3) return null;
-    return {
-        type: SELECT_LASSO,
-        points: points.map((point) => ({ x: point.x, y: point.y })),
-    };
-}
-
-function getFloatingSelectionMatrix() {
-    if (!selectionTransform) return null;
-    if (selectionTransform.currentMatrix) {
-        return selectionTransform.currentMatrix;
-    }
-    const bounds = selectionTransform.currentBounds || selectionTransform.startBounds;
-    if (!bounds) return null;
-    return createTranslationMatrix(bounds.x, bounds.y);
-}
-
-function applyFloatingSelectionGeometry() {
-    if (!selectionTransform || !Array.isArray(selectionTransform.localPathPoints)) return;
-    const matrix = getFloatingSelectionMatrix();
-    if (!matrix) return;
-
-    const transformedPoints = selectionTransform.localPathPoints.map((point) => (
-        applyMatrixToPoint(matrix, point.x, point.y)
-    ));
-    const transformedSelection = buildLassoSelectionFromPoints(transformedPoints);
-    if (transformedSelection) {
-        selection = transformedSelection;
-    }
-
-    const bounds = getLassoBounds(transformedPoints);
-    selectionTransform.currentBounds = {
-        x: bounds.minX,
-        y: bounds.minY,
-        width: bounds.width,
-        height: bounds.height,
-    };
-}
-
-function drawFloatingSelectionCanvas(targetCtx) {
-    if (!targetCtx || !transformClipboard || !transformClipboard.canvas) return;
-    const matrix = getFloatingSelectionMatrix();
-    if (!matrix) return;
-    targetCtx.save();
-    targetCtx.transform(matrix.a, matrix.b, matrix.c, matrix.d, matrix.e, matrix.f);
-    targetCtx.drawImage(transformClipboard.canvas, 0, 0);
-    targetCtx.restore();
-}
-
 function cloneSelectionShape(selectionShape) {
     if (!selectionShape) return null;
     if (selectionShape.type === SELECT_RECT) {
@@ -2905,13 +2698,8 @@ function shouldShowSelectionTransformUI() {
         && selection.type !== SELECT_MAGIC;
 }
 
-function isRotateTransformHandle(handleId) {
-    return typeof handleId === 'string' && handleId.startsWith('rotate-');
-}
-
 function getTransformHandleCursor(handleId) {
     if (!handleId) return null;
-    if (isRotateTransformHandle(handleId)) return 'grab';
     if (handleId === 'n' || handleId === 's') return 'ns-resize';
     if (handleId === 'e' || handleId === 'w') return 'ew-resize';
     if (handleId === 'nw' || handleId === 'se') return 'nwse-resize';
@@ -2921,18 +2709,15 @@ function getTransformHandleCursor(handleId) {
 
 function getTransformHandleHint(handleId) {
     if (!handleId) return '';
-    if (isRotateTransformHandle(handleId)) {
-        return 'Поворот: потяните за стрелку, чтобы вращать выделение';
-    }
     const hints = {
-        nw: 'Растягивание: левый верхний угол. Shift — пропорционально.',
-        n: 'Растягивание: верхняя грань. Shift — пропорционально.',
-        ne: 'Растягивание: правый верхний угол. Shift — пропорционально.',
-        e: 'Растягивание: правая грань. Shift — пропорционально.',
-        se: 'Растягивание: правый нижний угол. Shift — пропорционально.',
-        s: 'Растягивание: нижняя грань. Shift — пропорционально.',
-        sw: 'Растягивание: левый нижний угол. Shift — пропорционально.',
-        w: 'Растягивание: левая грань. Shift — пропорционально.',
+        nw: 'Растягивание: левый верхний угол',
+        n: 'Растягивание: верхняя грань',
+        ne: 'Растягивание: правый верхний угол',
+        e: 'Растягивание: правая грань',
+        se: 'Растягивание: правый нижний угол',
+        s: 'Растягивание: нижняя грань',
+        sw: 'Растягивание: левый нижний угол',
+        w: 'Растягивание: левая грань',
     };
     return hints[handleId] || '';
 }
@@ -2957,34 +2742,11 @@ function getTransformHandles(bounds) {
     ];
 }
 
-function getTransformRotateHandles(bounds) {
-    if (!bounds) return [];
-    const normalizedScale = scale || 1;
-    const offset = TRANSFORM_ROTATE_HANDLE_OFFSET_PX / normalizedScale;
-    const left = bounds.x;
-    const top = bounds.y;
-    const right = bounds.x + bounds.width;
-    const bottom = bounds.y + bounds.height;
-    return [
-        { id: 'rotate-nw', x: left - offset, y: top - offset, anchorX: left, anchorY: top, glyph: '↺' },
-        { id: 'rotate-ne', x: right + offset, y: top - offset, anchorX: right, anchorY: top, glyph: '↻' },
-        { id: 'rotate-se', x: right + offset, y: bottom + offset, anchorX: right, anchorY: bottom, glyph: '↺' },
-        { id: 'rotate-sw', x: left - offset, y: bottom + offset, anchorX: left, anchorY: bottom, glyph: '↻' },
-    ];
-}
-
 function getTransformHandleAtPoint(x, y, bounds) {
     if (!bounds) return null;
     const normalizedScale = scale || 1;
     const hitSize = TRANSFORM_HANDLE_HIT_PX / normalizedScale;
     const half = hitSize / 2;
-    const rotateHitRadius = (TRANSFORM_ROTATE_HANDLE_HIT_PX / normalizedScale) / 2;
-
-    for (const handle of getTransformRotateHandles(bounds)) {
-        if (Math.hypot(x - handle.x, y - handle.y) <= rotateHitRadius) {
-            return handle.id;
-        }
-    }
 
     for (const handle of getTransformHandles(bounds)) {
         if (Math.abs(x - handle.x) <= half && Math.abs(y - handle.y) <= half) {
@@ -3000,7 +2762,6 @@ function drawSelectionTransformControls(targetCtx, bounds) {
     const strokeWidth = Math.max(0.5, 1 / normalizedScale);
     const handleSize = TRANSFORM_HANDLE_SIZE_PX / normalizedScale;
     const halfHandle = handleSize / 2;
-    const rotateRadius = (TRANSFORM_ROTATE_HANDLE_SIZE_PX / normalizedScale) / 2;
 
     targetCtx.save();
     targetCtx.lineWidth = strokeWidth;
@@ -3016,28 +2777,6 @@ function drawSelectionTransformControls(targetCtx, bounds) {
         targetCtx.rect(handle.x - halfHandle, handle.y - halfHandle, handleSize, handleSize);
         targetCtx.fill();
         targetCtx.stroke();
-    }
-
-    targetCtx.textAlign = 'center';
-    targetCtx.textBaseline = 'middle';
-    targetCtx.font = `${Math.max(10, 11 / normalizedScale)}px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`;
-    for (const handle of getTransformRotateHandles(bounds)) {
-        const isHover = hoverTransformHandle && handle.id === hoverTransformHandle;
-        targetCtx.strokeStyle = 'rgba(37, 99, 235, 0.45)';
-        targetCtx.beginPath();
-        targetCtx.moveTo(handle.anchorX, handle.anchorY);
-        targetCtx.lineTo(handle.x, handle.y);
-        targetCtx.stroke();
-
-        targetCtx.fillStyle = isHover ? '#2563eb' : '#ffffff';
-        targetCtx.strokeStyle = '#2563eb';
-        targetCtx.beginPath();
-        targetCtx.arc(handle.x, handle.y, rotateRadius, 0, Math.PI * 2);
-        targetCtx.fill();
-        targetCtx.stroke();
-
-        targetCtx.fillStyle = isHover ? '#ffffff' : '#2563eb';
-        targetCtx.fillText(handle.glyph, handle.x, handle.y + (0.5 / normalizedScale));
     }
 
     targetCtx.restore();
@@ -3098,98 +2837,14 @@ function clampMoveBoundsToCanvas(bounds) {
     return { x, y, width, height };
 }
 
-function getResizeAnchorPoint(bounds, handleId) {
-    const moveLeft = handleId && handleId.includes('w');
-    const moveRight = handleId && handleId.includes('e');
-    const moveTop = handleId && handleId.includes('n');
-    const moveBottom = handleId && handleId.includes('s');
-    return {
-        x: moveLeft
-            ? bounds.x + bounds.width
-            : moveRight
-                ? bounds.x
-                : bounds.x + bounds.width / 2,
-        y: moveTop
-            ? bounds.y + bounds.height
-            : moveBottom
-                ? bounds.y
-                : bounds.y + bounds.height / 2,
-    };
-}
-
-function getResizedBoundsFromHandle(startBounds, handleId, deltaX, deltaY, options = {}) {
+function getResizedBoundsFromHandle(startBounds, handleId, deltaX, deltaY) {
     if (!startBounds || !bufferCanvas) return startBounds;
     const minSize = SELECTION_MIN_SIZE;
-    const preserveAspectRatio = Boolean(options.preserveAspectRatio);
 
     const moveLeft = handleId && handleId.includes('w');
     const moveRight = handleId && handleId.includes('e');
     const moveTop = handleId && handleId.includes('n');
     const moveBottom = handleId && handleId.includes('s');
-
-    if (preserveAspectRatio && startBounds.width > 0 && startBounds.height > 0) {
-        const anchor = getResizeAnchorPoint(startBounds, handleId);
-        const aspectRatio = startBounds.width / startBounds.height;
-        const minScale = Math.max(
-            minSize / startBounds.width,
-            minSize / startBounds.height,
-        );
-
-        const proposedWidth = moveLeft
-            ? anchor.x - (startBounds.x + deltaX)
-            : moveRight
-                ? (startBounds.x + startBounds.width + deltaX) - anchor.x
-                : startBounds.width;
-        const proposedHeight = moveTop
-            ? anchor.y - (startBounds.y + deltaY)
-            : moveBottom
-                ? (startBounds.y + startBounds.height + deltaY) - anchor.y
-                : startBounds.height;
-
-        let scaleValue = 1;
-        if ((moveLeft || moveRight) && (moveTop || moveBottom)) {
-            scaleValue = Math.max(
-                proposedWidth / startBounds.width,
-                proposedHeight / startBounds.height,
-            );
-        } else if (moveLeft || moveRight) {
-            scaleValue = proposedWidth / startBounds.width;
-        } else if (moveTop || moveBottom) {
-            scaleValue = proposedHeight / startBounds.height;
-        }
-
-        const maxWidth = moveLeft || moveRight
-            ? (moveLeft ? anchor.x : bufferCanvas.width - anchor.x)
-            : Math.min(anchor.x, bufferCanvas.width - anchor.x) * 2;
-        const maxHeight = moveTop || moveBottom
-            ? (moveTop ? anchor.y : bufferCanvas.height - anchor.y)
-            : Math.min(anchor.y, bufferCanvas.height - anchor.y) * 2;
-        const maxScale = Math.min(
-            maxWidth / startBounds.width,
-            maxHeight / startBounds.height,
-        );
-        const clampedScale = clamp(scaleValue, minScale, Math.max(minScale, maxScale));
-        const nextWidth = Math.max(minSize, startBounds.width * clampedScale);
-        const nextHeight = Math.max(minSize, nextWidth / aspectRatio);
-
-        const left = moveLeft
-            ? anchor.x - nextWidth
-            : moveRight
-                ? anchor.x
-                : anchor.x - nextWidth / 2;
-        const top = moveTop
-            ? anchor.y - nextHeight
-            : moveBottom
-                ? anchor.y
-                : anchor.y - nextHeight / 2;
-
-        return {
-            x: left,
-            y: top,
-            width: nextWidth,
-            height: nextHeight,
-        };
-    }
 
     let left = startBounds.x;
     let top = startBounds.y;
@@ -3227,8 +2882,8 @@ function getResizedBoundsFromHandle(startBounds, handleId, deltaX, deltaY, optio
     };
 }
 
-function captureSelectionPixels(selectionShape, sourceCanvas = bufferCanvas) {
-    if (!selectionShape || !bufferCanvas || !sourceCanvas) return null;
+function captureSelectionPixels(selectionShape) {
+    if (!selectionShape || !bufferCanvas) return null;
     const bounds = clampSelectionBounds(getSelectionBounds(selectionShape));
     if (!bounds || bounds.width <= 0 || bounds.height <= 0) return null;
 
@@ -3239,7 +2894,7 @@ function captureSelectionPixels(selectionShape, sourceCanvas = bufferCanvas) {
     if (!snapshotCtx) return null;
 
     if (selectionShape.type === SELECT_MAGIC && selectionShape.maskCanvas) {
-        snapshotCtx.drawImage(sourceCanvas, -bounds.x, -bounds.y);
+        snapshotCtx.drawImage(bufferCanvas, -bounds.x, -bounds.y);
         snapshotCtx.globalCompositeOperation = 'destination-in';
         snapshotCtx.drawImage(selectionShape.maskCanvas, -bounds.x, -bounds.y);
         snapshotCtx.globalCompositeOperation = 'source-over';
@@ -3248,7 +2903,7 @@ function captureSelectionPixels(selectionShape, sourceCanvas = bufferCanvas) {
         snapshotCtx.translate(-bounds.x, -bounds.y);
         appendSelectionPath(snapshotCtx, selectionShape);
         snapshotCtx.clip();
-        snapshotCtx.drawImage(sourceCanvas, 0, 0);
+        snapshotCtx.drawImage(bufferCanvas, 0, 0);
         snapshotCtx.restore();
     }
 
@@ -3285,7 +2940,17 @@ function getActiveLayerCompositeCanvas() {
     transformCompositeCtx.setTransform(1, 0, 0, 1, 0, 0);
     transformCompositeCtx.clearRect(0, 0, transformCompositeCanvas.width, transformCompositeCanvas.height);
     transformCompositeCtx.drawImage(bufferCanvas, 0, 0);
-    drawFloatingSelectionCanvas(transformCompositeCtx);
+
+    const bounds = selectionTransform.currentBounds || selectionTransform.startBounds;
+    if (bounds && bounds.width > 0 && bounds.height > 0) {
+        transformCompositeCtx.drawImage(
+            transformClipboard.canvas,
+            bounds.x,
+            bounds.y,
+            bounds.width,
+            bounds.height,
+        );
+    }
     return transformCompositeCanvas;
 }
 
@@ -3306,8 +2971,9 @@ function startSelectionTransform(mode, handleId, startX, startY, event) {
 
     const snapshot = captureSelectionPixels(selection);
     if (!snapshot || !snapshot.canvas) return false;
-    const localPathPoints = getSelectionLocalPathPoints(selection, snapshot.bounds);
-    if (localPathPoints.length < 3) return false;
+
+    const selectionClone = cloneSelectionShape(selection);
+    if (!selectionClone) return false;
 
     transformClipboard = snapshot;
     selectionTransform = {
@@ -3315,17 +2981,10 @@ function startSelectionTransform(mode, handleId, startX, startY, event) {
         handleId: handleId || null,
         startPointerX: startX,
         startPointerY: startY,
-        startPointerAngle: 0,
         startBounds: bounds,
         currentBounds: bounds,
-        startMatrix: createTranslationMatrix(snapshot.bounds.x, snapshot.bounds.y),
-        currentMatrix: createTranslationMatrix(snapshot.bounds.x, snapshot.bounds.y),
-        localPathPoints,
+        startSelection: selectionClone,
     };
-    if (mode === 'rotate') {
-        const center = getBoundsCenter(bounds);
-        selectionTransform.startPointerAngle = Math.atan2(startY - center.y, startX - center.x);
-    }
 
     isTransformingSelection = true;
     beginLayerHistory('selection_transform');
@@ -3339,9 +2998,7 @@ function startSelectionTransform(mode, handleId, startX, startY, event) {
     }
 
     hideTransformHint();
-    if (mode === 'rotate' && handleId) {
-        setCanvasCursorOverride('grabbing');
-    } else if (mode === 'resize' && handleId) {
+    if (mode === 'resize' && handleId) {
         setCanvasCursorOverride(getTransformHandleCursor(handleId));
     } else {
         setCanvasCursorOverride('move');
@@ -3356,31 +3013,20 @@ function startFloatingSelectionTransform(mode, handleId, startX, startY) {
     const bounds = selectionTransform.currentBounds || clampSelectionBounds(getSelectionBounds(selection));
     const clamped = clampSelectionBounds(bounds);
     if (!clamped || clamped.width <= 0 || clamped.height <= 0) return false;
-    if (!Array.isArray(selectionTransform.localPathPoints) || selectionTransform.localPathPoints.length < 3) {
-        selectionTransform.localPathPoints = getSelectionLocalPathPoints(selection, clamped);
-    }
-    if (!Array.isArray(selectionTransform.localPathPoints) || selectionTransform.localPathPoints.length < 3) {
-        return false;
-    }
+    const selectionClone = cloneSelectionShape(selection);
+    if (!selectionClone) return false;
 
     selectionTransform.mode = mode;
     selectionTransform.handleId = handleId || null;
     selectionTransform.startPointerX = startX;
     selectionTransform.startPointerY = startY;
-    selectionTransform.startPointerAngle = 0;
     selectionTransform.startBounds = clamped;
     selectionTransform.currentBounds = clamped;
-    selectionTransform.startMatrix = selectionTransform.currentMatrix || createTranslationMatrix(clamped.x, clamped.y);
-    if (mode === 'rotate') {
-        const center = getBoundsCenter(clamped);
-        selectionTransform.startPointerAngle = Math.atan2(startY - center.y, startX - center.x);
-    }
+    selectionTransform.startSelection = selectionClone;
 
     isTransformingSelection = true;
     hideTransformHint();
-    if (mode === 'rotate' && handleId) {
-        setCanvasCursorOverride('grabbing');
-    } else if (mode === 'resize' && handleId) {
+    if (mode === 'resize' && handleId) {
         setCanvasCursorOverride(getTransformHandleCursor(handleId));
     } else {
         setCanvasCursorOverride('move');
@@ -3399,10 +3045,9 @@ function tryStartSelectionTransformAt(x, y, event) {
 
     const handleId = getTransformHandleAtPoint(x, y, bounds);
     if (handleId) {
-        const nextMode = isRotateTransformHandle(handleId) ? 'rotate' : 'resize';
         return hasFloatingSelection()
-            ? startFloatingSelectionTransform(nextMode, handleId, x, y)
-            : startSelectionTransform(nextMode, handleId, x, y, event);
+            ? startFloatingSelectionTransform('resize', handleId, x, y)
+            : startSelectionTransform('resize', handleId, x, y, event);
     }
     if (isPointInSelection(x, y, selection)) {
         return hasFloatingSelection()
@@ -3422,7 +3067,7 @@ function updateSelectionTransform(event) {
     const dy = y - selectionTransform.startPointerY;
 
     let nextBounds = selectionTransform.startBounds;
-    let nextMatrix = selectionTransform.startMatrix || getFloatingSelectionMatrix();
+    let nextSelection = null;
 
     if (selectionTransform.mode === 'move') {
         const moved = {
@@ -3434,42 +3079,21 @@ function updateSelectionTransform(event) {
         nextBounds = clampMoveBoundsToCanvas(moved);
         const appliedDx = nextBounds.x - selectionTransform.startBounds.x;
         const appliedDy = nextBounds.y - selectionTransform.startBounds.y;
-        nextMatrix = multiplyTransformMatrices(
-            createTranslationMatrix(appliedDx, appliedDy),
-            selectionTransform.startMatrix,
-        );
+        nextSelection = translateSelection(selectionTransform.startSelection, appliedDx, appliedDy);
     } else if (selectionTransform.mode === 'resize') {
         nextBounds = getResizedBoundsFromHandle(
             selectionTransform.startBounds,
             selectionTransform.handleId,
             dx,
             dy,
-            { preserveAspectRatio: isShiftPressed },
         );
-        const anchor = getResizeAnchorPoint(selectionTransform.startBounds, selectionTransform.handleId);
-        const scaleXValue = selectionTransform.startBounds.width > 0
-            ? nextBounds.width / selectionTransform.startBounds.width
-            : 1;
-        const scaleYValue = selectionTransform.startBounds.height > 0
-            ? nextBounds.height / selectionTransform.startBounds.height
-            : 1;
-        nextMatrix = multiplyTransformMatrices(
-            createScaleAroundPointMatrix(scaleXValue, scaleYValue, anchor.x, anchor.y),
-            selectionTransform.startMatrix,
-        );
-    } else if (selectionTransform.mode === 'rotate') {
-        const center = getBoundsCenter(selectionTransform.startBounds);
-        const pointerAngle = Math.atan2(y - center.y, x - center.x);
-        const angleDelta = pointerAngle - selectionTransform.startPointerAngle;
-        nextMatrix = multiplyTransformMatrices(
-            createRotationAroundPointMatrix(angleDelta, center.x, center.y),
-            selectionTransform.startMatrix,
-        );
+        nextSelection = scaleSelectionShape(selectionTransform.startSelection, selectionTransform.startBounds, nextBounds);
     }
 
-    selectionTransform.currentMatrix = nextMatrix;
+    if (nextSelection) {
+        selection = nextSelection;
+    }
     selectionTransform.currentBounds = nextBounds;
-    applyFloatingSelectionGeometry();
     if (activeLayer) {
         renderLayer(activeLayer);
     }
@@ -3502,7 +3126,13 @@ function commitSelectionTransform() {
 
     bufferCtx.save();
     bufferCtx.globalCompositeOperation = 'source-over';
-    drawFloatingSelectionCanvas(bufferCtx);
+    bufferCtx.drawImage(
+        transformClipboard.canvas,
+        bounds.x,
+        bounds.y,
+        bounds.width,
+        bounds.height,
+    );
     bufferCtx.restore();
 
     markUnsavedChanges();
@@ -4331,7 +3961,6 @@ function syncProjectFpsUi() {
     if (exportFpsInput) {
         exportFpsInput.value = String(projectFps);
     }
-    syncAudioTrackUi();
 }
 
 function syncPlaybackFpsControlState() {
@@ -4476,1507 +4105,6 @@ function normalizeAssetUrl(url) {
         return new URL(url, window.location.origin).toString();
     } catch (error) {
         return url;
-    }
-}
-
-function getProjectAudioState() {
-    return {
-        hasAudio: Boolean(projectAudioUrl),
-        url: projectAudioUrl || '',
-        filename: projectAudioFilename || '',
-        durationSeconds: Number.isFinite(projectAudioDurationSeconds) ? projectAudioDurationSeconds : null,
-        startFrame: Number.isFinite(projectAudioStartFrame) && projectAudioStartFrame > 0
-            ? projectAudioStartFrame
-            : 1,
-    };
-}
-
-function syncProjectAudioDataset() {
-    if (!editorRoot) return;
-    editorRoot.dataset.projectAudioUrl = projectAudioUrl || '';
-    editorRoot.dataset.projectAudioFilename = projectAudioFilename || '';
-    editorRoot.dataset.projectAudioDuration = Number.isFinite(projectAudioDurationSeconds)
-        ? String(projectAudioDurationSeconds)
-        : '';
-    editorRoot.dataset.projectAudioStartFrame = String(projectAudioStartFrame || 1);
-}
-
-function formatAudioDuration(seconds) {
-    if (!Number.isFinite(seconds) || seconds <= 0) return '';
-    const totalSeconds = Math.max(0, Math.round(seconds));
-    const minutes = Math.floor(totalSeconds / 60);
-    const remainderSeconds = totalSeconds % 60;
-    return `${minutes}:${String(remainderSeconds).padStart(2, '0')}`;
-}
-
-function getProjectAudioDurationFrames() {
-    if (!Number.isFinite(projectAudioDurationSeconds) || projectAudioDurationSeconds <= 0) {
-        return 1;
-    }
-    return Math.max(1, Math.ceil(projectAudioDurationSeconds * Math.max(1, projectFps)));
-}
-
-function updateMp4ExportAvailability() {
-    if (!exportMp4Input) return;
-    const hasAudio = Boolean(projectAudioUrl);
-    exportMp4Input.disabled = !hasAudio || isUploadingAudio || isDeletingAudio;
-    if (exportMp4Input.disabled && exportMp4Input.checked) {
-        const fallbackInput = Array.from(exportFormatInputs || []).find((input) => input && !input.disabled);
-        if (fallbackInput) {
-            fallbackInput.checked = true;
-        }
-    }
-}
-
-function syncPlaybackAudioSource() {
-    const audio = resolvePlaybackAudioElement();
-    if (!audio) return;
-
-    if (!projectAudioUrl) {
-        audio.pause();
-        audio.removeAttribute('src');
-        audio.load();
-        return;
-    }
-
-    const normalized = normalizeAssetUrl(projectAudioUrl);
-    const cacheBustValue = encodeURIComponent(projectAudioFilename || String(Date.now()));
-    const cacheBusted = `${normalized}${normalized.includes('?') ? '&' : '?'}v=${cacheBustValue}`;
-    if (audio.getAttribute('src') !== cacheBusted) {
-        audio.setAttribute('src', cacheBusted);
-        audio.load();
-    }
-}
-
-function applyProjectAudioPayload(audio) {
-    const payload = audio && typeof audio === 'object' ? audio : {};
-    projectAudioUrl = typeof payload.url === 'string' ? payload.url : '';
-    projectAudioFilename = typeof payload.filename === 'string' ? payload.filename : '';
-    projectAudioDurationSeconds = Number.isFinite(Number(payload.duration_seconds))
-        ? Number(payload.duration_seconds)
-        : null;
-    projectAudioStartFrame = Math.max(1, parseInt(payload.start_frame, 10) || 1);
-    syncProjectAudioDataset();
-    syncPlaybackAudioSource();
-    syncAudioTrackUi();
-    updateExportOptionsVisibility();
-}
-
-function syncAudioTrackUi() {
-    const hasAudio = Boolean(projectAudioUrl);
-    const busy = isUploadingAudio || isDeletingAudio || isUpdatingAudioStartFrame;
-    const durationLabel = formatAudioDuration(projectAudioDurationSeconds);
-    const totalTimelineFrames = Array.isArray(timelineFrames) && timelineFrames.length
-        ? timelineFrames.length
-        : 1;
-    const durationFrames = getProjectAudioDurationFrames();
-    const visualTotalFrames = Math.max(totalTimelineFrames, (projectAudioStartFrame - 1) + durationFrames, 1);
-    const leftPercent = hasAudio ? (((projectAudioStartFrame - 1) / visualTotalFrames) * 100) : 0;
-    const widthPercent = hasAudio ? ((durationFrames / visualTotalFrames) * 100) : 0;
-
-    if (audioUploadButton) {
-        audioUploadButton.textContent = hasAudio
-            ? getI18nText('replace_audio_file', 'Заменить аудио')
-            : getI18nText('add_audio_file', 'Добавить аудио');
-        audioUploadButton.disabled = busy;
-    }
-    if (audioAddButton) {
-        audioAddButton.hidden = !hasAudio;
-        audioAddButton.disabled = busy || !hasAudio;
-    }
-    if (audioDeleteButton) {
-        audioDeleteButton.hidden = !hasAudio;
-        audioDeleteButton.disabled = busy || !hasAudio;
-    }
-    if (audioStartFrameInput) {
-        audioStartFrameInput.value = String(projectAudioStartFrame || 1);
-        audioStartFrameInput.disabled = busy || !hasAudio;
-    }
-    if (audioTrackEmpty) {
-        audioTrackEmpty.hidden = hasAudio;
-    }
-    if (audioTrackClip) {
-        audioTrackClip.hidden = !hasAudio;
-        audioTrackClip.style.left = `${Math.max(0, leftPercent)}%`;
-        audioTrackClip.style.width = `${Math.min(100 - Math.max(0, leftPercent), Math.max(widthPercent, 14))}%`;
-    }
-    if (audioTrackName) {
-        audioTrackName.textContent = projectAudioFilename || 'Основная дорожка';
-    }
-    if (audioTrackMeta) {
-        const metaParts = [];
-        if (durationLabel) {
-            metaParts.push(durationLabel);
-        }
-        metaParts.push(`с кадра ${projectAudioStartFrame || 1}`);
-        audioTrackMeta.textContent = metaParts.join(' · ');
-    }
-    if (audioTrackLane) {
-        audioTrackLane.title = hasAudio
-            ? `${projectAudioFilename || 'Аудио'}${durationLabel ? ` (${durationLabel})` : ''}`
-            : 'Загрузите MP3 или WAV';
-    }
-
-    updateMp4ExportAvailability();
-}
-
-function hasUsablePlaybackAudioSource(audio = resolvePlaybackAudioElement()) {
-    if (!audio || !projectAudioUrl) return false;
-    const src = audio.currentSrc || audio.getAttribute('src') || audio.src || '';
-    return Boolean(src);
-}
-
-function setPlaybackAudioCurrentTime(audio, nextTimeSeconds) {
-    if (!audio) return;
-    try {
-        audio.currentTime = Math.max(0, nextTimeSeconds);
-    } catch (error) {
-        // ignore seek errors for unsupported streams
-    }
-}
-
-function getPlaybackAudioTimeForFrame(frameIndex) {
-    if (!Number.isFinite(frameIndex) || frameIndex < projectAudioStartFrame) {
-        return null;
-    }
-    return Math.max(0, (frameIndex - projectAudioStartFrame) / Math.max(1, projectFps));
-}
-
-function syncPlaybackAudioWithFrame(frameIndex, options = {}) {
-    const audio = resolvePlaybackAudioElement();
-    if (!hasUsablePlaybackAudioSource(audio)) return;
-
-    const shouldPlay = Boolean(options.shouldPlay);
-    const targetSeconds = getPlaybackAudioTimeForFrame(Number(frameIndex));
-    if (targetSeconds === null) {
-        audio.pause();
-        setPlaybackAudioCurrentTime(audio, 0);
-        return;
-    }
-
-    const driftThreshold = Math.max(0.12, (1 / Math.max(1, projectFps)) * 1.5);
-    if (options.forceSeek || Math.abs((audio.currentTime || 0) - targetSeconds) > driftThreshold) {
-        setPlaybackAudioCurrentTime(audio, targetSeconds);
-    }
-
-    if (shouldPlay) {
-        const playPromise = audio.play();
-        if (playPromise && typeof playPromise.catch === 'function') {
-            playPromise.catch(() => {
-                // браузер может запретить autoplay без пользовательского жеста
-            });
-        }
-    } else {
-        audio.pause();
-    }
-}
-
-async function updateAudioStartFrameOnServer(nextStartFrame) {
-    if (!projectUpdateUrl) {
-        setSaveStatus('Не удалось обновить старт аудио.', 'error');
-        setSaveIndicator('error');
-        return false;
-    }
-    if (isUpdatingAudioStartFrame) return false;
-
-    isUpdatingAudioStartFrame = true;
-    syncAudioTrackUi();
-    setSaveStatus('Обновляем старт аудио…', 'saving');
-    setSaveIndicator('saving');
-
-    try {
-        const response = await fetch(projectUpdateUrl, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'X-CSRFToken': getCsrfToken(),
-            },
-            credentials: 'same-origin',
-            body: JSON.stringify({ main_audio_start_frame: nextStartFrame }),
-        });
-        const data = await response.json();
-        if (!response.ok || !data || !data.ok || !data.project) {
-            throw new Error((data && (data.message || data.error)) || 'Не удалось обновить старт аудио.');
-        }
-
-        if (data.project.audio) {
-            applyProjectAudioPayload(data.project.audio);
-        } else {
-            projectAudioStartFrame = Math.max(1, parseInt(nextStartFrame, 10) || 1);
-            syncProjectAudioDataset();
-            syncAudioTrackUi();
-        }
-
-        lastSavedAt = new Date();
-        updateLastSavedLabel();
-        if (isPlaybackSessionActive()) {
-            const markerFrame = Number.isFinite(playbackMarkerFrameIndex) ? playbackMarkerFrameIndex : currentFrameIndex;
-            syncPlaybackAudioWithFrame(markerFrame, {
-                shouldPlay: isPlaybackRunning(),
-                forceSeek: true,
-            });
-        }
-
-        if (hasUnsavedChanges) {
-            setSaveStatus('Есть несохраненные изменения', 'dirty');
-            setSaveIndicator('dirty');
-        } else {
-            setSaveStatus('Старт аудио обновлён', 'saved');
-            setSaveIndicator('saved');
-        }
-        return true;
-    } catch (error) {
-        console.error('Ошибка обновления старта аудио', error);
-        let errorText = 'Не удалось обновить старт аудио.';
-        if (error instanceof Error && error.message) {
-            errorText = error.message === 'invalid_audio_start_frame'
-                ? 'Укажите корректный стартовый кадр аудио.'
-                : error.message;
-        }
-        if (error instanceof Error && error.message === 'Failed to fetch') {
-            errorText = 'Не удалось связаться с сервером.';
-        }
-        if (audioStartFrameInput) {
-            audioStartFrameInput.value = String(projectAudioStartFrame || 1);
-        }
-        setSaveStatus(errorText, 'error');
-        setSaveIndicator('error');
-        return false;
-    } finally {
-        isUpdatingAudioStartFrame = false;
-        syncAudioTrackUi();
-    }
-}
-
-async function commitAudioStartFrameInputValue() {
-    if (!audioStartFrameInput || !projectAudioUrl) return false;
-    const parsed = parseInt(audioStartFrameInput.value, 10);
-    if (!Number.isFinite(parsed) || parsed <= 0) {
-        audioStartFrameInput.value = String(projectAudioStartFrame || 1);
-        setSaveStatus('Укажите корректный стартовый кадр аудио.', 'error');
-        setSaveIndicator('error');
-        return false;
-    }
-
-    const normalized = Math.max(1, parsed);
-    audioStartFrameInput.value = String(normalized);
-    if (normalized === projectAudioStartFrame) {
-        syncAudioTrackUi();
-        return true;
-    }
-    return updateAudioStartFrameOnServer(normalized);
-}
-
-async function uploadProjectAudio(file) {
-    if (!file || !projectAudioUploadUrl || isUploadingAudio) return false;
-
-    isUploadingAudio = true;
-    syncAudioTrackUi();
-    setSaveStatus('Загружаем аудио…', 'saving');
-    setSaveIndicator('saving');
-
-    try {
-        const formData = new FormData();
-        formData.append('audio', file);
-        formData.append('start_frame', String(projectAudioStartFrame || 1));
-
-        const response = await fetch(projectAudioUploadUrl, {
-            method: 'POST',
-            headers: {
-                'X-CSRFToken': getCsrfToken(),
-            },
-            credentials: 'same-origin',
-            body: formData,
-        });
-
-        let data = null;
-        try {
-            data = await response.json();
-        } catch (error) {
-            data = null;
-        }
-        if (!response.ok || !data || !data.ok || !data.audio) {
-            throw new Error((data && (data.message || data.error)) || 'Не удалось загрузить аудио.');
-        }
-
-        applyProjectAudioPayload(data.audio);
-        lastSavedAt = new Date();
-        updateLastSavedLabel();
-        setSaveStatus('Аудио загружено', 'saved');
-        setSaveIndicator('saved');
-        return true;
-    } catch (error) {
-        console.error('Ошибка загрузки аудио', error);
-        let errorText = 'Не удалось загрузить аудио.';
-        if (error instanceof Error && error.message) {
-            errorText = error.message === 'Failed to fetch'
-                ? 'Не удалось связаться с сервером.'
-                : error.message;
-        }
-        setSaveStatus(errorText, 'error');
-        setSaveIndicator('error');
-        return false;
-    } finally {
-        isUploadingAudio = false;
-        if (audioFileInput) {
-            audioFileInput.value = '';
-        }
-        syncAudioTrackUi();
-    }
-}
-
-async function deleteProjectAudio() {
-    if (!projectAudioDeleteUrl || !projectAudioUrl || isDeletingAudio) return false;
-
-    isDeletingAudio = true;
-    syncAudioTrackUi();
-    setSaveStatus('Удаляем аудио…', 'saving');
-    setSaveIndicator('saving');
-
-    try {
-        const response = await fetch(projectAudioDeleteUrl, {
-            method: 'DELETE',
-            headers: {
-                'X-CSRFToken': getCsrfToken(),
-            },
-            credentials: 'same-origin',
-        });
-
-        let data = null;
-        try {
-            data = await response.json();
-        } catch (error) {
-            data = null;
-        }
-        if (!response.ok || !data || !data.ok || !data.audio) {
-            throw new Error((data && (data.message || data.error)) || 'Не удалось удалить аудио.');
-        }
-
-        playbackAudioStop();
-        applyProjectAudioPayload(data.audio);
-        lastSavedAt = new Date();
-        updateLastSavedLabel();
-        setSaveStatus('Аудио удалено', 'saved');
-        setSaveIndicator('saved');
-        return true;
-    } catch (error) {
-        console.error('Ошибка удаления аудио', error);
-        let errorText = 'Не удалось удалить аудио.';
-        if (error instanceof Error && error.message) {
-            errorText = error.message === 'Failed to fetch'
-                ? 'Не удалось связаться с сервером.'
-                : error.message;
-        }
-        setSaveStatus(errorText, 'error');
-        setSaveIndicator('error');
-        return false;
-    } finally {
-        isDeletingAudio = false;
-        syncAudioTrackUi();
-    }
-}
-
-function bindProjectAudioEvents() {
-    if (!audioTrackRoot) return;
-
-    syncPlaybackAudioSource();
-    syncAudioTrackUi();
-
-    if (audioUploadButton && audioFileInput) {
-        audioUploadButton.addEventListener('click', () => {
-            if (isUploadingAudio || isDeletingAudio) return;
-            audioFileInput.click();
-        });
-        audioFileInput.addEventListener('change', () => {
-            const [file] = audioFileInput.files || [];
-            if (file) {
-                void uploadProjectAudio(file);
-            }
-        });
-    }
-
-    if (audioAddButton) {
-        audioAddButton.addEventListener('click', () => {
-            if (!projectAudioUrl || isUploadingAudio || isDeletingAudio || isUpdatingAudioSegments) return;
-            void addAudioSegmentAtMarker();
-        });
-    }
-
-    if (audioDeleteButton) {
-        audioDeleteButton.addEventListener('click', () => {
-            if (!projectAudioUrl) return;
-            if (!window.confirm('Удалить основную аудиодорожку проекта?')) return;
-            void deleteProjectAudio();
-        });
-    }
-
-    if (audioStartFrameInput) {
-        audioStartFrameInput.addEventListener('change', () => {
-            void commitAudioStartFrameInputValue();
-        });
-        audioStartFrameInput.addEventListener('keydown', (event) => {
-            if (event.key === 'Enter') {
-                event.preventDefault();
-                audioStartFrameInput.blur();
-            }
-            if (event.key === 'Escape') {
-                event.preventDefault();
-                audioStartFrameInput.value = String(projectAudioStartFrame || 1);
-                audioStartFrameInput.blur();
-            }
-        });
-    }
-
-    const playbackAudio = resolvePlaybackAudioElement();
-    if (playbackAudio) {
-        playbackAudio.addEventListener('loadedmetadata', () => {
-            if (!Number.isFinite(playbackAudio.duration) || playbackAudio.duration <= 0) return;
-            if (Number.isFinite(projectAudioDurationSeconds) && projectAudioDurationSeconds > 0) return;
-            projectAudioDurationSeconds = playbackAudio.duration;
-            syncProjectAudioDataset();
-            syncAudioTrackUi();
-        });
-    }
-}
-
-function createAudioSegmentId() {
-    return `audio-seg-${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36)}`;
-}
-
-function getDefaultProjectAudioSegments(startFrame = null) {
-    if (!projectAudioUrl || !Number.isFinite(projectAudioDurationSeconds) || projectAudioDurationSeconds <= 0) {
-        return [];
-    }
-    return [{
-        id: createAudioSegmentId(),
-        start_frame: Math.max(1, parseInt(startFrame, 10) || projectAudioStartFrame || 1),
-        frame_length: Math.max(1, Math.ceil(projectAudioDurationSeconds * Math.max(1, projectFps))),
-        source_start_seconds: 0,
-        source_duration_seconds: projectAudioDurationSeconds,
-    }];
-}
-
-function normalizeAudioSegment(segment, fallbackIndex = 0) {
-    if (!segment || typeof segment !== 'object') return null;
-    const startFrame = Math.max(1, parseInt(segment.start_frame, 10) || 1);
-    const frameLength = Math.max(1, parseInt(segment.frame_length, 10) || 1);
-    const sourceStartSeconds = Math.max(0, Number(segment.source_start_seconds) || 0);
-    let sourceDurationSeconds = Math.max(0, Number(segment.source_duration_seconds) || 0);
-    if (Number.isFinite(projectAudioDurationSeconds) && projectAudioDurationSeconds > 0) {
-        const remainingDuration = Math.max(0.001, projectAudioDurationSeconds - sourceStartSeconds);
-        sourceDurationSeconds = clamp(sourceDurationSeconds || remainingDuration, 0.001, remainingDuration);
-    } else if (sourceDurationSeconds <= 0) {
-        sourceDurationSeconds = 0.001;
-    }
-
-    const fallbackFilename = (typeof segment.file_name === 'string' && segment.file_name)
-        ? String(segment.file_name).split('/').pop().split('\\').pop()
-        : '';
-    const fallbackAudioUrlName = (typeof segment.audio_url === 'string' && segment.audio_url)
-        ? String(segment.audio_url).split('/').pop().split('?')[0]
-        : '';
-    return {
-        id: (typeof segment.id === 'string' && segment.id.trim()) || `${createAudioSegmentId()}-${fallbackIndex}`,
-        start_frame: startFrame,
-        frame_length: frameLength,
-        source_start_seconds: Number(sourceStartSeconds.toFixed(6)),
-        source_duration_seconds: Number(sourceDurationSeconds.toFixed(6)),
-        row: Math.max(0, parseInt(segment.row, 10) || 0),
-        file_name: typeof segment.file_name === 'string' ? segment.file_name : '',
-        filename: (typeof segment.filename === 'string' && segment.filename) || fallbackFilename || fallbackAudioUrlName,
-        audio_url: typeof segment.audio_url === 'string' ? segment.audio_url : '',
-        duration_seconds: Number.isFinite(Number(segment.duration_seconds)) ? Number(segment.duration_seconds) : null,
-    };
-}
-
-function assignAudioSegmentRows(segments) {
-    const sorted = segments
-        .map((segment) => ({ ...segment }))
-        .sort((a, b) => {
-            if (a.start_frame !== b.start_frame) return a.start_frame - b.start_frame;
-            if ((a.row || 0) !== (b.row || 0)) return (a.row || 0) - (b.row || 0);
-            return String(a.id).localeCompare(String(b.id));
-        });
-
-    const rowEndFrames = [];
-    return sorted.map((segment) => {
-        let assignedRow = 0;
-        while (assignedRow < rowEndFrames.length && segment.start_frame < rowEndFrames[assignedRow]) {
-            assignedRow += 1;
-        }
-        rowEndFrames[assignedRow] = getAudioSegmentEndFrame(segment);
-        return {
-            ...segment,
-            row: assignedRow,
-        };
-    });
-}
-
-function normalizeProjectAudioSegments(rawSegments = projectAudioSegments, options = {}) {
-    const allowDefault = options.allowDefault !== false;
-    const source = Array.isArray(rawSegments) ? rawSegments : [];
-    if (!projectAudioUrl && !source.length) {
-        return [];
-    }
-    const normalized = source
-        .map((segment, index) => normalizeAudioSegment(segment, index))
-        .filter(Boolean)
-        .sort((a, b) => a.start_frame - b.start_frame);
-
-    if (normalized.length) {
-        return assignAudioSegmentRows(normalized);
-    }
-    return allowDefault ? getDefaultProjectAudioSegments() : [];
-}
-
-function cloneAudioSegments(segments = projectAudioSegments) {
-    return normalizeProjectAudioSegments(segments, { allowDefault: false }).map((segment) => ({ ...segment }));
-}
-
-function getAudioMarkerFrameIndex() {
-    if (Number.isFinite(playbackMarkerFrameIndex) && playbackMarkerFrameIndex > 0) {
-        return playbackMarkerFrameIndex;
-    }
-    return Number.isFinite(currentFrameIndex) && currentFrameIndex > 0 ? currentFrameIndex : 1;
-}
-
-function getAudioSegmentEndFrame(segment) {
-    return segment.start_frame + segment.frame_length;
-}
-
-function getAudioSegmentTimelineDurationSeconds(segment) {
-    return segment.frame_length / Math.max(1, projectFps);
-}
-
-function getAudioSegmentPlaybackRate(segment) {
-    const timelineDurationSeconds = getAudioSegmentTimelineDurationSeconds(segment);
-    if (!timelineDurationSeconds || timelineDurationSeconds <= 0) return 1;
-    return Math.max(0.01, segment.source_duration_seconds / timelineDurationSeconds);
-}
-
-function getAudioSegmentsVisualFrameCount() {
-    const segments = normalizeProjectAudioSegments(projectAudioSegments, { allowDefault: true });
-    const segmentsEndFrame = segments.reduce((maxValue, segment) => Math.max(maxValue, getAudioSegmentEndFrame(segment)), 1);
-    const timelineMaxFrame = Array.isArray(timelineFrames) && timelineFrames.length
-        ? timelineFrames.reduce((maxValue, frame) => Math.max(maxValue, Number(frame.index) || 0), 0)
-        : 1;
-    return Math.max(
-        1,
-        timelineMaxFrame,
-        segmentsEndFrame,
-        getAudioMarkerFrameIndex(),
-    );
-}
-
-function getAudioRowCount() {
-    const segments = normalizeProjectAudioSegments(projectAudioSegments, { allowDefault: true });
-    if (!segments.length) return 1;
-    return segments.reduce((maxValue, segment) => Math.max(maxValue, Number(segment.row) || 0), 0) + 1;
-}
-
-function getAudioLaneFrameStep() {
-    return TIMELINE_FRAME_PITCH_PX;
-}
-
-function getAudioTimelineContentWidthPx() {
-    return Math.max(TIMELINE_FRAME_PITCH_PX, getAudioSegmentsVisualFrameCount() * TIMELINE_FRAME_PITCH_PX);
-}
-
-function frameToAudioLaneOffsetPx(frameIndex) {
-    return Math.max(0, (Math.max(1, frameIndex) - 1) * TIMELINE_FRAME_PITCH_PX);
-}
-
-function clientXToAudioLaneFrame(clientX) {
-    if (!audioTrackLane) return 1;
-    const rect = audioTrackLane.getBoundingClientRect();
-    const localX = audioTrackLane.scrollLeft + (clientX - rect.left);
-    return Math.max(1, Math.round(localX / TIMELINE_FRAME_PITCH_PX) + 1);
-}
-
-function syncTimelineAudioScroll(left, source) {
-    if (isSyncingTimelineScroll) return;
-    isSyncingTimelineScroll = true;
-    if (source !== 'frames' && timelineStrip) {
-        timelineStrip.scrollLeft = left;
-    }
-    if (source !== 'audio' && audioTrackLane) {
-        audioTrackLane.scrollLeft = left;
-    }
-    isSyncingTimelineScroll = false;
-}
-
-function beginTimelineStripScrollDrag(event) {
-    if (!timelineStrip) return;
-    if (event.button !== 0) return;
-    if (event.target && event.target.closest && event.target.closest('button, input, label')) return;
-    event.preventDefault();
-    timelineStripScrollDrag = {
-        startClientX: event.clientX,
-        startScrollLeft: timelineStrip.scrollLeft,
-        moved: false,
-    };
-    timelineStrip.classList.add('timeline-strip--dragging');
-}
-
-function updateTimelineStripScrollDrag(event) {
-    if (!timelineStripScrollDrag || !timelineStrip) return;
-    const deltaX = event.clientX - timelineStripScrollDrag.startClientX;
-    if (Math.abs(deltaX) > 3) {
-        timelineStripScrollDrag.moved = true;
-    }
-    syncTimelineAudioScroll(Math.max(0, timelineStripScrollDrag.startScrollLeft - deltaX), 'frames');
-}
-
-function stopTimelineStripScrollDrag() {
-    if (!timelineStripScrollDrag || !timelineStrip) return;
-    const wasDragging = timelineStripScrollDrag.moved;
-    timelineStripScrollDrag = null;
-    timelineStrip.classList.remove('timeline-strip--dragging');
-    if (wasDragging) {
-        timelineStrip.dataset.dragJustFinished = String(Date.now());
-        window.setTimeout(() => {
-            if (timelineStrip && timelineStrip.dataset.dragJustFinished) {
-                delete timelineStrip.dataset.dragJustFinished;
-            }
-        }, 150);
-    }
-}
-
-function getAudioSegmentAtFrame(frameIndex, options = {}) {
-    const segments = normalizeProjectAudioSegments(projectAudioSegments, { allowDefault: true });
-    const preferredId = typeof options.preferredId === 'string' ? options.preferredId : '';
-    const candidates = segments.filter((segment) => (
-        frameIndex >= segment.start_frame && frameIndex < getAudioSegmentEndFrame(segment)
-    ));
-    if (!candidates.length) return null;
-    return candidates.find((segment) => segment.id === preferredId) || candidates[0];
-}
-
-function getAudioSegmentDescriptor(segment) {
-    const durationLabel = formatAudioDuration(segment.source_duration_seconds);
-    const rate = getAudioSegmentPlaybackRate(segment);
-    return `${durationLabel || '0:00'} · ${rate.toFixed(2)}x`;
-}
-
-function getAudioRowTopPx(rowIndex) {
-    return 8 + (rowIndex * (AUDIO_ROW_HEIGHT_PX + AUDIO_ROW_GAP_PX));
-}
-
-function getProjectAudioState() {
-    const normalizedSegments = normalizeProjectAudioSegments(projectAudioSegments, { allowDefault: true });
-    return {
-        hasAudio: normalizedSegments.length > 0,
-        url: projectAudioUrl || '',
-        filename: projectAudioFilename || '',
-        durationSeconds: Number.isFinite(projectAudioDurationSeconds) ? projectAudioDurationSeconds : null,
-        startFrame: normalizedSegments.length ? normalizedSegments[0].start_frame : 1,
-        segments: normalizedSegments,
-    };
-}
-
-function syncProjectAudioDataset() {
-    if (!editorRoot) return;
-    const normalizedSegments = normalizeProjectAudioSegments(projectAudioSegments, { allowDefault: true });
-    projectAudioSegments = normalizedSegments;
-    projectAudioStartFrame = normalizedSegments.length ? normalizedSegments[0].start_frame : 1;
-    projectAudioUrl = normalizedSegments.length ? (normalizedSegments[0].audio_url || '') : '';
-    projectAudioFilename = normalizedSegments.length ? (normalizedSegments[0].filename || '') : '';
-    projectAudioDurationSeconds = normalizedSegments.length
-        ? (Number(normalizedSegments[0].duration_seconds) || projectAudioDurationSeconds)
-        : null;
-    editorRoot.dataset.projectAudioUrl = projectAudioUrl || '';
-    editorRoot.dataset.projectAudioFilename = projectAudioFilename || '';
-    editorRoot.dataset.projectAudioDuration = Number.isFinite(projectAudioDurationSeconds)
-        ? String(projectAudioDurationSeconds)
-        : '';
-    editorRoot.dataset.projectAudioStartFrame = String(projectAudioStartFrame || 1);
-    editorRoot.dataset.projectAudioSegments = JSON.stringify(normalizedSegments);
-}
-
-function updateMp4ExportAvailability() {
-    if (!exportMp4Input) return;
-    const hasAudio = normalizeProjectAudioSegments(projectAudioSegments, { allowDefault: true }).length > 0;
-    exportMp4Input.disabled = !hasAudio || isUploadingAudio || isDeletingAudio || isUpdatingAudioSegments;
-    if (exportMp4Input.disabled && exportMp4Input.checked) {
-        const fallbackInput = Array.from(exportFormatInputs || []).find((input) => input && !input.disabled);
-        if (fallbackInput) {
-            fallbackInput.checked = true;
-        }
-    }
-}
-
-function syncPlaybackAudioSource() {
-    const audio = resolvePlaybackAudioElement();
-    if (!audio) return;
-
-    const segments = normalizeProjectAudioSegments(projectAudioSegments, { allowDefault: true });
-    const firstSegment = segments[0] || null;
-    const firstAudioUrl = firstSegment ? firstSegment.audio_url || '' : '';
-
-    if (!firstAudioUrl) {
-        audio.pause();
-        audio.playbackRate = 1;
-        audio.removeAttribute('src');
-        audio.load();
-        playbackAudioInstances.forEach((instance) => {
-            instance.pause();
-            instance.remove();
-        });
-        playbackAudioInstances.clear();
-        return;
-    }
-
-    const normalized = normalizeAssetUrl(firstAudioUrl);
-    const cacheBustValue = encodeURIComponent((firstSegment && firstSegment.filename) || String(Date.now()));
-    const cacheBusted = `${normalized}${normalized.includes('?') ? '&' : '?'}v=${cacheBustValue}`;
-    if (audio.getAttribute('src') !== cacheBusted) {
-        audio.setAttribute('src', cacheBusted);
-        audio.playbackRate = 1;
-        audio.load();
-    }
-
-    playbackAudioInstances.forEach((instance) => {
-        if (instance.getAttribute('src') !== cacheBusted) {
-            instance.setAttribute('src', cacheBusted);
-            instance.playbackRate = 1;
-            instance.load();
-        }
-    });
-}
-
-function applyProjectAudioPayload(audio) {
-    const payload = audio && typeof audio === 'object' ? audio : {};
-    projectAudioSegments = normalizeProjectAudioSegments(payload.segments || [], { allowDefault: true });
-    projectAudioUrl = projectAudioSegments.length ? (projectAudioSegments[0].audio_url || '') : '';
-    projectAudioFilename = projectAudioSegments.length ? (projectAudioSegments[0].filename || '') : '';
-    projectAudioDurationSeconds = projectAudioSegments.length
-        ? (Number(projectAudioSegments[0].duration_seconds) || null)
-        : null;
-    projectAudioStartFrame = projectAudioSegments.length ? projectAudioSegments[0].start_frame : 1;
-    if (!projectAudioSegments.some((segment) => segment.id === selectedAudioSegmentId)) {
-        selectedAudioSegmentId = projectAudioSegments.length ? projectAudioSegments[0].id : null;
-    }
-    syncProjectAudioDataset();
-    syncPlaybackAudioSource();
-    syncAudioTrackUi();
-    updateExportOptionsVisibility();
-}
-
-function canSplitAudioAtMarker() {
-    if (!normalizeProjectAudioSegments(projectAudioSegments, { allowDefault: true }).length) return false;
-    const markerFrame = getAudioMarkerFrameIndex();
-    const segment = getAudioSegmentAtFrame(markerFrame, { preferredId: selectedAudioSegmentId });
-    if (!segment) return false;
-    return markerFrame > segment.start_frame && markerFrame < getAudioSegmentEndFrame(segment);
-}
-
-function syncAudioTrackUi() {
-    const hasAudio = normalizeProjectAudioSegments(projectAudioSegments, { allowDefault: true }).length > 0;
-    const busy = isUploadingAudio || isDeletingAudio || isUpdatingAudioSegments;
-    const normalizedSegments = normalizeProjectAudioSegments(projectAudioSegments, { allowDefault: true });
-    const markerFrame = getAudioMarkerFrameIndex();
-    const contentWidthPx = getAudioTimelineContentWidthPx();
-    const rowCount = getAudioRowCount();
-    const contentHeightPx = (rowCount * AUDIO_ROW_HEIGHT_PX) + (Math.max(0, rowCount - 1) * AUDIO_ROW_GAP_PX) + 16;
-
-    projectAudioSegments = normalizedSegments;
-    projectAudioStartFrame = normalizedSegments.length ? normalizedSegments[0].start_frame : 1;
-    const validSegmentIds = new Set(normalizedSegments.map((segment) => segment.id));
-    playbackAudioInstances.forEach((instance, segmentId) => {
-        if (validSegmentIds.has(segmentId)) return;
-        instance.pause();
-        instance.remove();
-        playbackAudioInstances.delete(segmentId);
-    });
-
-    if (audioUploadButton) {
-        audioUploadButton.textContent = getI18nText('add_audio_file', 'Добавить аудио');
-        audioUploadButton.disabled = busy;
-    }
-    if (audioDeleteButton) {
-        audioDeleteButton.hidden = !hasAudio;
-        audioDeleteButton.disabled = busy || !hasAudio || !selectedAudioSegmentId;
-    }
-    if (audioSplitButton) {
-        audioSplitButton.hidden = !hasAudio;
-        audioSplitButton.disabled = busy || !canSplitAudioAtMarker();
-    }
-    if (audioTrackEmpty) {
-        audioTrackEmpty.hidden = hasAudio;
-    }
-    if (audioTrackContent) {
-        audioTrackContent.style.width = `${contentWidthPx}px`;
-        audioTrackContent.style.height = `${contentHeightPx}px`;
-    }
-    if (audioTrackLane) {
-        audioTrackLane.style.minHeight = `${Math.max(52, contentHeightPx)}px`;
-    }
-    if (audioTrackPlayhead) {
-        audioTrackPlayhead.hidden = !hasAudio;
-        audioTrackPlayhead.style.left = `${frameToAudioLaneOffsetPx(markerFrame)}px`;
-    }
-    if (audioTrackClips) {
-        audioTrackClips.innerHTML = '';
-        normalizedSegments.forEach((segment) => {
-            const clip = document.createElement('div');
-            clip.className = 'timeline-audio__clip';
-            if (segment.id === selectedAudioSegmentId) {
-                clip.classList.add('is-selected');
-            }
-            if (audioSegmentInteraction && audioSegmentInteraction.segmentId === segment.id) {
-                clip.classList.add('is-dragging');
-            }
-            clip.dataset.audioSegmentId = segment.id;
-
-            clip.style.left = `${frameToAudioLaneOffsetPx(segment.start_frame)}px`;
-            clip.style.width = `${Math.max(1, segment.frame_length * TIMELINE_FRAME_PITCH_PX)}px`;
-            clip.style.top = `${getAudioRowTopPx(segment.row || 0)}px`;
-
-            const handleStart = document.createElement('span');
-            handleStart.className = 'timeline-audio__clip-handle timeline-audio__clip-handle--start';
-            handleStart.dataset.audioHandle = 'start';
-
-            const content = document.createElement('span');
-            content.className = 'timeline-audio__clip-content';
-
-            const name = document.createElement('span');
-            name.className = 'timeline-audio__clip-name';
-            name.textContent = segment.filename || projectAudioFilename || 'Основная дорожка';
-
-            const meta = document.createElement('span');
-            meta.className = 'timeline-audio__clip-meta';
-            meta.textContent = getAudioSegmentDescriptor(segment);
-
-            content.appendChild(name);
-            content.appendChild(meta);
-
-            const handleEnd = document.createElement('span');
-            handleEnd.className = 'timeline-audio__clip-handle timeline-audio__clip-handle--end';
-            handleEnd.dataset.audioHandle = 'end';
-
-            clip.appendChild(handleStart);
-            clip.appendChild(content);
-            clip.appendChild(handleEnd);
-            audioTrackClips.appendChild(clip);
-        });
-    }
-    if (audioTrackName) {
-        audioTrackName.textContent = projectAudioFilename || 'Основная дорожка';
-    }
-    if (audioTrackMeta) {
-        const totalDurationLabel = formatAudioDuration(projectAudioDurationSeconds);
-        audioTrackMeta.textContent = totalDurationLabel
-            ? `${totalDurationLabel} · ${normalizedSegments.length} сегм.`
-            : `${normalizedSegments.length} сегм.`;
-    }
-    if (audioTrackLane) {
-        audioTrackLane.title = hasAudio
-            ? `${projectAudioFilename || 'Аудио'} · ${normalizedSegments.length} сегм.`
-            : 'Загрузите MP3 или WAV';
-    }
-
-    updateMp4ExportAvailability();
-    if (timelineStrip && audioTrackLane) {
-        syncTimelineAudioScroll(timelineStrip.scrollLeft, 'frames');
-    }
-}
-
-function hasUsablePlaybackAudioSource(audio = resolvePlaybackAudioElement()) {
-    if (!audio) return false;
-    return normalizeProjectAudioSegments(projectAudioSegments, { allowDefault: true }).length > 0;
-}
-
-function configurePlaybackAudioElement(audio) {
-    if (!audio) return audio;
-    if ('preservesPitch' in audio) {
-        audio.preservesPitch = true;
-    }
-    if ('mozPreservesPitch' in audio) {
-        audio.mozPreservesPitch = true;
-    }
-    if ('webkitPreservesPitch' in audio) {
-        audio.webkitPreservesPitch = true;
-    }
-    return audio;
-}
-
-function ensurePlaybackAudioInstance(segment) {
-    if (!editorRoot || !segment || !segment.audio_url) return null;
-    const normalized = normalizeAssetUrl(segment.audio_url);
-    const cacheBustValue = encodeURIComponent(segment.filename || segment.id || 'audio');
-    const cacheBusted = `${normalized}${normalized.includes('?') ? '&' : '?'}v=${cacheBustValue}`;
-    let instance = playbackAudioInstances.get(segment.id) || null;
-    if (!instance) {
-        instance = document.createElement('audio');
-        instance.dataset.playbackAudioInstance = segment.id;
-        instance.preload = 'auto';
-        instance.hidden = true;
-        configurePlaybackAudioElement(instance);
-        editorRoot.appendChild(instance);
-        playbackAudioInstances.set(segment.id, instance);
-    }
-    if (instance.getAttribute('src') !== cacheBusted) {
-        instance.setAttribute('src', cacheBusted);
-        instance.load();
-    }
-    return instance;
-}
-
-function getActivePlaybackAudioTimings(frameIndex) {
-    return normalizeProjectAudioSegments(projectAudioSegments, { allowDefault: true })
-        .map((segment) => getPlaybackAudioTimeForFrame(frameIndex, { preferredId: segment.id }))
-        .filter(Boolean);
-}
-
-function setPlaybackAudioCurrentTime(audio, nextTimeSeconds) {
-    if (!audio) return;
-    try {
-        audio.currentTime = Math.max(0, nextTimeSeconds);
-    } catch (error) {
-        // ignore seek errors for unsupported streams
-    }
-}
-
-function getPlaybackAudioTimeForFrame(frameIndex, options = {}) {
-    const segment = getAudioSegmentAtFrame(frameIndex, options);
-    if (!segment) {
-        return null;
-    }
-    const offsetFrames = Math.max(0, frameIndex - segment.start_frame);
-    const offsetSeconds = offsetFrames / Math.max(1, projectFps);
-    return {
-        segment,
-        currentTime: Math.max(0, segment.source_start_seconds + (offsetSeconds * getAudioSegmentPlaybackRate(segment))),
-        playbackRate: getAudioSegmentPlaybackRate(segment),
-    };
-}
-
-function syncPlaybackAudioWithFrame(frameIndex, options = {}) {
-    const audio = resolvePlaybackAudioElement();
-    if (!hasUsablePlaybackAudioSource(audio)) return;
-
-    const shouldPlay = Boolean(options.shouldPlay);
-    const activeTimings = getActivePlaybackAudioTimings(Number(frameIndex));
-    const driftThreshold = Math.max(0.12, (1 / Math.max(1, projectFps)) * 1.5);
-
-    if (!activeTimings.length) {
-        playbackAudioInstances.forEach((instance) => {
-            instance.pause();
-            instance.playbackRate = 1;
-            setPlaybackAudioCurrentTime(instance, 0);
-        });
-        audio.pause();
-        audio.playbackRate = 1;
-        setPlaybackAudioCurrentTime(audio, 0);
-        return;
-    }
-
-    const activeSegmentIds = new Set(activeTimings.map((timing) => timing.segment.id));
-    playbackAudioInstances.forEach((instance, segmentId) => {
-        if (activeSegmentIds.has(segmentId)) return;
-        instance.pause();
-    });
-
-    activeTimings.forEach((timing, index) => {
-        const instance = ensurePlaybackAudioInstance(timing.segment);
-        if (!instance) return;
-        configurePlaybackAudioElement(instance);
-        instance.playbackRate = timing.playbackRate;
-        if (options.forceSeek || Math.abs((instance.currentTime || 0) - timing.currentTime) > driftThreshold) {
-            setPlaybackAudioCurrentTime(instance, timing.currentTime);
-        }
-        if (shouldPlay) {
-            const playPromise = instance.play();
-            if (playPromise && typeof playPromise.catch === 'function') {
-                playPromise.catch(() => {
-                    // браузер может запретить autoplay без пользовательского жеста
-                });
-            }
-        } else {
-            instance.pause();
-        }
-
-        if (index === 0) {
-            audio.playbackRate = timing.playbackRate;
-            if (options.forceSeek || Math.abs((audio.currentTime || 0) - timing.currentTime) > driftThreshold) {
-                setPlaybackAudioCurrentTime(audio, timing.currentTime);
-            }
-        }
-    });
-}
-
-async function updateAudioSegmentsOnServer(nextSegments, options = {}) {
-    if (!projectUpdateUrl || isUpdatingAudioSegments) return false;
-
-    const previousSegments = cloneAudioSegments(projectAudioSegments);
-    projectAudioSegments = normalizeProjectAudioSegments(nextSegments, { allowDefault: false });
-    isUpdatingAudioSegments = true;
-    syncProjectAudioDataset();
-    syncAudioTrackUi();
-    setSaveStatus(options.statusText || 'Обновляем аудио…', 'saving');
-    setSaveIndicator('saving');
-
-    try {
-        const response = await fetch(projectUpdateUrl, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'X-CSRFToken': getCsrfToken(),
-            },
-            credentials: 'same-origin',
-            body: JSON.stringify({ main_audio_segments: projectAudioSegments }),
-        });
-        const data = await response.json();
-        if (!response.ok || !data || !data.ok || !data.project) {
-            throw new Error((data && (data.message || data.error)) || getI18nText('audio_update_failed', 'Не удалось обновить аудио.'));
-        }
-
-        if (data.project.audio) {
-            applyProjectAudioPayload(data.project.audio);
-        }
-        lastSavedAt = new Date();
-        updateLastSavedLabel();
-        if (isPlaybackSessionActive()) {
-            syncPlaybackAudioWithFrame(getAudioMarkerFrameIndex(), {
-                shouldPlay: isPlaybackRunning(),
-                forceSeek: true,
-            });
-        }
-        setSaveStatus(options.successText || 'Аудио обновлено', 'saved');
-        setSaveIndicator('saved');
-        return true;
-    } catch (error) {
-        console.error('Ошибка обновления аудио', error);
-        projectAudioSegments = previousSegments;
-        syncProjectAudioDataset();
-        syncAudioTrackUi();
-        setSaveStatus(
-            error instanceof Error && error.message
-                ? error.message
-                : getI18nText('audio_update_failed', 'Не удалось обновить аудио.'),
-            'error',
-        );
-        setSaveIndicator('error');
-        return false;
-    } finally {
-        isUpdatingAudioSegments = false;
-        syncAudioTrackUi();
-    }
-}
-
-function getAudioSegmentIndex(segmentId, segments = projectAudioSegments) {
-    return segments.findIndex((segment) => segment.id === segmentId);
-}
-
-function constrainMovedAudioSegment(segments, segmentId, nextStartFrame) {
-    const nextSegments = cloneAudioSegments(segments);
-    const segmentIndex = getAudioSegmentIndex(segmentId, nextSegments);
-    if (segmentIndex < 0) return nextSegments;
-
-    const segment = nextSegments[segmentIndex];
-    segment.start_frame = Math.max(1, nextStartFrame);
-    return nextSegments;
-}
-
-function constrainResizedAudioSegment(segments, segmentId, mode, nextFrameValue) {
-    const nextSegments = cloneAudioSegments(segments);
-    const segmentIndex = getAudioSegmentIndex(segmentId, nextSegments);
-    if (segmentIndex < 0) return nextSegments;
-
-    const segment = nextSegments[segmentIndex];
-    const endFrame = getAudioSegmentEndFrame(segment);
-
-    if (mode === 'start') {
-        const minStart = 1;
-        const maxStart = endFrame - 1;
-        segment.start_frame = clamp(nextFrameValue, minStart, maxStart);
-        segment.frame_length = Math.max(1, endFrame - segment.start_frame);
-        return nextSegments;
-    }
-
-    const minEnd = segment.start_frame + 1;
-    const maxEnd = Number.MAX_SAFE_INTEGER;
-    const newEndFrame = clamp(nextFrameValue, minEnd, maxEnd);
-    segment.frame_length = Math.max(1, newEndFrame - segment.start_frame);
-    return nextSegments;
-}
-
-function beginAudioSegmentInteraction(event, segmentId, mode) {
-    if (!audioTrackLane || !projectAudioUrl || isUploadingAudio || isDeletingAudio || isUpdatingAudioSegments) return;
-    const originalSegments = cloneAudioSegments(projectAudioSegments);
-    if (getAudioSegmentIndex(segmentId, originalSegments) < 0) return;
-
-    event.preventDefault();
-    selectedAudioSegmentId = segmentId;
-    audioSegmentInteraction = {
-        mode,
-        segmentId,
-        startClientX: event.clientX,
-        originalSegments,
-    };
-    syncAudioTrackUi();
-}
-
-function handleAudioSegmentPointerMove(event) {
-    if (!audioSegmentInteraction) return;
-    const laneStep = getAudioLaneFrameStep();
-    if (!laneStep) return;
-    const deltaFrames = Math.round((event.clientX - audioSegmentInteraction.startClientX) / laneStep);
-    const originalSegments = audioSegmentInteraction.originalSegments;
-    const segment = originalSegments.find((item) => item.id === audioSegmentInteraction.segmentId);
-    if (!segment) return;
-
-    if (audioSegmentInteraction.mode === 'move') {
-        projectAudioSegments = constrainMovedAudioSegment(
-            originalSegments,
-            audioSegmentInteraction.segmentId,
-            segment.start_frame + deltaFrames,
-        );
-    } else if (audioSegmentInteraction.mode === 'resize-start') {
-        projectAudioSegments = constrainResizedAudioSegment(
-            originalSegments,
-            audioSegmentInteraction.segmentId,
-            'start',
-            segment.start_frame + deltaFrames,
-        );
-    } else if (audioSegmentInteraction.mode === 'resize-end') {
-        projectAudioSegments = constrainResizedAudioSegment(
-            originalSegments,
-            audioSegmentInteraction.segmentId,
-            'end',
-            getAudioSegmentEndFrame(segment) + deltaFrames,
-        );
-    }
-    syncAudioTrackUi();
-}
-
-async function finishAudioSegmentInteraction() {
-    if (!audioSegmentInteraction) return;
-    const interaction = audioSegmentInteraction;
-    audioSegmentInteraction = null;
-    const nextSegments = cloneAudioSegments(projectAudioSegments);
-    const previousSegments = interaction.originalSegments;
-    if (JSON.stringify(nextSegments) === JSON.stringify(previousSegments)) {
-        projectAudioSegments = previousSegments;
-        syncAudioTrackUi();
-        return;
-    }
-    await updateAudioSegmentsOnServer(nextSegments, {
-        statusText: getI18nText('saving_audio_track', 'Сохраняем аудиодорожку…'),
-        successText: getI18nText('audio_track_updated', 'Аудиодорожка обновлена'),
-    });
-}
-
-function beginAudioPlayheadInteraction(event) {
-    if (!audioTrackLane || shouldDisableTimelineControls()) return;
-    event.preventDefault();
-    audioPlayheadInteraction = { startedAt: performance.now() };
-    setPlaybackMarkerFrame(clientXToAudioLaneFrame(event.clientX));
-}
-
-function handleAudioPlayheadPointerMove(event) {
-    if (!audioPlayheadInteraction) return;
-    setPlaybackMarkerFrame(clientXToAudioLaneFrame(event.clientX));
-}
-
-function finishAudioPlayheadInteraction() {
-    if (!audioPlayheadInteraction) return;
-    audioPlayheadInteraction = null;
-}
-
-async function splitAudioSegmentAtMarker() {
-    const markerFrame = getAudioMarkerFrameIndex();
-    const sourceSegments = cloneAudioSegments(projectAudioSegments);
-    const activeSegment = getAudioSegmentAtFrame(markerFrame, { preferredId: selectedAudioSegmentId });
-    if (!activeSegment) return;
-
-    const startFrame = activeSegment.start_frame;
-    const endFrame = getAudioSegmentEndFrame(activeSegment);
-    if (markerFrame <= startFrame || markerFrame >= endFrame) return;
-
-    const leftFrameLength = markerFrame - startFrame;
-    const rightFrameLength = endFrame - markerFrame;
-    const ratio = leftFrameLength / activeSegment.frame_length;
-    const leftSourceDuration = Number((activeSegment.source_duration_seconds * ratio).toFixed(6));
-    const rightSourceDuration = Number((activeSegment.source_duration_seconds - leftSourceDuration).toFixed(6));
-    const rightSourceStart = Number((activeSegment.source_start_seconds + leftSourceDuration).toFixed(6));
-    if (leftSourceDuration <= 0 || rightSourceDuration <= 0) return;
-
-    const newSegments = sourceSegments.flatMap((segment) => {
-        if (segment.id !== activeSegment.id) return [{ ...segment }];
-        const leftSegment = {
-            ...segment,
-            id: createAudioSegmentId(),
-            frame_length: leftFrameLength,
-            source_duration_seconds: leftSourceDuration,
-        };
-        const rightSegment = {
-            ...segment,
-            id: createAudioSegmentId(),
-            start_frame: markerFrame,
-            frame_length: rightFrameLength,
-            source_start_seconds: rightSourceStart,
-            source_duration_seconds: rightSourceDuration,
-        };
-        selectedAudioSegmentId = rightSegment.id;
-        return [leftSegment, rightSegment];
-    });
-
-    await updateAudioSegmentsOnServer(newSegments, {
-        statusText: getI18nText('splitting_audio_segment', 'Разрезаем аудио…'),
-        successText: getI18nText('audio_segment_split', 'Аудиодорожка разрезана'),
-    });
-}
-
-async function addAudioSegmentAtMarker() {
-    if (!normalizeProjectAudioSegments(projectAudioSegments, { allowDefault: true }).length) return;
-    const markerFrame = getAudioMarkerFrameIndex();
-    const sourceSegments = cloneAudioSegments(projectAudioSegments);
-    const templateSegment = getAudioSegmentAtFrame(markerFrame, { preferredId: selectedAudioSegmentId })
-        || sourceSegments.find((segment) => segment.id === selectedAudioSegmentId)
-        || sourceSegments[0]
-        || null;
-    const fallbackDuration = Number.isFinite(projectAudioDurationSeconds) && projectAudioDurationSeconds > 0
-        ? projectAudioDurationSeconds
-        : 0;
-    const sourceDurationSeconds = templateSegment
-        ? templateSegment.source_duration_seconds
-        : fallbackDuration;
-    if (!Number.isFinite(sourceDurationSeconds) || sourceDurationSeconds <= 0) return;
-    const frameLength = templateSegment
-        ? Math.max(1, templateSegment.frame_length)
-        : Math.max(1, Math.ceil(sourceDurationSeconds * Math.max(1, projectFps)));
-    const newSegment = {
-        id: createAudioSegmentId(),
-        start_frame: markerFrame,
-        frame_length: frameLength,
-        source_start_seconds: templateSegment ? templateSegment.source_start_seconds : 0,
-        source_duration_seconds: sourceDurationSeconds,
-        row: 0,
-    };
-    selectedAudioSegmentId = newSegment.id;
-    await updateAudioSegmentsOnServer([...sourceSegments, newSegment], {
-        statusText: getI18nText('adding_audio_segment', 'Добавляем аудиофрагмент…'),
-        successText: getI18nText('audio_segment_added', 'Аудиофрагмент добавлен'),
-    });
-}
-
-async function uploadProjectAudio(file) {
-    if (!file || !projectAudioUploadUrl || isUploadingAudio) return false;
-
-    isUploadingAudio = true;
-    syncAudioTrackUi();
-    setSaveStatus(getI18nText('uploading_audio_file', 'Загружаем аудио…'), 'saving');
-    setSaveIndicator('saving');
-
-    try {
-        const formData = new FormData();
-        formData.append('audio', file);
-        formData.append('start_frame', String(getAudioMarkerFrameIndex()));
-
-        const response = await fetch(projectAudioUploadUrl, {
-            method: 'POST',
-            headers: {
-                'X-CSRFToken': getCsrfToken(),
-            },
-            credentials: 'same-origin',
-            body: formData,
-        });
-
-        let data = null;
-        try {
-            data = await response.json();
-        } catch (error) {
-            data = null;
-        }
-        if (!response.ok || !data || !data.ok || !data.audio) {
-            throw new Error((data && (data.message || data.error)) || getI18nText('audio_upload_failed', 'Не удалось загрузить аудио.'));
-        }
-
-        applyProjectAudioPayload(data.audio);
-        selectedAudioSegmentId = data.selected_segment_id || (projectAudioSegments.length ? projectAudioSegments[projectAudioSegments.length - 1].id : null);
-        lastSavedAt = new Date();
-        updateLastSavedLabel();
-        setSaveStatus(getI18nText('audio_uploaded', 'Аудио загружено'), 'saved');
-        setSaveIndicator('saved');
-        return true;
-    } catch (error) {
-        console.error('Ошибка загрузки аудио', error);
-        setSaveStatus(
-            error instanceof Error && error.message
-                ? error.message
-                : getI18nText('audio_upload_failed', 'Не удалось загрузить аудио.'),
-            'error',
-        );
-        setSaveIndicator('error');
-        return false;
-    } finally {
-        isUploadingAudio = false;
-        if (audioFileInput) {
-            audioFileInput.value = '';
-        }
-        syncAudioTrackUi();
-    }
-}
-
-async function deleteProjectAudio() {
-    if (!projectAudioDeleteUrl || !selectedAudioSegmentId || isDeletingAudio) return false;
-
-    isDeletingAudio = true;
-    syncAudioTrackUi();
-    setSaveStatus(getI18nText('deleting_audio_file', 'Удаляем аудио…'), 'saving');
-    setSaveIndicator('saving');
-
-    try {
-        const response = await fetch(projectAudioDeleteUrl, {
-            method: 'DELETE',
-            headers: {
-                'Content-Type': 'application/json',
-                'X-CSRFToken': getCsrfToken(),
-            },
-            credentials: 'same-origin',
-            body: JSON.stringify({ clip_id: selectedAudioSegmentId }),
-        });
-
-        let data = null;
-        try {
-            data = await response.json();
-        } catch (error) {
-            data = null;
-        }
-        if (!response.ok || !data || !data.ok || !data.audio) {
-            throw new Error((data && (data.message || data.error)) || getI18nText('audio_delete_failed', 'Не удалось удалить аудио.'));
-        }
-
-        playbackAudioStop();
-        applyProjectAudioPayload(data.audio);
-        selectedAudioSegmentId = projectAudioSegments.length ? projectAudioSegments[0].id : null;
-        lastSavedAt = new Date();
-        updateLastSavedLabel();
-        setSaveStatus(getI18nText('audio_deleted', 'Аудио удалено'), 'saved');
-        setSaveIndicator('saved');
-        return true;
-    } catch (error) {
-        console.error('Ошибка удаления аудио', error);
-        setSaveStatus(
-            error instanceof Error && error.message
-                ? error.message
-                : getI18nText('audio_delete_failed', 'Не удалось удалить аудио.'),
-            'error',
-        );
-        setSaveIndicator('error');
-        return false;
-    } finally {
-        isDeletingAudio = false;
-        syncAudioTrackUi();
-    }
-}
-
-function bindProjectAudioEvents() {
-    if (!audioTrackRoot) return;
-
-    projectAudioSegments = normalizeProjectAudioSegments(projectAudioSegments, { allowDefault: true });
-    selectedAudioSegmentId = projectAudioSegments.length ? projectAudioSegments[0].id : null;
-    syncPlaybackAudioSource();
-    syncAudioTrackUi();
-
-    if (timelineStrip) {
-        timelineStrip.addEventListener('scroll', () => {
-            syncTimelineAudioScroll(timelineStrip.scrollLeft, 'frames');
-        });
-    }
-    if (audioTrackLane) {
-        audioTrackLane.addEventListener('scroll', () => {
-            syncTimelineAudioScroll(audioTrackLane.scrollLeft, 'audio');
-        });
-        audioTrackLane.style.backgroundSize = `${TIMELINE_FRAME_PITCH_PX}px 100%`;
-        audioTrackLane.addEventListener('pointerdown', (event) => {
-            const target = event.target;
-            if (target && target.closest && target.closest('[data-audio-segment-id]')) return;
-            beginAudioPlayheadInteraction(event);
-        });
-    }
-    if (audioTrackPlayhead) {
-        audioTrackPlayhead.addEventListener('pointerdown', (event) => {
-            event.stopPropagation();
-            beginAudioPlayheadInteraction(event);
-        });
-    }
-
-    if (audioUploadButton && audioFileInput) {
-        audioUploadButton.addEventListener('click', () => {
-            if (isUploadingAudio || isDeletingAudio) return;
-            audioFileInput.click();
-        });
-        audioFileInput.addEventListener('change', () => {
-            const [file] = audioFileInput.files || [];
-            if (file) {
-                void uploadProjectAudio(file);
-            }
-        });
-    }
-
-    if (audioDeleteButton) {
-        audioDeleteButton.addEventListener('click', () => {
-            if (!selectedAudioSegmentId) return;
-            void deleteProjectAudio();
-        });
-    }
-
-    if (audioSplitButton) {
-        audioSplitButton.addEventListener('click', () => {
-            if (!canSplitAudioAtMarker()) return;
-            void splitAudioSegmentAtMarker();
-        });
-    }
-
-    if (audioTrackClips) {
-        audioTrackClips.addEventListener('pointerdown', (event) => {
-            const clip = event.target && event.target.closest('[data-audio-segment-id]');
-            if (!clip) return;
-            const segmentId = clip.dataset.audioSegmentId || '';
-            if (!segmentId) return;
-
-            selectedAudioSegmentId = segmentId;
-            const handle = event.target && event.target.closest('[data-audio-handle]');
-            const mode = handle
-                ? (handle.dataset.audioHandle === 'start' ? 'resize-start' : 'resize-end')
-                : 'move';
-            beginAudioSegmentInteraction(event, segmentId, mode);
-        });
-
-        audioTrackClips.addEventListener('click', (event) => {
-            const clip = event.target && event.target.closest('[data-audio-segment-id]');
-            if (!clip) return;
-            selectedAudioSegmentId = clip.dataset.audioSegmentId || selectedAudioSegmentId;
-            syncAudioTrackUi();
-        });
-    }
-
-    document.addEventListener('pointermove', handleAudioSegmentPointerMove);
-    document.addEventListener('pointermove', handleAudioPlayheadPointerMove);
-    document.addEventListener('pointerup', () => {
-        void finishAudioSegmentInteraction();
-        finishAudioPlayheadInteraction();
-    });
-    document.addEventListener('pointercancel', () => {
-        void finishAudioSegmentInteraction();
-        finishAudioPlayheadInteraction();
-    });
-
-    const playbackAudio = resolvePlaybackAudioElement();
-    if (playbackAudio) {
-        playbackAudio.addEventListener('loadedmetadata', () => {
-            if (!Number.isFinite(playbackAudio.duration) || playbackAudio.duration <= 0) return;
-            if (Number.isFinite(projectAudioDurationSeconds) && projectAudioDurationSeconds > 0) return;
-            projectAudioDurationSeconds = playbackAudio.duration;
-            if (!projectAudioSegments.length) {
-                projectAudioSegments = getDefaultProjectAudioSegments(1);
-                selectedAudioSegmentId = projectAudioSegments.length ? projectAudioSegments[0].id : null;
-            }
-            syncProjectAudioDataset();
-            syncAudioTrackUi();
-        });
     }
 }
 
@@ -6732,15 +4860,7 @@ function prefetchPlaybackFrameImages(frameIndexes) {
     });
 }
 
-function getMaxAudioPlaybackFrameIndex() {
-    const segments = normalizeProjectAudioSegments(projectAudioSegments, { allowDefault: true });
-    if (!segments.length) return 0;
-    return segments.reduce((maxValue, segment) => (
-        Math.max(maxValue, Math.max(1, getAudioSegmentEndFrame(segment) - 1))
-    ), 0);
-}
-
-async function renderPlaybackFrameByIndex(frameIndex, options = {}) {
+async function renderPlaybackFrameByIndex(frameIndex) {
     const canvasEl = ensurePlaybackPreviewCanvas();
     if (!canvasEl || !playbackPreviewCtx) return false;
 
@@ -6751,11 +4871,7 @@ async function renderPlaybackFrameByIndex(frameIndex, options = {}) {
     if (image) {
         playbackPreviewCtx.drawImage(image, 0, 0, canvasEl.width, canvasEl.height);
     }
-    const timelineFrameIndex = Number.isFinite(options.timelineFrameIndex)
-        ? options.timelineFrameIndex
-        : frameIndex;
-    setPlaybackMarkerFrame(timelineFrameIndex);
-    syncPlaybackAudioWithFrame(timelineFrameIndex, { shouldPlay: isPlaybackRunning() });
+    setPlaybackMarkerFrame(frameIndex);
     emitPlaybackSignal('anim-playback');
     return true;
 }
@@ -6765,11 +4881,13 @@ function resolvePlaybackAudioElement() {
 
     const fromDom = document.querySelector('audio[data-playback-audio], #playback-audio, #editor-audio-track');
     if (fromDom && typeof fromDom.play === 'function') {
-        playbackAudioElement = configurePlaybackAudioElement(fromDom);
+        playbackAudioElement = fromDom;
         return playbackAudioElement;
     }
 
-    const audioUrl = projectAudioUrl || '';
+    const audioUrl = (editorRoot && editorRoot.dataset && editorRoot.dataset.projectAudioUrl)
+        || window.ANIM_PROJECT_AUDIO_URL
+        || '';
     if (!audioUrl || !editorRoot) {
         return null;
     }
@@ -6781,47 +4899,54 @@ function resolvePlaybackAudioElement() {
     audio.src = normalizeAssetUrl(audioUrl);
     audio.hidden = true;
     editorRoot.appendChild(audio);
-    playbackAudioElement = configurePlaybackAudioElement(audio);
+    playbackAudioElement = audio;
     return playbackAudioElement;
 }
 
 function setPlaybackAudioToCurrentFrame() {
+    const audio = resolvePlaybackAudioElement();
+    if (!audio) return;
+    const safeFps = Math.max(1, projectFps);
     const frameIndex = Number.isFinite(playbackMarkerFrameIndex)
         ? playbackMarkerFrameIndex
         : currentFrameIndex;
-    syncPlaybackAudioWithFrame(frameIndex, { shouldPlay: false, forceSeek: true });
+    const frameOffsetSeconds = Math.max(0, (Number(frameIndex) - 1) / safeFps);
+    try {
+        audio.currentTime = frameOffsetSeconds;
+    } catch (error) {
+        // ignore seek errors for unsupported streams
+    }
 }
 
 function playbackAudioPlay(options = {}) {
-    const frameIndex = Number.isFinite(playbackMarkerFrameIndex)
-        ? playbackMarkerFrameIndex
-        : currentFrameIndex;
-    syncPlaybackAudioWithFrame(frameIndex, {
-        shouldPlay: true,
-        forceSeek: Boolean(options.seekToFrameStart),
-    });
+    const audio = resolvePlaybackAudioElement();
+    if (!audio) return;
+    if (options.seekToFrameStart) {
+        setPlaybackAudioToCurrentFrame();
+    }
+    const playPromise = audio.play();
+    if (playPromise && typeof playPromise.catch === 'function') {
+        playPromise.catch(() => {
+            // браузер может запретить autoplay без пользовательского жеста
+        });
+    }
 }
 
 function playbackAudioPause() {
     const audio = resolvePlaybackAudioElement();
     if (!audio) return;
     audio.pause();
-    playbackAudioInstances.forEach((instance) => {
-        instance.pause();
-    });
 }
 
 function playbackAudioStop() {
     const audio = resolvePlaybackAudioElement();
     if (!audio) return;
     audio.pause();
-    audio.playbackRate = 1;
-    setPlaybackAudioCurrentTime(audio, 0);
-    playbackAudioInstances.forEach((instance) => {
-        instance.pause();
-        instance.playbackRate = 1;
-        setPlaybackAudioCurrentTime(instance, 0);
-    });
+    try {
+        audio.currentTime = 0;
+    } catch (error) {
+        // ignore seek errors for unsupported streams
+    }
 }
 
 function emitPlaybackSignal(eventName) {
@@ -6852,7 +4977,6 @@ function setPlaybackMarkerFrame(frameIndex) {
             && isPlaybackSessionActive();
         el.classList.toggle('timeline-frame--playback-current', isMarkerActive);
     });
-    syncAudioTrackUi();
 }
 
 function updatePlaybackControlsState() {
@@ -6914,12 +5038,9 @@ async function stepPlaybackForward() {
     }
 
     const nextFrameIndex = playbackFrameOrder[nextPosition];
-    const nextTimelineFrameIndex = playbackTimelineFrameOrder[nextPosition];
     playbackStepInFlight = true;
     try {
-        const rendered = await renderPlaybackFrameByIndex(nextFrameIndex, {
-            timelineFrameIndex: nextTimelineFrameIndex,
-        });
+        const rendered = await renderPlaybackFrameByIndex(nextFrameIndex);
         if (rendered && isPlaybackSessionActive()) {
             playbackFramePosition = nextPosition;
         }
@@ -7019,36 +5140,21 @@ async function startPlaybackPreview() {
 
     cancelLiveCanvasInteractionsForPlayback();
     primePlaybackCurrentFrameCache();
-    const lastRenderedFrameIndex = ordered[ordered.length - 1];
-    const maxAudioFrameIndex = getMaxAudioPlaybackFrameIndex();
-    const maxTimelineFrameIndex = Math.max(lastRenderedFrameIndex, maxAudioFrameIndex);
-    playbackTimelineFrameOrder = [];
-    playbackFrameOrder = [];
-    for (let frameNumber = 1; frameNumber <= maxTimelineFrameIndex; frameNumber += 1) {
-        playbackTimelineFrameOrder.push(frameNumber);
-        playbackFrameOrder.push(frameNumber <= lastRenderedFrameIndex ? frameNumber : lastRenderedFrameIndex);
-    }
-    const requestedStartFrame = Number.isFinite(playbackMarkerFrameIndex) ? playbackMarkerFrameIndex : currentFrameIndex;
-    playbackFramePosition = playbackTimelineFrameOrder.indexOf(requestedStartFrame);
-    if (playbackFramePosition < 0) {
-        playbackFramePosition = playbackTimelineFrameOrder.indexOf(currentFrameIndex);
-    }
+    playbackFrameOrder = ordered;
+    playbackFramePosition = ordered.indexOf(currentFrameIndex);
     if (playbackFramePosition < 0) {
         playbackFramePosition = 0;
     }
     const startFrameIndex = playbackFrameOrder[playbackFramePosition];
-    const startTimelineFrameIndex = playbackTimelineFrameOrder[playbackFramePosition];
 
-    playbackStartFrameIndex = startTimelineFrameIndex;
+    playbackStartFrameIndex = currentFrameIndex;
     playbackMode = PLAYBACK_PLAYING;
     setPlaybackPreviewVisible(true);
     syncEditorInteractionLockUi();
     updatePlaybackControlsState();
-    await renderPlaybackFrameByIndex(startFrameIndex, {
-        timelineFrameIndex: startTimelineFrameIndex,
-    });
+    await renderPlaybackFrameByIndex(startFrameIndex);
     if (!isPlaybackSessionActive()) return;
-    prefetchPlaybackFrameImages([...new Set(playbackFrameOrder)]);
+    prefetchPlaybackFrameImages(playbackFrameOrder);
     playbackAudioPlay({ seekToFrameStart: true });
     emitPlaybackSignal('anim-playback-start');
     startPlaybackLoop();
@@ -7076,7 +5182,6 @@ async function stopPlaybackPreview(options = {}) {
     updatePlaybackControlsState();
 
     playbackFrameOrder = [];
-    playbackTimelineFrameOrder = [];
     playbackFramePosition = -1;
     playbackStartFrameIndex = null;
     playbackStepInFlight = false;
@@ -7188,7 +5293,6 @@ function renderTimelineFrames() {
     timelineStrip.scrollLeft = previousScroll;
     setTimelineControlsDisabled(isSwitchingFrame || isSaving || isAutosaving);
     setPlaybackMarkerFrame(playbackMarkerFrameIndex);
-    syncAudioTrackUi();
     updatePlaybackControlsState();
 }
 
@@ -7422,6 +5526,9 @@ async function deleteCurrentFrameOnServer() {
     const deleteUrl = getFrameDeleteUrl(currentFrameIndex);
     if (!deleteUrl) return;
 
+    const confirmDelete = window.confirm(`Удалить кадр ${currentFrameIndex}?`);
+    if (!confirmDelete) return;
+
     setTimelineControlsDisabled(true);
 
     const savedOk = await saveCurrentFrame();
@@ -7524,12 +5631,7 @@ function bindTimelineEvents() {
 
     if (!timelineStrip) return;
 
-    timelineStrip.addEventListener('pointerdown', (event) => {
-        beginTimelineStripScrollDrag(event);
-    });
-
     timelineStrip.addEventListener('click', (event) => {
-        if (timelineStrip.dataset.dragJustFinished) return;
         if (shouldDisableTimelineControls()) return;
         const item = event.target.closest('.timeline-frame');
         if (!item) return;
@@ -7583,10 +5685,6 @@ function bindTimelineEvents() {
             .filter((value) => Number.isFinite(value));
         saveFrameOrder(orderedIds);
     });
-
-    document.addEventListener('pointermove', updateTimelineStripScrollDrag);
-    document.addEventListener('pointerup', stopTimelineStripScrollDrag);
-    document.addEventListener('pointercancel', stopTimelineStripScrollDrag);
 }
 
 function flattenLayers() {
@@ -7887,21 +5985,6 @@ function getCurrentFramePayload() {
     return null;
 }
 
-function buildProjectSavePayload() {
-    const payload = {
-        frames: [],
-        main_audio_segments: cloneAudioSegments(projectAudioSegments),
-    };
-    const frameContent = buildFrameContentPayload();
-    if (frameContent) {
-        payload.frames.push({
-            index: currentFrameIndex,
-            content: frameContent,
-        });
-    }
-    return payload;
-}
-
 /**
  * Отправляем текущий кадр на сервер.
  */
@@ -7996,58 +6079,6 @@ async function saveCurrentFrame(options = {}) {
             isSaving = false;
         }
         updateSaveButtonState();
-    }
-}
-
-async function saveProjectState(options = {}) {
-    const isAuto = Boolean(options.isAuto);
-    const frameSaved = await saveCurrentFrame(options);
-    if (!frameSaved) return false;
-    if (!projectSaveUrl) return true;
-
-    const payload = buildProjectSavePayload();
-    if (!payload.frames.length && !payload.main_audio_segments.length) {
-        return true;
-    }
-
-    try {
-        const response = await fetch(projectSaveUrl, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'X-CSRFToken': getCsrfToken(),
-            },
-            credentials: 'same-origin',
-            body: JSON.stringify(payload),
-        });
-
-        let data = null;
-        try {
-            data = await response.json();
-        } catch (error) {
-            data = null;
-        }
-        if (!response.ok || !data || !data.ok) {
-            throw new Error((data && (data.error || data.message)) || 'Не удалось сохранить проект.');
-        }
-
-        if (data.audio) {
-            applyProjectAudioPayload(data.audio);
-        }
-        lastSavedAt = new Date();
-        updateLastSavedLabel();
-        setSaveStatus('Сохранено', 'saved');
-        setSaveIndicator('saved');
-        updateSaveButtonState();
-        return true;
-    } catch (error) {
-        console.error('Ошибка сохранения проекта', error);
-        const message = error instanceof Error && error.message
-            ? error.message
-            : 'Не удалось сохранить проект.';
-        setSaveStatus(message, 'error');
-        setSaveIndicator('error');
-        return false;
     }
 }
 
@@ -9280,7 +7311,7 @@ function bindSaveEvents() {
     if (!saveButton) return;
 
     saveButton.addEventListener('click', () => {
-        void saveProjectState();
+        saveCurrentFrame();
     });
 }
 
@@ -9366,7 +7397,6 @@ function syncGifLoopControls() {
 }
 
 function updateExportOptionsVisibility() {
-    updateMp4ExportAvailability();
     const isGif = getSelectedExportFormat() === 'gif';
     if (exportFpsField) {
         exportFpsField.hidden = !isGif;
@@ -9450,14 +7480,6 @@ async function performProjectExport() {
     }
     if (format === 'png_zip' && totalFrames && totalFrames > 2000) {
         setExportError(`Слишком много кадров для экспорта (${totalFrames}). Уменьшите количество кадров.`);
-        return;
-    }
-    if (format === 'mp4' && (!projectAudioUrl || !normalizeProjectAudioSegments(projectAudioSegments, { allowDefault: true }).length)) {
-        setExportError('Сначала загрузите аудио для экспорта MP4.');
-        return;
-    }
-    if (format === 'mp4' && totalFrames && totalFrames > 2000) {
-        setExportError(`Слишком много кадров для экспорта MP4 (${totalFrames}). Уменьшите количество кадров.`);
         return;
     }
 
@@ -9634,7 +7656,6 @@ async function initEditor() {
     hydratePanelPositions();
     bindTimelineEvents();
     bindPlaybackEvents();
-    bindProjectAudioEvents();
     await loadTimelineFrames();
     initOnionSkin();
     syncEditorLayout();

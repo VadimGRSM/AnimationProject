@@ -11,10 +11,6 @@ body {
     height: 100%;
 }
 
-:root {
-    accent-color: #000000;
-}
-
 body {
     margin: 0;
     font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -1090,13 +1086,6 @@ body.modal-open {
     position: relative;
 }
 
-.canvas-stage {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 10px;
-}
-
 .canvas-wrapper {
     padding: 12px;
     background-color: #d1d5db;
@@ -1673,174 +1662,12 @@ body.modal-open {
 .timeline-strip {
     display: flex;
     align-items: center;
-    flex-wrap: nowrap;
     gap: 10px;
     overflow-x: auto;
     overflow-y: hidden;
     padding: 4px;
     flex: 1 1 auto;
     scroll-snap-type: x proximity;
-    scrollbar-width: none;
-    -ms-overflow-style: none;
-    cursor: grab;
-}
-
-.timeline-strip::-webkit-scrollbar {
-    display: none;
-}
-
-.timeline-strip--dragging {
-    cursor: grabbing;
-}
-
-.timeline-audio {
-    display: grid;
-    gap: 10px;
-    padding: 10px 12px;
-    background: #f8fafc;
-    border: 1px solid #cbd5e1;
-    border-radius: 12px;
-}
-
-.timeline-audio__toolbar {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-    flex-wrap: wrap;
-}
-
-.timeline-audio__actions {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    flex-wrap: wrap;
-}
-
-.timeline-audio__lane {
-    position: relative;
-    min-height: 52px;
-    border-radius: 10px;
-    border: 1px dashed #94a3b8;
-    background:
-        linear-gradient(90deg, rgba(148, 163, 184, 0.16) 1px, transparent 1px) 0 0 / 32px 100%,
-        #ffffff;
-    overflow-x: auto;
-    overflow-y: hidden;
-    scrollbar-width: none;
-    -ms-overflow-style: none;
-}
-
-.timeline-audio__lane::-webkit-scrollbar {
-    display: none;
-}
-
-.timeline-audio__content {
-    position: relative;
-    min-height: 52px;
-}
-
-.timeline-audio__clips {
-    position: absolute;
-    inset: 0;
-}
-
-.timeline-audio__empty {
-    margin: 0;
-    padding: 14px 16px;
-    font-size: 13px;
-    color: #64748b;
-}
-
-.timeline-audio__clip {
-    position: absolute;
-    height: 36px;
-    min-width: 0;
-    display: flex;
-    align-items: center;
-    gap: 0;
-    border-radius: 8px;
-    background: linear-gradient(90deg, #2563eb, #38bdf8);
-    color: #eff6ff;
-    box-shadow: 0 8px 18px rgba(37, 99, 235, 0.24);
-    cursor: grab;
-    overflow: hidden;
-}
-
-.timeline-audio__clip.is-selected {
-    box-shadow:
-        0 0 0 2px rgba(255, 255, 255, 0.95),
-        0 0 0 4px rgba(37, 99, 235, 0.45),
-        0 8px 18px rgba(37, 99, 235, 0.24);
-}
-
-.timeline-audio__clip.is-dragging {
-    cursor: grabbing;
-}
-
-.timeline-audio__clip--template {
-    display: none;
-}
-
-.timeline-audio__clip-content {
-    min-width: 0;
-    flex: 1 1 auto;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-    padding: 0 14px;
-    pointer-events: none;
-    user-select: none;
-    -webkit-user-select: none;
-}
-
-.timeline-audio__clip-handle {
-    position: relative;
-    width: 12px;
-    align-self: stretch;
-    flex: 0 0 12px;
-    cursor: ew-resize;
-    background: rgba(255, 255, 255, 0.16);
-}
-
-.timeline-audio__clip-handle::after {
-    content: "";
-    position: absolute;
-    top: 8px;
-    bottom: 8px;
-    left: 50%;
-    width: 2px;
-    transform: translateX(-50%);
-    border-radius: 999px;
-    background: rgba(255, 255, 255, 0.95);
-}
-
-.timeline-audio__clip-name,
-.timeline-audio__clip-meta {
-    font-size: 13px;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    user-select: none;
-    -webkit-user-select: none;
-}
-
-.timeline-audio__clip-name {
-    font-weight: 700;
-}
-
-.timeline-audio__playhead {
-    position: absolute;
-    top: 0;
-    bottom: 0;
-    width: 4px;
-    background: rgba(239, 68, 68, 0.95);
-    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.8);
-    transform: translateX(-2px);
-    pointer-events: auto;
-    cursor: ew-resize;
-    z-index: 4;
 }
 
 .timeline-strip--locked {
@@ -1851,7 +1678,6 @@ body.modal-open {
     position: relative;
     width: 104px;
     height: 70px;
-    flex: 0 0 104px;
     border-radius: 10px;
     border: 1px solid #9ca3af;
     background-color: #ffffff;
@@ -1883,10 +1709,6 @@ body.modal-open {
     align-items: center;
     gap: 10px;
     flex-wrap: wrap;
-}
-
-.playback-controls--canvas {
-    justify-content: center;
 }
 
 .playback-loop {
