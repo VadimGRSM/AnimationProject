@@ -241,32 +241,48 @@
             </div>
         </aside>
 
-        <div class="canvas-wrapper">
-            <canvas id="editor-canvas"
-                    width="{{ project.width }}"
-                    height="{{ project.height }}">
-            </canvas>
-            <canvas id="editor-onion-prev"
-                    class="onion-canvas onion-canvas--prev"
-                    width="{{ project.width }}"
-                    height="{{ project.height }}"
-                    aria-hidden="true"
-                    hidden>
-            </canvas>
-            <canvas id="editor-onion-next"
-                    class="onion-canvas onion-canvas--next"
-                    width="{{ project.width }}"
-                    height="{{ project.height }}"
-                    aria-hidden="true"
-                    hidden>
-            </canvas>
-            <canvas id="editor-overlay"
-                    width="{{ project.width }}"
-                    height="{{ project.height }}"
-                    aria-hidden="true">
-            </canvas>
-            <div class="eyedropper-zoom" id="eyedropper-zoom" aria-hidden="true">
-                <canvas id="eyedropper-zoom-canvas" width="120" height="120"></canvas>
+        <div class="canvas-stage" id="canvas-stage">
+            <div class="canvas-stage__controls">
+                <button type="button"
+                        class="tool-button tool-button--small"
+                        id="reset-canvas-view-button"
+                        title="Reset canvas position and zoom">
+                    Reset view
+                </button>
+                <button type="button"
+                        class="tool-button tool-button--small"
+                        id="toggle-canvas-fullscreen-button"
+                        title="Expand canvas to the full editor area">
+                    Fullscreen
+                </button>
+            </div>
+            <div class="canvas-wrapper">
+                <canvas id="editor-canvas"
+                        width="{{ project.width }}"
+                        height="{{ project.height }}">
+                </canvas>
+                <canvas id="editor-onion-prev"
+                        class="onion-canvas onion-canvas--prev"
+                        width="{{ project.width }}"
+                        height="{{ project.height }}"
+                        aria-hidden="true"
+                        hidden>
+                </canvas>
+                <canvas id="editor-onion-next"
+                        class="onion-canvas onion-canvas--next"
+                        width="{{ project.width }}"
+                        height="{{ project.height }}"
+                        aria-hidden="true"
+                        hidden>
+                </canvas>
+                <canvas id="editor-overlay"
+                        width="{{ project.width }}"
+                        height="{{ project.height }}"
+                        aria-hidden="true">
+                </canvas>
+                <div class="eyedropper-zoom" id="eyedropper-zoom" aria-hidden="true">
+                    <canvas id="eyedropper-zoom-canvas" width="120" height="120"></canvas>
+                </div>
             </div>
         </div>
 

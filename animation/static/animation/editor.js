@@ -53,7 +53,11 @@ const toolSettingsOpacity = document.getElementById('tool-settings-opacity');
 const toolSettingsBlur = document.getElementById('tool-settings-blur');
 const toolSettingsSensitivity = document.getElementById('tool-settings-sensitivity');
 const selectToolIcon = document.getElementById('select-tool-icon');
+const canvasStage = document.getElementById('canvas-stage');
+const canvasStageControls = canvasStage ? canvasStage.querySelector('.canvas-stage__controls') : null;
 const canvasWrapper = document.querySelector('.canvas-wrapper');
+const resetCanvasViewButton = document.getElementById('reset-canvas-view-button');
+const toggleCanvasFullscreenButton = document.getElementById('toggle-canvas-fullscreen-button');
 const editorMain = document.querySelector('.editor-main');
 const toolButtons = document.querySelectorAll('.tool-button[data-tool]');
 const selectionModeButtons = document.querySelectorAll('[data-select-mode]');
@@ -256,6 +260,7 @@ let bufferCtx = null;
 let scale = 1;
 let offsetX = 0;
 let offsetY = 0;
+let isCanvasStageFullscreen = false;
 let isPanning = false;
 let panStartX = 0;
 let panStartY = 0;
@@ -1884,9 +1889,8 @@ function renderOverlay() {
             const bounds = selectionTransform && selectionTransform.currentBounds
                 ? selectionTransform.currentBounds
                 : getSelectionBounds(selection);
-            const clamped = clampSelectionBounds(bounds);
-            if (clamped && clamped.width > 0 && clamped.height > 0) {
-                drawSelectionTransformControls(overlayCtx, clamped);
+            if (bounds && bounds.width > 0 && bounds.height > 0) {
+                drawSelectionTransformControls(overlayCtx, bounds);
             }
         }
     }, { clipToFrame: true });
@@ -1988,6 +1992,75 @@ function getListGapPx(listEl) {
     return toPxNumber(styles.rowGap || styles.gap);
 }
 
+function getCanvasDisplayFitSize() {
+    if (!canvas || !editorRoot || !canvasStage) return null;
+
+    const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 0;
+    if (!viewportHeight) return null;
+
+    const rootRect = editorRoot.getBoundingClientRect();
+    const availableFromRootTop = viewportHeight - rootRect.top;
+    if (!Number.isFinite(availableFromRootTop) || availableFromRootTop <= 0) return null;
+
+    const rootStyles = window.getComputedStyle(editorRoot);
+    const paddingTop = toPxNumber(rootStyles.paddingTop);
+    const paddingBottom = toPxNumber(rootStyles.paddingBottom);
+    const rowGap = toPxNumber(rootStyles.rowGap || rootStyles.gap);
+    const timelineEl = editorRoot.querySelector('.timeline-wrapper');
+    const fixedHeight = timelineEl ? timelineEl.offsetHeight : 0;
+    const visibleChildren = [...editorRoot.children].filter((el) => !el.hidden);
+    const gapsTotal = rowGap * Math.max(0, visibleChildren.length - 1);
+    let availableForMain = availableFromRootTop - paddingTop - paddingBottom - gapsTotal - fixedHeight;
+    if (!Number.isFinite(availableForMain) || availableForMain <= 0) return null;
+
+    const stageRect = canvasStage.getBoundingClientRect();
+    const stageStyles = window.getComputedStyle(canvasStage);
+    const stageGap = toPxNumber(stageStyles.rowGap || stageStyles.gap);
+    const stageControlsHeight = canvasStageControls && !canvasStageControls.hidden
+        ? canvasStageControls.offsetHeight
+        : 0;
+
+    const wrapperStyles = canvasWrapper ? window.getComputedStyle(canvasWrapper) : null;
+    const wrapperPaddingX = wrapperStyles
+        ? toPxNumber(wrapperStyles.paddingLeft) + toPxNumber(wrapperStyles.paddingRight)
+        : 24;
+    const wrapperPaddingY = wrapperStyles
+        ? toPxNumber(wrapperStyles.paddingTop) + toPxNumber(wrapperStyles.paddingBottom)
+        : 24;
+    const wrapperBorderX = wrapperStyles
+        ? toPxNumber(wrapperStyles.borderLeftWidth) + toPxNumber(wrapperStyles.borderRightWidth)
+        : 0;
+    const wrapperBorderY = wrapperStyles
+        ? toPxNumber(wrapperStyles.borderTopWidth) + toPxNumber(wrapperStyles.borderBottomWidth)
+        : 0;
+
+    const widthFactor = isCanvasStageFullscreen ? 1 : 0.88;
+    const heightFactor = isCanvasStageFullscreen ? 1 : 0.88;
+    const availableWidth = Math.max(
+        160,
+        Math.floor(stageRect.width * widthFactor - wrapperPaddingX - wrapperBorderX),
+    );
+    const availableHeight = Math.max(
+        160,
+        Math.floor(
+            availableForMain * heightFactor
+            - stageControlsHeight
+            - (stageControlsHeight > 0 ? stageGap : 0)
+            - wrapperPaddingY
+            - wrapperBorderY,
+        ),
+    );
+
+    const widthRatio = availableWidth / Math.max(1, canvas.width);
+    const heightRatio = availableHeight / Math.max(1, canvas.height);
+    const displayScale = Math.max(0.1, Math.min(widthRatio, heightRatio));
+
+    return {
+        width: Math.max(1, Math.floor(canvas.width * displayScale)),
+        height: Math.max(1, Math.floor(canvas.height * displayScale)),
+    };
+}
+
 function applyListMaxVisibleHeight(listEl, itemSelector, maxVisible) {
     if (!listEl) return;
     const maxCount = Number(maxVisible);
@@ -2021,42 +2094,56 @@ function applyListMaxVisibleHeight(listEl, itemSelector, maxVisible) {
  * so the toolbar and timeline still fit on screen.
  */
 function syncResponsiveCanvasSize() {
-    if (!editorRoot || !canvas) return;
+    if (!canvas) return;
 
-    const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 0;
-    if (!viewportHeight) return;
+    const fitSize = getCanvasDisplayFitSize();
+    if (!fitSize) return;
 
-    const rootRect = editorRoot.getBoundingClientRect();
-    const availableFromRootTop = viewportHeight - rootRect.top;
-    if (!Number.isFinite(availableFromRootTop) || availableFromRootTop <= 0) return;
+    canvas.style.width = `${fitSize.width}px`;
+    canvas.style.height = `${fitSize.height}px`;
+}
 
-    const rootStyles = window.getComputedStyle(editorRoot);
-    const paddingTop = toPxNumber(rootStyles.paddingTop);
-    const paddingBottom = toPxNumber(rootStyles.paddingBottom);
-    const rowGap = toPxNumber(rootStyles.rowGap || rootStyles.gap);
+function syncCanvasStageUi() {
+    if (editorMain) {
+        editorMain.classList.toggle('editor-main--canvas-fullscreen', isCanvasStageFullscreen);
+    }
+    if (canvasStage) {
+        canvasStage.classList.toggle('canvas-stage--fullscreen', isCanvasStageFullscreen);
+    }
+    if (toggleCanvasFullscreenButton) {
+        toggleCanvasFullscreenButton.textContent = isCanvasStageFullscreen ? 'Exit fullscreen' : 'Fullscreen';
+        toggleCanvasFullscreenButton.setAttribute(
+            'title',
+            isCanvasStageFullscreen
+                ? 'Return canvas to the regular stage size'
+                : 'Expand canvas to the full editor area',
+        );
+    }
+}
 
-    const timelineEl = editorRoot.querySelector('.timeline-wrapper');
+function resetCanvasViewport() {
+    scale = 1;
+    offsetX = 0;
+    offsetY = 0;
+    renderScene();
+    renderOverlay();
+    updateCursor();
+}
 
-    const fixedHeight = timelineEl ? timelineEl.offsetHeight : 0;
-
-    const visibleChildren = [...editorRoot.children].filter((el) => !el.hidden);
-    const gapsTotal = rowGap * Math.max(0, visibleChildren.length - 1);
-
-    let availableForMain = availableFromRootTop - paddingTop - paddingBottom - gapsTotal - fixedHeight;
-    if (!Number.isFinite(availableForMain)) return;
-
-    // Subtract wrapper padding so the canvas still fits fully inside.
-    let wrapperPaddingY = 24;
-    let wrapperBorderY = 0;
-    if (canvasWrapper) {
-        const wrapperStyles = window.getComputedStyle(canvasWrapper);
-        wrapperPaddingY = toPxNumber(wrapperStyles.paddingTop) + toPxNumber(wrapperStyles.paddingBottom);
-        wrapperBorderY = toPxNumber(wrapperStyles.borderTopWidth) + toPxNumber(wrapperStyles.borderBottomWidth);
+function bindCanvasStageEvents() {
+    if (resetCanvasViewButton) {
+        resetCanvasViewButton.addEventListener('click', () => {
+            resetCanvasViewport();
+        });
     }
 
-    const minCanvasH = 160;
-    const maxCanvasH = Math.max(minCanvasH, Math.floor(availableForMain - wrapperPaddingY - wrapperBorderY));
-    canvas.style.maxHeight = `${maxCanvasH}px`;
+    if (toggleCanvasFullscreenButton) {
+        toggleCanvasFullscreenButton.addEventListener('click', () => {
+            isCanvasStageFullscreen = !isCanvasStageFullscreen;
+            syncCanvasStageUi();
+            syncEditorLayout();
+        });
+    }
 }
 
 function syncEditorLayout() {
@@ -2886,18 +2973,17 @@ function scaleSelectionShape(selectionShape, fromBounds, toBounds) {
 }
 
 function clampMoveBoundsToCanvas(bounds) {
-    if (!bounds || !bufferCanvas) return bounds;
-    let width = bounds.width;
-    let height = bounds.height;
-    if (width > bufferCanvas.width) width = bufferCanvas.width;
-    if (height > bufferCanvas.height) height = bufferCanvas.height;
-    const x = clamp(bounds.x, 0, Math.max(0, bufferCanvas.width - width));
-    const y = clamp(bounds.y, 0, Math.max(0, bufferCanvas.height - height));
-    return { x, y, width, height };
+    if (!bounds) return bounds;
+    return {
+        x: bounds.x,
+        y: bounds.y,
+        width: Math.max(0, bounds.width),
+        height: Math.max(0, bounds.height),
+    };
 }
 
 function getResizedBoundsFromHandle(startBounds, handleId, deltaX, deltaY) {
-    if (!startBounds || !bufferCanvas) return startBounds;
+    if (!startBounds) return startBounds;
     const minSize = SELECTION_MIN_SIZE;
 
     const moveLeft = handleId && handleId.includes('w');
@@ -2916,22 +3002,17 @@ function getResizedBoundsFromHandle(startBounds, handleId, deltaX, deltaY) {
     if (moveBottom) bottom += deltaY;
 
     if (moveLeft) {
-        left = clamp(left, 0, right - minSize);
+        left = Math.min(left, right - minSize);
     }
     if (moveRight) {
-        right = clamp(right, left + minSize, bufferCanvas.width);
+        right = Math.max(right, left + minSize);
     }
     if (moveTop) {
-        top = clamp(top, 0, bottom - minSize);
+        top = Math.min(top, bottom - minSize);
     }
     if (moveBottom) {
-        bottom = clamp(bottom, top + minSize, bufferCanvas.height);
+        bottom = Math.max(bottom, top + minSize);
     }
-
-    left = clamp(left, 0, bufferCanvas.width - minSize);
-    top = clamp(top, 0, bufferCanvas.height - minSize);
-    right = clamp(right, left + minSize, bufferCanvas.width);
-    bottom = clamp(bottom, top + minSize, bufferCanvas.height);
 
     return {
         x: left,
@@ -3070,9 +3151,8 @@ function startSelectionTransform(mode, handleId, startX, startY, event) {
 function startFloatingSelectionTransform(mode, handleId, startX, startY) {
     if (!hasFloatingSelection()) return false;
     if (!selection || selection.type === SELECT_MAGIC) return false;
-    const bounds = selectionTransform.currentBounds || clampSelectionBounds(getSelectionBounds(selection));
-    const clamped = clampSelectionBounds(bounds);
-    if (!clamped || clamped.width <= 0 || clamped.height <= 0) return false;
+    const bounds = selectionTransform.currentBounds || getSelectionBounds(selection);
+    if (!bounds || bounds.width <= 0 || bounds.height <= 0) return false;
     const selectionClone = cloneSelectionShape(selection);
     if (!selectionClone) return false;
 
@@ -3080,8 +3160,8 @@ function startFloatingSelectionTransform(mode, handleId, startX, startY) {
     selectionTransform.handleId = handleId || null;
     selectionTransform.startPointerX = startX;
     selectionTransform.startPointerY = startY;
-    selectionTransform.startBounds = clamped;
-    selectionTransform.currentBounds = clamped;
+    selectionTransform.startBounds = bounds;
+    selectionTransform.currentBounds = bounds;
     selectionTransform.startSelection = selectionClone;
 
     isTransformingSelection = true;
@@ -3099,8 +3179,8 @@ function tryStartSelectionTransformAt(x, y, event) {
     if (!shouldShowSelectionTransformUI()) return false;
     if (!selection || selection.type === SELECT_MAGIC) return false;
     const bounds = hasFloatingSelection()
-        ? (selectionTransform.currentBounds || clampSelectionBounds(getSelectionBounds(selection)))
-        : clampSelectionBounds(getSelectionBounds(selection));
+        ? (selectionTransform.currentBounds || getSelectionBounds(selection))
+        : getSelectionBounds(selection);
     if (!bounds || bounds.width <= 0 || bounds.height <= 0) return false;
 
     const handleId = getTransformHandleAtPoint(x, y, bounds);
@@ -3217,8 +3297,8 @@ function updateSelectionTransformHover(event, x, y) {
     }
 
     const bounds = hasFloatingSelection()
-        ? (selectionTransform.currentBounds || clampSelectionBounds(getSelectionBounds(selection)))
-        : clampSelectionBounds(getSelectionBounds(selection));
+        ? (selectionTransform.currentBounds || getSelectionBounds(selection))
+        : getSelectionBounds(selection);
     if (!bounds || bounds.width <= 0 || bounds.height <= 0) {
         setAutoPanSelectionHover(false);
         hideTransformHint();
@@ -7717,6 +7797,7 @@ async function initEditor() {
         return;
     }
 
+    syncCanvasStageUi();
     syncCanvasSizes();
     hydratePanelPositions();
     bindTimelineEvents();
@@ -7744,6 +7825,7 @@ async function initEditor() {
     bindHistoryEvents();
     bindSaveEvents();
     bindExportEvents();
+    bindCanvasStageEvents();
     syncEditorInteractionLockUi();
     updatePlaybackControlsState();
     hydratePanelPositions();
