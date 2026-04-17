@@ -1,0 +1,57 @@
+{% extends "animation/base.html" %}
+
+{% block title %}Complete sign up{% endblock %}
+{% block body_class %}anim-page anim-page--auth{% endblock %}
+
+{% block content %}
+<section class="auth-shell">
+    <div class="auth-card">
+        <p class="auth-card__eyebrow">AnimStudio</p>
+        <h1 class="auth-card__title">Complete your sign up</h1>
+        <p class="auth-card__subtitle">You are about to use your {{ account.get_provider.name }} account to sign in to {{ site.name }}. As a final step, please complete the form below.</p>
+
+        {% if messages %}
+            <ul class="messages">
+                {% for message in messages %}
+                    <li class="message message--{{ message.tags|default:'success' }}">{{ message }}</li>
+                {% endfor %}
+            </ul>
+        {% endif %}
+
+        {% if form.non_field_errors %}
+            <ul class="messages">
+                {% for error in form.non_field_errors %}
+                    <li class="message message--error">{{ error }}</li>
+                {% endfor %}
+            </ul>
+        {% endif %}
+
+        <div class="projects-shortcut auth-google-button" aria-hidden="true">
+            <span class="projects-shortcut__icon">{{ account.get_provider.name|slice:":1" }}</span>
+            <span class="projects-shortcut__text">{{ account.get_provider.name }}</span>
+        </div>
+
+        <form method="post" action="{% url 'socialaccount_signup' %}" class="auth-form">
+            {% csrf_token %}
+            {% for field in form %}
+                <label class="form-field auth-field">
+                    <span>{{ field.label }}</span>
+                    {{ field }}
+                    {% if field.help_text %}
+                        <small class="auth-field__help">{{ field.help_text }}</small>
+                    {% endif %}
+                    {% for error in field.errors %}
+                        <span class="form-error">{{ error }}</span>
+                    {% endfor %}
+                </label>
+            {% endfor %}
+            {{ redirect_field }}
+            <button type="submit" class="tool-button auth-submit">Sign up</button>
+        </form>
+
+        <div class="auth-links">
+            <a href="{% url 'account_login' %}">Back to log in</a>
+        </div>
+    </div>
+</section>
+{% endblock %}
