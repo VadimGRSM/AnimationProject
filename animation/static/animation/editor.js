@@ -2024,32 +2024,11 @@ function getListGapPx(listEl) {
 }
 
 function getCanvasDisplayFitSize() {
-    if (!canvas || !editorRoot || !canvasStage) return null;
+    if (!canvas || !editorMain || !canvasStage) return null;
 
-    const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 0;
-    if (!viewportHeight) return null;
-
-    const rootRect = editorRoot.getBoundingClientRect();
-    const availableFromRootTop = viewportHeight - rootRect.top;
-    if (!Number.isFinite(availableFromRootTop) || availableFromRootTop <= 0) return null;
-
-    const rootStyles = window.getComputedStyle(editorRoot);
-    const paddingTop = toPxNumber(rootStyles.paddingTop);
-    const paddingBottom = toPxNumber(rootStyles.paddingBottom);
-    const rowGap = toPxNumber(rootStyles.rowGap || rootStyles.gap);
-    const timelineEl = editorRoot.querySelector('.timeline-wrapper');
-    const fixedHeight = timelineEl ? timelineEl.offsetHeight : 0;
-    const visibleChildren = [...editorRoot.children].filter((el) => !el.hidden);
-    const gapsTotal = rowGap * Math.max(0, visibleChildren.length - 1);
-    let availableForMain = availableFromRootTop - paddingTop - paddingBottom - gapsTotal - fixedHeight;
-    if (!Number.isFinite(availableForMain) || availableForMain <= 0) return null;
-
+    const mainRect = editorMain.getBoundingClientRect();
     const stageRect = canvasStage.getBoundingClientRect();
-    const stageStyles = window.getComputedStyle(canvasStage);
-    const stageGap = toPxNumber(stageStyles.rowGap || stageStyles.gap);
-    const stageControlsHeight = canvasStageControls && !canvasStageControls.hidden
-        ? canvasStageControls.offsetHeight
-        : 0;
+    if (!mainRect.width || !mainRect.height || !stageRect.width) return null;
 
     const wrapperStyles = canvasWrapper ? window.getComputedStyle(canvasWrapper) : null;
     const wrapperPaddingX = wrapperStyles
@@ -2065,21 +2044,15 @@ function getCanvasDisplayFitSize() {
         ? toPxNumber(wrapperStyles.borderTopWidth) + toPxNumber(wrapperStyles.borderBottomWidth)
         : 0;
 
-    const widthFactor = isCanvasStageFullscreen ? 1 : 0.88;
-    const heightFactor = isCanvasStageFullscreen ? 1 : 0.88;
+    const outerPaddingX = isCanvasStageFullscreen ? 24 : 40;
+    const outerPaddingY = isCanvasStageFullscreen ? 24 : 40;
     const availableWidth = Math.max(
         160,
-        Math.floor(stageRect.width * widthFactor - wrapperPaddingX - wrapperBorderX),
+        Math.floor(stageRect.width - outerPaddingX - wrapperPaddingX - wrapperBorderX),
     );
     const availableHeight = Math.max(
         160,
-        Math.floor(
-            availableForMain * heightFactor
-            - stageControlsHeight
-            - (stageControlsHeight > 0 ? stageGap : 0)
-            - wrapperPaddingY
-            - wrapperBorderY,
-        ),
+        Math.floor(mainRect.height - outerPaddingY - wrapperPaddingY - wrapperBorderY),
     );
 
     const widthRatio = availableWidth / Math.max(1, canvas.width);
