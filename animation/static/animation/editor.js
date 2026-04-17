@@ -57,6 +57,7 @@ const canvasStage = document.getElementById('canvas-stage');
 const canvasStageControls = canvasStage ? canvasStage.querySelector('.canvas-stage__controls') : null;
 const canvasWrapper = document.querySelector('.canvas-wrapper');
 const resetCanvasViewButton = document.getElementById('reset-canvas-view-button');
+const fitCanvasFrameButton = document.getElementById('fit-canvas-frame-button');
 const toggleCanvasFullscreenButton = document.getElementById('toggle-canvas-fullscreen-button');
 const editorMain = document.querySelector('.editor-main');
 const toolButtons = document.querySelectorAll('.tool-button[data-tool]');
@@ -2194,10 +2195,35 @@ function resetCanvasViewport() {
     updateCursor();
 }
 
+function fitCanvasViewportToFrame() {
+    if (!canvas) return;
+
+    const frameOrigin = getFrameOrigin();
+    const targetScaleX = canvas.width / Math.max(1, projectFrameWidth);
+    const targetScaleY = canvas.height / Math.max(1, projectFrameHeight);
+    const targetScale = Math.max(0.1, Math.min(targetScaleX, targetScaleY));
+    const targetLeft = (canvas.width - projectFrameWidth * targetScale) / 2;
+    const targetTop = (canvas.height - projectFrameHeight * targetScale) / 2;
+
+    scale = targetScale;
+    offsetX = targetLeft - frameOrigin.x * targetScale;
+    offsetY = targetTop - frameOrigin.y * targetScale;
+
+    renderScene();
+    renderOverlay();
+    updateCursor();
+}
+
 function bindCanvasStageEvents() {
     if (resetCanvasViewButton) {
         resetCanvasViewButton.addEventListener('click', () => {
             resetCanvasViewport();
+        });
+    }
+
+    if (fitCanvasFrameButton) {
+        fitCanvasFrameButton.addEventListener('click', () => {
+            fitCanvasViewportToFrame();
         });
     }
 
