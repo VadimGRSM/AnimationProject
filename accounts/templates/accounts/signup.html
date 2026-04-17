@@ -33,18 +33,21 @@
                     {% endfor %}
                 </label>
             {% endfor %}
+            {% if redirect_field_value %}
+                <input type="hidden" name="{{ redirect_field_name }}" value="{{ redirect_field_value }}">
+            {% endif %}
             <button type="submit" class="tool-button auth-submit">Sign up</button>
         </form>
 
         <div class="auth-links">
-            <a href="{% url 'account_login' %}">Already have an account? Log in</a>
+            <a href="{% url 'account_login' %}{% if redirect_field_value %}?{{ redirect_field_name }}={{ redirect_field_value|urlencode }}{% endif %}">Already have an account? Log in</a>
         </div>
 
         {% if google_login_enabled %}
             <div class="auth-divider"><span>or</span></div>
 
             <a class="projects-shortcut auth-google-button"
-               href="{% provider_login_url 'google' process='login' %}">
+               href="{% provider_login_url 'google' process='login' next=redirect_field_value %}">
                 <span class="projects-shortcut__icon" aria-hidden="true">G</span>
                 <span class="projects-shortcut__text">Sign up with Google</span>
             </a>

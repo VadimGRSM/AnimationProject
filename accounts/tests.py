@@ -30,6 +30,23 @@ class AccountsFlowTests(TestCase):
         self.assertEqual(user.display_name, "Artist")
         self.assertEqual(self.client.session.get("_auth_user_id"), str(user.pk))
 
+    def test_signup_preserves_next_redirect(self):
+        invite_url = reverse("animation:invite_detail", kwargs={"token": "test-token"})
+
+        response = self.client.post(
+            reverse("account_signup"),
+            {
+                "email": "next@example.com",
+                "display_name": "Next User",
+                "password1": "VeryStrongPassword123",
+                "password2": "VeryStrongPassword123",
+                "next": invite_url,
+            },
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, invite_url)
+
     def test_profile_page_is_available(self):
         user = User.objects.create_user(email="profile@example.com", password="StrongPassword123")
         self.client.force_login(user)

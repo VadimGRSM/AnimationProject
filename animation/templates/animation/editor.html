@@ -20,6 +20,12 @@
           id="save-indicator"
           aria-hidden="true"></span>
     <span class="anim-header__project-title">{{ project.title }}</span>
+    <span class="anim-header__project-meta">
+        {{ current_user_role|title }}{% if not can_edit %} · Read only{% endif %}
+    </span>
+    {% if can_manage_members %}
+        <a href="{{ share_url }}" class="tool-button tool-button--small anim-header__share-link">Share</a>
+    {% endif %}
 </div>
 {% endblock %}
 
@@ -30,6 +36,7 @@
             <button type="button"
                     id="save-project-button"
                     class="tool-button"
+                    {% if not can_edit %}hidden{% endif %}
                     disabled>
                 Save project
             </button>
@@ -55,6 +62,9 @@
      data-project-width="{{ project.width }}"
      data-project-height="{{ project.height }}"
      data-project-fps="{{ project.fps }}"
+     data-current-user-role="{{ current_user_role }}"
+     data-can-edit="{% if can_edit %}true{% else %}false{% endif %}"
+     data-can-manage-members="{% if can_manage_members %}true{% else %}false{% endif %}"
      data-project-update-url="{% url 'animation:project_update' project.pk %}"
      data-project-save-url="{% url 'animation:project_save' project.pk %}"
      data-project-export-url="{% url 'animation:project_export' project.pk %}"
@@ -353,6 +363,7 @@
                 <button type="button"
                         class="tool-button tool-button--small layers-panel__add"
                         id="add-layer-button"
+                        {% if not can_edit %}hidden{% endif %}
                         aria-label="Add layer"
                         title="Add layer">
                     <img class="tool-icon tool-icon--small"
@@ -370,6 +381,7 @@
             <button type="button"
                     class="tool-button tool-button--small"
                     id="add-frame-button"
+                    {% if not can_edit %}hidden{% endif %}
                     title="Add frame"
                     aria-label="Add frame">
                 +
@@ -377,6 +389,7 @@
             <button type="button"
                     class="tool-button tool-button--small"
                     id="duplicate-frame-button"
+                    {% if not can_edit %}hidden{% endif %}
                     title="Duplicate frame"
                     aria-label="Duplicate frame">
                 ⧉
@@ -384,6 +397,7 @@
             <button type="button"
                     class="tool-button tool-button--small"
                     id="delete-frame-button"
+                    {% if not can_edit %}hidden{% endif %}
                     title="Delete frame"
                     aria-label="Delete frame">
                 <img class="tool-icon tool-icon--small" src="{% static 'animation/icons/trash.svg' %}" alt="">
@@ -427,6 +441,7 @@
                        max="60"
                        step="1"
                        value="{{ project.fps }}"
+                       {% if not can_edit %}disabled{% endif %}
                        aria-label="Project FPS">
             </label>
         </div>

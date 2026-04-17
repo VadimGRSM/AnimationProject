@@ -1,0 +1,180 @@
+{% extends 'animation/base.html' %}
+
+{% block title %}Share {{ project.title }}{% endblock %}
+{% block body_class %}anim-page anim-page--auth{% endblock %}
+
+{% block header_brand_prefix %}
+<a class="anim-header__back-link"
+   href="{% url 'animation:project_editor' project.pk %}"
+   aria-label="Back to editor"
+   title="Back to editor">
+    <span aria-hidden="true">‹</span>
+</a>
+{% endblock %}
+
+{% block header_context %}
+<div class="anim-header__project">
+    <span class="anim-header__project-title">{{ project.title }}</span>
+    <span class="anim-header__project-meta">Share settings</span>
+</div>
+{% endblock %}
+
+{% block content %}
+<section class="auth-shell">
+    <div class="auth-card auth-card--wide share-page">
+        <p class="auth-card__eyebrow">Project sharing</p>
+        <h1 class="auth-card__title">Share "{{ project.title }}"</h1>
+        <p class="auth-card__subtitle">Invite collaborators, manage current members, and review active invite links.</p>
+
+        {% if messages %}
+            <ul class="messages">
+                {% for message in messages %}
+                    <li class="message message--{{ message.tags|default:'success' }}">{{ message }}</li>
+                {% endfor %}
+            </ul>
+        {% endif %}
+
+        <section class="share-section">
+            <div class="share-section__header">
+                <h2 class="share-section__title">Invite by email</h2>
+            </div>
+            <form method="post"
+                  action="{% url 'animation:project_invite_create' project.pk %}"
+                  class="share-form">
+                {% csrf_token %}
+                <label class="form-field">
+                    <span>Email</span>
+                    <input type="email" name="email" placeholder="artist@example.com" required>
+                </label>
+                <label class="form-field">
+                    <span>Role</span>
+                    <select name="role">
+                        {% for value, label in invite_roles %}
+                            <option value="{{ value }}">{{ label }}</option>
+                        {% endfor %}
+                    </select>
+                </label>
+                <div class="share-form__actions">
+                    <button type="submit" class="tool-button">Invite</button>
+                </div>
+            </form>
+        </section>
+
+        <section class="share-section">
+            <div class="share-section__header">
+                <h2 class="share-section__title">Current members</h2>
+            </div>
+            {% if member_rows %}
+                <div class="share-list">
+                    {% for member in member_rows %}
+                        <article class="share-card">
+                            <div class="share-card__main">
+                                <div class="share-card__identity">
+                                    <strong>{{ member.user.display_name|default:member.user.email }}</strong>
+                                    <span>{{ member.user.email }}</span>
+                                </div>
+                                <div class="share-card__meta">
+                                    <span class="project-card__badge">{{ member.role|title }}</span>
+                                    {% if member.role == 'owner' %}
+                                        <span class="project-card__badge">Owner</span>
+                                    {% endif %}
+                                </div>
+                            </div>
+                            {% if member.role != 'owner' %}
+                                <div class="share-card__actions">
+                                    <form method="post"
+                                          action="{% url 'animation:project_member_role_update' project.pk member.pk %}"
+                                          class="share-inline-form">
+                                        {% csrf_token %}
+                                        <select name="role">
+                                            {% for value, label in member_roles %}
+                                                <option value="{{ value }}"{% if member.role == value %} selected{% endif %}>{{ label }}</option>
+                                            {% endfor %}
+                                        </select>
+                                        <button type="submit" class="tool-button">Change role</button>
+                                    </form>
+                                    <form method="post"
+                                          action="{% url 'animation:project_member_remove' project.pk member.pk %}"
+                                          class="share-inline-form">
+                                        {% csrf_token %}
+                                        <button type="submit" class="tool-button share-button--danger">Remove</button>
+                                    </form>
+                                </div>
+                            {% endif %}
+                        </article>
+                    {% endfor %}
+                </div>
+            {% else %}
+                <p class="auth-card__hint">No members found.</p>
+            {% endif %}
+        </section>
+
+        <section class="share-section">
+            <div class="share-section__header">
+                <h2 class="share-section__title">Pending invites</h2>
+            </div>
+            {% if invite_rows %}
+                <div class="share-list">
+                    {% for row in invite_rows %}
+                        <article class="share-card">
+                            <div class="share-card__main">
+                                <div class="share-card__identity">
+                                    <strong>{{ row.invite.email }}</strong>
+                                    <span>Created {{ row.invite.created_at|date:"Y-m-d H:i" }}</span>
+                                </div>
+                                <div class="share-card__meta">
+                                    <span class="project-card__badge">{{ row.invite.role|title }}</span>
+                                    <span class="project-card__badge">{{ row.state|title }}</span>
+                                </div>
+                            </div>
+                            <div class="share-card__copy">
+                                <input type="text" value="{{ row.invite_url }}" readonly>
+                                <button type="button"
+                                        class="tool-button js-copy-invite-link"
+                                        data-copy-text="{{ row.invite_url }}">
+                                    Copy invite link
+                                </button>
+                            </div>
+                            {% if row.can_revoke %}
+                                <div class="share-card__actions">
+                                    <form method="post"
+                                          action="{% url 'animation:project_invite_revoke' project.pk row.invite.pk %}">
+                                        {% csrf_token %}
+                                        <button type="submit" class="tool-button share-button--danger">Revoke</button>
+                                    </form>
+                                </div>
+                            {% endif %}
+                        </article>
+                    {% endfor %}
+                </div>
+            {% else %}
+                <p class="auth-card__hint">No pending invites.</p>
+            {% endif %}
+        </section>
+    </div>
+</section>
+
+<script>
+    document.addEventListener('DOMContentLoaded', () => {
+        document.querySelectorAll('.js-copy-invite-link').forEach((button) => {
+            button.addEventListener('click', async () => {
+                const text = button.dataset.copyText || '';
+                if (!text) return;
+
+                try {
+                    await navigator.clipboard.writeText(text);
+                    button.textContent = 'Copied';
+                    window.setTimeout(() => {
+                        button.textContent = 'Copy invite link';
+                    }, 1200);
+                } catch (error) {
+                    button.textContent = 'Copy failed';
+                    window.setTimeout(() => {
+                        button.textContent = 'Copy invite link';
+                    }, 1200);
+                }
+            });
+        });
+    });
+</script>
+{% endblock %}

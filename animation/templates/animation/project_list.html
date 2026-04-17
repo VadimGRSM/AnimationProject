@@ -15,15 +15,15 @@
                     <span class="projects-shortcut__icon" aria-hidden="true">+</span>
                     <span class="projects-shortcut__text">Create new project</span>
                 </button>
-                {% if project_cards %}
-                    <a class="projects-shortcut"
-                       href="{{ project_cards.0.editor_url }}">
-                        <span class="projects-shortcut__icon" aria-hidden="true">▶</span>
-                        <span class="projects-shortcut__text">Continue project</span>
-                    </a>
-                {% endif %}
                 <a class="projects-shortcut"
-                   href="#project-list">
+                   href="{% if continue_project %}{{ continue_project.editor_url }}{% else %}#{% endif %}"
+                   id="continue-project-shortcut"
+                   {% if not continue_project %}hidden{% endif %}>
+                    <span class="projects-shortcut__icon" aria-hidden="true">▶</span>
+                    <span class="projects-shortcut__text">Continue project</span>
+                </a>
+                <a class="projects-shortcut"
+                   href="#my-projects">
                     <span class="projects-shortcut__icon" aria-hidden="true">▣</span>
                     <span class="projects-shortcut__text">Browse projects</span>
                 </a>
@@ -38,61 +38,134 @@
             {% endfor %}
         </ul>
 
-        <div class="projects-section">
+        <div class="projects-section" id="projects-overview">
             <div class="projects-section__header">
-                <h2 class="projects-section__title">Recent projects</h2>
+                <h2 class="projects-section__title">Projects overview</h2>
             </div>
 
-            <ul class="projects-grid" id="project-list">
-                {% for project in project_cards %}
-                    <li class="project-card" data-project-id="{{ project.id }}">
-                        <a class="project-card__cover" href="{{ project.editor_url }}">
-                            {% if project.preview_url %}
-                                <img class="project-card__image" src="{{ project.preview_url }}" alt="{{ project.title }}">
-                            {% else %}
-                                <div class="project-card__placeholder">
-                                    <span class="project-card__placeholder-initial">{{ project.title|slice:":1"|upper }}</span>
+            <div class="projects-group" id="my-projects">
+                <div class="projects-group__header">
+                    <h3 class="projects-group__title">My projects</h3>
+                    <p class="projects-group__subtitle">Projects where you are the owner.</p>
+                </div>
+                <ul class="projects-grid" id="owned-project-list">
+                    {% for project in owned_project_cards %}
+                        <li class="project-card" data-project-id="{{ project.id }}">
+                            <a class="project-card__cover" href="{{ project.editor_url }}">
+                                {% if project.preview_url %}
+                                    <img class="project-card__image" src="{{ project.preview_url }}" alt="{{ project.title }}">
+                                {% else %}
+                                    <div class="project-card__placeholder">
+                                        <span class="project-card__placeholder-initial">{{ project.title|slice:":1"|upper }}</span>
+                                    </div>
+                                {% endif %}
+                            </a>
+                            <div class="project-card__body">
+                                <div class="project-card__head">
+                                    <a class="project-card__title" href="{{ project.editor_url }}">{{ project.title }}</a>
+                                    {% if project.can_manage_members %}
+                                        <div class="project-card__menu">
+                                            <button type="button"
+                                                    class="project-card__icon-button js-rename-button"
+                                                    data-project-id="{{ project.id }}"
+                                                    data-project-title="{{ project.title }}"
+                                                    data-rename-url="{{ project.rename_url }}"
+                                                    aria-label="Rename"
+                                                    title="Rename">
+                                                ⋯
+                                            </button>
+                                        </div>
+                                    {% endif %}
                                 </div>
-                            {% endif %}
-                        </a>
-                        <div class="project-card__body">
-                            <div class="project-card__head">
-                                <a class="project-card__title" href="{{ project.editor_url }}">{{ project.title }}</a>
-                                <div class="project-card__menu">
-                                    <button type="button"
-                                            class="project-card__icon-button js-rename-button"
-                                            data-project-id="{{ project.id }}"
-                                            data-project-title="{{ project.title }}"
-                                            data-rename-url="{{ project.rename_url }}"
-                                            aria-label="Rename"
-                                            title="Rename">
-                                        ⋯
-                                    </button>
+                                <div class="project-card__meta">
+                                    <span class="project-card__date" data-updated-at="{{ project.updated_at }}"></span>
+                                    <span class="project-card__badge">{{ project.fps }} FPS</span>
+                                </div>
+                                <div class="project-card__details">
+                                    <div class="project-card__detail">
+                                        <span class="project-card__detail-label">Owner</span>
+                                        <span class="project-card__detail-value">{{ project.owner_display }}</span>
+                                    </div>
+                                    <div class="project-card__detail">
+                                        <span class="project-card__detail-label">Your role</span>
+                                        <span class="project-card__detail-value">{{ project.current_user_role|title }}</span>
+                                    </div>
+                                </div>
+                                <div class="project-card__footer">
+                                    <span class="project-card__resolution">{{ project.width }}x{{ project.height }}</span>
+                                    <div class="project-card__actions">
+                                        <a class="project-card__action" href="{{ project.editor_url }}">Open</a>
+                                        {% if project.can_manage_members %}
+                                            <a class="project-card__action" href="{{ project.share_url }}">Share</a>
+                                        {% endif %}
+                                        {% if project.can_manage_members %}
+                                            <button type="button"
+                                                    class="project-card__action project-card__action--danger js-delete-button"
+                                                    data-project-title="{{ project.title }}"
+                                                    data-delete-url="{{ project.delete_url }}">
+                                                <span>Delete</span>
+                                            </button>
+                                        {% endif %}
+                                    </div>
                                 </div>
                             </div>
-                            <div class="project-card__meta">
-                                <span class="project-card__date" data-updated-at="{{ project.updated_at }}"></span>
-                                <span class="project-card__badge">{{ project.fps }} FPS</span>
-                            </div>
-                            <div class="project-card__footer">
-                                <span class="project-card__resolution">{{ project.width }}x{{ project.height }}</span>
-                                <div class="project-card__actions">
-                                    <a class="project-card__action" href="{{ project.editor_url }}">Open</a>
-                                    <button type="button"
-                                            class="project-card__action project-card__action--danger js-delete-button"
-                                            data-project-title="{{ project.title }}"
-                                            data-delete-url="{{ project.delete_url }}">
-                                        <span>Delete</span>
-                                    </button>
-                                </div>
-                            </div>
-                        </div>
+                        </li>
+                    {% endfor %}
+                    <li class="project-empty project-empty--dashboard" id="owned-project-empty"{% if owned_project_cards %} hidden{% endif %}>
+                        <span>You do not own any projects yet.</span>
                     </li>
-                {% endfor %}
-                <li class="project-empty project-empty--dashboard" id="project-empty"{% if project_cards %} hidden{% endif %}>
-                    <span>No projects yet</span>
-                </li>
-            </ul>
+                </ul>
+            </div>
+
+            <div class="projects-group" id="shared-projects">
+                <div class="projects-group__header">
+                    <h3 class="projects-group__title">Shared with me</h3>
+                    <p class="projects-group__subtitle">Projects where you collaborate as editor or viewer.</p>
+                </div>
+                <ul class="projects-grid" id="shared-project-list">
+                    {% for project in shared_project_cards %}
+                        <li class="project-card" data-project-id="{{ project.id }}">
+                            <a class="project-card__cover" href="{{ project.editor_url }}">
+                                {% if project.preview_url %}
+                                    <img class="project-card__image" src="{{ project.preview_url }}" alt="{{ project.title }}">
+                                {% else %}
+                                    <div class="project-card__placeholder">
+                                        <span class="project-card__placeholder-initial">{{ project.title|slice:":1"|upper }}</span>
+                                    </div>
+                                {% endif %}
+                            </a>
+                            <div class="project-card__body">
+                                <div class="project-card__head">
+                                    <a class="project-card__title" href="{{ project.editor_url }}">{{ project.title }}</a>
+                                </div>
+                                <div class="project-card__meta">
+                                    <span class="project-card__date" data-updated-at="{{ project.updated_at }}"></span>
+                                    <span class="project-card__badge">{{ project.fps }} FPS</span>
+                                </div>
+                                <div class="project-card__details">
+                                    <div class="project-card__detail">
+                                        <span class="project-card__detail-label">Owner</span>
+                                        <span class="project-card__detail-value">{{ project.owner_display }}</span>
+                                    </div>
+                                    <div class="project-card__detail">
+                                        <span class="project-card__detail-label">Your role</span>
+                                        <span class="project-card__detail-value">{{ project.current_user_role|title }}</span>
+                                    </div>
+                                </div>
+                                <div class="project-card__footer">
+                                    <span class="project-card__resolution">{{ project.width }}x{{ project.height }}</span>
+                                    <div class="project-card__actions">
+                                        <a class="project-card__action" href="{{ project.editor_url }}">Open</a>
+                                    </div>
+                                </div>
+                            </div>
+                        </li>
+                    {% endfor %}
+                    <li class="project-empty project-empty--dashboard" id="shared-project-empty"{% if shared_project_cards %} hidden{% endif %}>
+                        <span>No projects have been shared with you yet.</span>
+                    </li>
+                </ul>
+            </div>
         </div>
     </section>
 </section>
@@ -217,11 +290,15 @@
         const deleteModalText = document.getElementById('delete-modal-text');
         const deleteError = document.getElementById('delete-error');
         const messagesList = document.getElementById('project-messages');
-        const projectList = document.getElementById('project-list');
-        const emptyState = document.getElementById('project-empty');
+        const ownedProjectList = document.getElementById('owned-project-list');
+        const sharedProjectList = document.getElementById('shared-project-list');
+        const ownedEmptyState = document.getElementById('owned-project-empty');
+        const sharedEmptyState = document.getElementById('shared-project-empty');
+        const continueProjectShortcut = document.getElementById('continue-project-shortcut');
         const TEXT = {
             rename: 'Rename',
             open: 'Open',
+            share: 'Share',
             delete: 'Delete',
             save: 'Save',
             cancel: 'Cancel',
@@ -312,6 +389,27 @@
             target.hidden = true;
         };
 
+        const syncProjectSectionEmptyState = (list, emptyNode) => {
+            if (!list || !emptyNode) return;
+            emptyNode.hidden = Boolean(list.querySelector('.project-card'));
+        };
+
+        const syncContinueShortcut = () => {
+            if (!continueProjectShortcut) return;
+
+            const firstOwnedCard = ownedProjectList?.querySelector('.project-card .project-card__title');
+            const firstSharedCard = sharedProjectList?.querySelector('.project-card .project-card__title');
+            const targetLink = firstOwnedCard || firstSharedCard;
+            if (!targetLink) {
+                continueProjectShortcut.hidden = true;
+                continueProjectShortcut.removeAttribute('href');
+                return;
+            }
+
+            continueProjectShortcut.hidden = false;
+            continueProjectShortcut.href = targetLink.getAttribute('href') || '#';
+        };
+
         const createProjectItem = (project) => {
             const item = document.createElement('li');
             item.className = 'project-card';
@@ -348,20 +446,23 @@
             titleLink.href = project.editor_url;
             titleLink.textContent = project.title;
 
-            const menu = document.createElement('div');
-            menu.className = 'project-card__menu';
+            head.appendChild(titleLink);
+            if (project.can_manage_members) {
+                const menu = document.createElement('div');
+                menu.className = 'project-card__menu';
 
-            const renameButton = document.createElement('button');
-            renameButton.type = 'button';
-            renameButton.className = 'project-card__icon-button js-rename-button';
-            renameButton.dataset.projectId = project.id;
-            renameButton.dataset.projectTitle = project.title;
-            renameButton.dataset.renameUrl = project.rename_url;
-            renameButton.textContent = '⋯';
-            renameButton.title = TEXT.rename;
-            renameButton.setAttribute('aria-label', renameButton.title);
-            menu.appendChild(renameButton);
-            head.append(titleLink, menu);
+                const renameButton = document.createElement('button');
+                renameButton.type = 'button';
+                renameButton.className = 'project-card__icon-button js-rename-button';
+                renameButton.dataset.projectId = project.id;
+                renameButton.dataset.projectTitle = project.title;
+                renameButton.dataset.renameUrl = project.rename_url;
+                renameButton.textContent = '⋯';
+                renameButton.title = TEXT.rename;
+                renameButton.setAttribute('aria-label', renameButton.title);
+                menu.appendChild(renameButton);
+                head.appendChild(menu);
+            }
 
             const meta = document.createElement('div');
             meta.className = 'project-card__meta';
@@ -374,6 +475,19 @@
             fpsBadge.className = 'project-card__badge';
             fpsBadge.textContent = `${project.fps} FPS`;
             meta.append(date, fpsBadge);
+
+            const details = document.createElement('div');
+            details.className = 'project-card__details';
+
+            const ownerDetail = document.createElement('div');
+            ownerDetail.className = 'project-card__detail';
+            ownerDetail.innerHTML = `<span class="project-card__detail-label">Owner</span><span class="project-card__detail-value">${project.owner_display || ''}</span>`;
+
+            const roleDetail = document.createElement('div');
+            roleDetail.className = 'project-card__detail';
+            roleDetail.innerHTML = `<span class="project-card__detail-label">Your role</span><span class="project-card__detail-value">${project.current_user_role ? project.current_user_role.charAt(0).toUpperCase() + project.current_user_role.slice(1) : ''}</span>`;
+
+            details.append(ownerDetail, roleDetail);
 
             const footer = document.createElement('div');
             footer.className = 'project-card__footer';
@@ -390,16 +504,24 @@
             openLink.href = project.editor_url;
             openLink.textContent = TEXT.open;
 
-            const deleteButton = document.createElement('button');
-            deleteButton.type = 'button';
-            deleteButton.className = 'project-card__action project-card__action--danger js-delete-button';
-            deleteButton.dataset.projectTitle = project.title;
-            deleteButton.dataset.deleteUrl = project.delete_url;
-            deleteButton.textContent = TEXT.delete;
+            actions.appendChild(openLink);
+            if (project.can_manage_members) {
+                const shareLink = document.createElement('a');
+                shareLink.className = 'project-card__action';
+                shareLink.href = project.share_url;
+                shareLink.textContent = TEXT.share;
+                actions.appendChild(shareLink);
 
-            actions.append(openLink, deleteButton);
+                const deleteButton = document.createElement('button');
+                deleteButton.type = 'button';
+                deleteButton.className = 'project-card__action project-card__action--danger js-delete-button';
+                deleteButton.dataset.projectTitle = project.title;
+                deleteButton.dataset.deleteUrl = project.delete_url;
+                deleteButton.textContent = TEXT.delete;
+                actions.appendChild(deleteButton);
+            }
             footer.append(resolution, actions);
-            body.append(head, meta, footer);
+            body.append(head, meta, details, footer);
             item.append(coverLink, body);
 
             return item;
@@ -477,8 +599,9 @@
             });
         }
 
-        if (projectList) {
-            projectList.addEventListener('click', (event) => {
+        const bindProjectListEvents = (list) => {
+            if (!list) return;
+            list.addEventListener('click', (event) => {
                 const renameButton = event.target.closest('.js-rename-button');
                 if (renameButton) {
                     event.preventDefault();
@@ -492,7 +615,10 @@
                     handleDeleteButtonClick(deleteButton);
                 }
             });
-        }
+        };
+
+        bindProjectListEvents(ownedProjectList);
+        bindProjectListEvents(sharedProjectList);
 
         document.querySelectorAll('[data-modal-close]').forEach((button) => {
             button.addEventListener('click', closeAllModals);
@@ -535,10 +661,11 @@
                         return;
                     }
 
-                    if (data.project && projectList && emptyState) {
+                    if (data.project && ownedProjectList && ownedEmptyState) {
                         const item = createProjectItem(data.project);
-                        projectList.insertBefore(item, emptyState);
-                        emptyState.hidden = true;
+                        ownedProjectList.insertBefore(item, ownedEmptyState);
+                        syncProjectSectionEmptyState(ownedProjectList, ownedEmptyState);
+                        syncContinueShortcut();
                     }
 
                     showMessage(TEXT.createSuccess, 'success');
@@ -660,10 +787,9 @@
                         item.remove();
                     }
 
-                    if (projectList && emptyState) {
-                        const hasItems = projectList.querySelector('.project-card');
-                        emptyState.hidden = Boolean(hasItems);
-                    }
+                    syncProjectSectionEmptyState(ownedProjectList, ownedEmptyState);
+                    syncProjectSectionEmptyState(sharedProjectList, sharedEmptyState);
+                    syncContinueShortcut();
 
                     showMessage(interpolate(TEXT.deleteSuccess, { title: projectTitle }), 'success');
                     closeModal(deleteModal);
@@ -676,6 +802,10 @@
                 }
             });
         }
+
+        syncProjectSectionEmptyState(ownedProjectList, ownedEmptyState);
+        syncProjectSectionEmptyState(sharedProjectList, sharedEmptyState);
+        syncContinueShortcut();
     });
 </script>
 {% endblock %}

@@ -11,13 +11,20 @@ from django.conf import settings
 from django.core.files.base import ContentFile
 from django.core import signing
 from django.db import transaction
-from django.db.models import Max
+from django.db.models import Max, Prefetch
 from django.http import JsonResponse, FileResponse, Http404
 from django.shortcuts import render, redirect, get_object_or_404
 from django.urls import reverse
 from django.contrib.auth.decorators import login_required
 from django.views.decorators.http import require_POST, require_http_methods
-from .models import AnimationProject, Frame, Layer
+from .access import (
+    get_project_membership,
+    get_accessible_project_or_404,
+    get_accessible_projects_queryset,
+    get_editable_project_or_404,
+    get_manageable_project_or_404,
+)
+from .models import AnimationProject, Frame, Layer, ProjectMember
 
 MAX_PREVIEW_IMAGE_BYTES = 5 * 1024 * 1024
 MAX_EXPORT_GIF_BYTES = 50 * 1024 * 1024
@@ -55,26 +62,39 @@ def serialize_frame(frame):
     }
 
 
-def serialize_project_card(project, first_frame=None):
+def serialize_project_card(project, first_frame=None, membership=None):
     frame_payload = serialize_frame(first_frame) if first_frame else {
         'preview_url': '',
         'updated_at': project.updated_at.isoformat() if project.updated_at else '',
         'has_preview': False,
     }
+    current_user = getattr(project, '_current_user', None)
+    membership = membership or get_project_membership(getattr(project, '_current_user', None), project)
+    current_user_role = membership.role if membership and membership.is_active else None
+    can_edit = membership.can_edit() if membership else False
+    can_manage_members = membership.can_manage_members() if membership else False
+    owner_display = project.owner.display_name or project.owner.email
+    is_owned = bool(current_user and getattr(current_user, 'id', None) == project.owner_id)
     return {
         'id': project.pk,
         'title': project.title,
         'width': project.width,
         'height': project.height,
         'fps': project.fps,
+        'owner_display': owner_display,
+        'owner_email': project.owner.email,
+        'is_owned': is_owned,
+        'current_user_role': current_user_role,
+        'can_edit': can_edit,
+        'can_manage_members': can_manage_members,
         'updated_at': project.updated_at.isoformat() if project.updated_at else '',
         'preview_url': frame_payload.get('preview_url', ''),
         'has_preview': frame_payload.get('has_preview', False),
         'editor_url': reverse('animation:project_editor', kwargs={'pk': project.pk}),
+        'share_url': reverse('animation:project_share', kwargs={'pk': project.pk}),
         'rename_url': reverse('animation:project_rename', kwargs={'pk': project.pk}),
         'delete_url': reverse('animation:project_delete', kwargs={'pk': project.pk}),
     }
-
 
 def ensure_default_layer(frame):
     if frame.layers.exists():
@@ -186,14 +206,37 @@ def reorder_frames(project, ordered_ids=None):
 
 @login_required
 def project_list(request):
-    projects = AnimationProject.objects.filter(owner=request.user).prefetch_related('frames').order_by('-updated_at')
+    projects = get_accessible_projects_queryset(request.user).select_related('owner').prefetch_related(
+        'frames',
+        Prefetch(
+            'memberships',
+            queryset=ProjectMember.objects.filter(user=request.user),
+            to_attr='current_user_memberships',
+        ),
+    ).order_by('-updated_at')
     project_cards = []
+    owned_project_cards = []
+    shared_project_cards = []
     for project in projects:
         frames = list(project.frames.all())
         first_frame = frames[0] if frames else None
-        project_cards.append(serialize_project_card(project, first_frame))
+        project._current_user = request.user
+        membership = project.current_user_memberships[0] if getattr(project, 'current_user_memberships', None) else None
+        card = serialize_project_card(project, first_frame, membership=membership)
+        project_cards.append(card)
+        if card['is_owned']:
+            owned_project_cards.append(card)
+        else:
+            shared_project_cards.append(card)
+
+    continue_project = owned_project_cards[0] if owned_project_cards else (
+        shared_project_cards[0] if shared_project_cards else None
+    )
     return render(request, 'animation/project_list.html', {
         'project_cards': project_cards,
+        'owned_project_cards': owned_project_cards,
+        'shared_project_cards': shared_project_cards,
+        'continue_project': continue_project,
     })
 
 
@@ -227,6 +270,7 @@ def project_create(request):
         ensure_default_layer(frame)
 
         if is_ajax:
+            project._current_user = request.user
             return JsonResponse({
                 'ok': True,
                 'project': serialize_project_card(project, frame),
@@ -239,7 +283,8 @@ def project_create(request):
 
 @login_required
 def project_editor(request, pk):
-    project = get_object_or_404(AnimationProject, pk=pk, owner=request.user)
+    project = get_accessible_project_or_404(request.user, pk)
+    membership = get_project_membership(request.user, project)
     first_frame = project.frames.order_by('index').first()
     current_frame_index = first_frame.index if first_frame else 1
     current_frame_preview_url = ''
@@ -251,15 +296,18 @@ def project_editor(request, pk):
             current_frame_updated_at = first_frame.updated_at.isoformat()
     return render(request, 'animation/editor.html', {
         'project': project,
+        'current_user_role': membership.role if membership else '',
+        'can_edit': membership.can_edit() if membership else False,
+        'can_manage_members': membership.can_manage_members() if membership else False,
+        'share_url': reverse('animation:project_share', kwargs={'pk': project.pk}),
         'current_frame_index': current_frame_index,
         'current_frame_preview_url': current_frame_preview_url,
         'current_frame_updated_at': current_frame_updated_at,
     })
 
 
-@login_required
 def project_rename(request, pk):
-    project = get_object_or_404(AnimationProject, pk=pk, owner=request.user)
+    project = get_manageable_project_or_404(request.user, pk)
     is_ajax = request.headers.get('x-requested-with') == 'XMLHttpRequest'
 
     if request.method == 'POST':
@@ -296,7 +344,7 @@ def project_rename(request, pk):
 @login_required
 @require_POST
 def project_delete(request, pk):
-    project = get_object_or_404(AnimationProject, pk=pk, owner=request.user)
+    project = get_manageable_project_or_404(request.user, pk)
     is_ajax = request.headers.get('x-requested-with') == 'XMLHttpRequest'
     project_title = project.title
     project.delete()
@@ -313,7 +361,7 @@ def project_delete(request, pk):
 @login_required
 @require_POST
 def project_save(request, pk):
-    project = get_object_or_404(AnimationProject, pk=pk, owner=request.user)
+    project = get_editable_project_or_404(request.user, pk)
 
     try:
         payload = json.loads(request.body.decode('utf-8'))
@@ -360,7 +408,7 @@ def project_save(request, pk):
 @login_required
 @require_POST
 def project_update(request, pk):
-    project = get_object_or_404(AnimationProject, pk=pk, owner=request.user)
+    project = get_editable_project_or_404(request.user, pk)
 
     try:
         payload = json.loads(request.body.decode('utf-8')) if request.body else {}
@@ -393,7 +441,7 @@ def project_update(request, pk):
 @login_required
 @require_http_methods(["GET"])
 def frames_list(request, pk):
-    project = get_object_or_404(AnimationProject, pk=pk, owner=request.user)
+    project = get_accessible_project_or_404(request.user, pk)
     frames = project.frames.order_by('index', 'id')
     return JsonResponse({
         'ok': True,
@@ -404,7 +452,7 @@ def frames_list(request, pk):
 @login_required
 @require_http_methods(["GET"])
 def frame_detail(request, pk, index):
-    project = get_object_or_404(AnimationProject, pk=pk, owner=request.user)
+    project = get_accessible_project_or_404(request.user, pk)
     frame = get_object_or_404(Frame, project=project, index=index)
     ensure_default_layer(frame)
     layers = frame.layers.order_by('order', 'id')
@@ -421,7 +469,7 @@ def frame_detail(request, pk, index):
 @login_required
 @require_POST
 def frame_create(request, pk):
-    project = get_object_or_404(AnimationProject, pk=pk, owner=request.user)
+    project = get_editable_project_or_404(request.user, pk)
 
     try:
         payload = json.loads(request.body.decode('utf-8')) if request.body else {}
@@ -500,7 +548,7 @@ def frame_create(request, pk):
 @login_required
 @require_POST
 def frame_delete(request, pk, index):
-    project = get_object_or_404(AnimationProject, pk=pk, owner=request.user)
+    project = get_editable_project_or_404(request.user, pk)
     frame = get_object_or_404(Frame, project=project, index=index)
 
     with transaction.atomic():
@@ -529,7 +577,7 @@ def frame_delete(request, pk, index):
 @login_required
 @require_POST
 def frame_reorder(request, pk):
-    project = get_object_or_404(AnimationProject, pk=pk, owner=request.user)
+    project = get_editable_project_or_404(request.user, pk)
 
     try:
         payload = json.loads(request.body.decode('utf-8')) if request.body else {}
@@ -560,7 +608,7 @@ def frame_reorder(request, pk):
 @login_required
 @require_POST
 def frame_save(request, pk, index):
-    project = get_object_or_404(AnimationProject, pk=pk, owner=request.user)
+    project = get_editable_project_or_404(request.user, pk)
     frame = get_object_or_404(Frame, project=project, index=index)
 
     try:
@@ -649,7 +697,10 @@ def frame_save(request, pk, index):
 @login_required
 @require_http_methods(["GET", "POST"])
 def frame_layers(request, pk, index):
-    project = get_object_or_404(AnimationProject, pk=pk, owner=request.user)
+    if request.method == 'GET':
+        project = get_accessible_project_or_404(request.user, pk)
+    else:
+        project = get_editable_project_or_404(request.user, pk)
     frame = get_object_or_404(Frame, project=project, index=index)
     ensure_default_layer(frame)
 
@@ -687,7 +738,7 @@ def frame_layers(request, pk, index):
 @login_required
 @require_POST
 def layer_update(request, pk, index, layer_id):
-    project = get_object_or_404(AnimationProject, pk=pk, owner=request.user)
+    project = get_editable_project_or_404(request.user, pk)
     frame = get_object_or_404(Frame, project=project, index=index)
     layer = get_object_or_404(Layer, frame=frame, pk=layer_id)
 
@@ -729,7 +780,7 @@ def layer_update(request, pk, index, layer_id):
 @login_required
 @require_POST
 def layer_delete(request, pk, index, layer_id):
-    project = get_object_or_404(AnimationProject, pk=pk, owner=request.user)
+    project = get_editable_project_or_404(request.user, pk)
     frame = get_object_or_404(Frame, project=project, index=index)
     layer = get_object_or_404(Layer, frame=frame, pk=layer_id)
     layer.delete()
@@ -745,7 +796,7 @@ def layer_delete(request, pk, index, layer_id):
 @login_required
 @require_POST
 def layer_reorder(request, pk, index):
-    project = get_object_or_404(AnimationProject, pk=pk, owner=request.user)
+    project = get_editable_project_or_404(request.user, pk)
     frame = get_object_or_404(Frame, project=project, index=index)
     ensure_default_layer(frame)
 
@@ -902,7 +953,7 @@ def _safe_media_path(rel_path):
 @login_required
 @require_POST
 def project_export(request, pk):
-    project = get_object_or_404(AnimationProject, pk=pk, owner=request.user)
+    project = get_accessible_project_or_404(request.user, pk)
 
     try:
         payload = json.loads(request.body.decode('utf-8')) if request.body else {}
@@ -1070,7 +1121,7 @@ def project_export(request, pk):
 @login_required
 @require_http_methods(["GET"])
 def project_export_download(request, pk, token):
-    project = get_object_or_404(AnimationProject, pk=pk, owner=request.user)
+    project = get_accessible_project_or_404(request.user, pk)
 
     try:
         data = _decode_export_token(token, EXPORT_TOKEN_MAX_AGE_SECONDS)

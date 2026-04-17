@@ -1,0 +1,74 @@
+{% extends "animation/base.html" %}
+
+{% block title %}Project invitation{% endblock %}
+{% block body_class %}anim-page anim-page--auth{% endblock %}
+
+{% block content %}
+<section class="auth-shell">
+    <div class="auth-card">
+        <p class="auth-card__eyebrow">AnimStudio</p>
+
+        {% if messages %}
+            <ul class="messages">
+                {% for message in messages %}
+                    <li class="message message--{{ message.tags|default:'success' }}">{{ message }}</li>
+                {% endfor %}
+            </ul>
+        {% endif %}
+
+        {% if invite_state == 'pending' and invite %}
+            <h1 class="auth-card__title">Project invitation</h1>
+            <p class="auth-card__subtitle">
+                You were invited to join <strong>{{ project.title }}</strong> as <strong>{{ invite.role|title }}</strong>.
+            </p>
+
+            {% if user.is_authenticated %}
+                {% if can_accept %}
+                    <form method="post" action="{{ accept_url }}" class="auth-form">
+                        {% csrf_token %}
+                        <button type="submit" class="tool-button auth-submit">Accept invitation</button>
+                    </form>
+                {% elif not email_matches %}
+                    <p class="message message--error">
+                        This invitation was sent to <strong>{{ invite.email }}</strong>, but you are signed in as <strong>{{ user.email }}</strong>.
+                    </p>
+                {% endif %}
+            {% else %}
+                <div class="auth-links">
+                    <a href="{{ login_url }}">Log in</a>
+                    <a href="{{ signup_url }}">Create an account</a>
+                </div>
+            {% endif %}
+        {% elif invite_state == 'accepted' and invite %}
+            <h1 class="auth-card__title">Invitation already accepted</h1>
+            <p class="auth-card__subtitle">
+                This invitation for <strong>{{ project.title }}</strong> has already been accepted.
+            </p>
+            {% if project_url %}
+                <div class="auth-links">
+                    <a href="{{ project_url }}">Open project</a>
+                </div>
+            {% endif %}
+        {% elif invite_state == 'revoked' and invite %}
+            <h1 class="auth-card__title">Invitation revoked</h1>
+            <p class="auth-card__subtitle">
+                The invitation to <strong>{{ project.title }}</strong> is no longer active.
+            </p>
+        {% elif invite_state == 'expired' and invite %}
+            <h1 class="auth-card__title">Invitation expired</h1>
+            <p class="auth-card__subtitle">
+                The invitation to <strong>{{ project.title }}</strong> has expired.
+            </p>
+        {% else %}
+            <h1 class="auth-card__title">Invitation not found</h1>
+            <p class="auth-card__subtitle">
+                This invitation link is invalid or no longer available.
+            </p>
+        {% endif %}
+
+        <div class="auth-links">
+            <a href="{% url 'animation:project_list' %}">Go to projects</a>
+        </div>
+    </div>
+</section>
+{% endblock %}

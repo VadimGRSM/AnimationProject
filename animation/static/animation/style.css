@@ -297,6 +297,34 @@ main {
     gap: 18px;
 }
 
+.projects-group {
+    display: grid;
+    gap: 14px;
+}
+
+.projects-group + .projects-group {
+    margin-top: 10px;
+}
+
+.projects-group__header {
+    display: grid;
+    gap: 4px;
+}
+
+.projects-group__title {
+    margin: 0;
+    color: #f8fafc;
+    font-size: 22px;
+    line-height: 1.1;
+    font-weight: 700;
+}
+
+.projects-group__subtitle {
+    margin: 0;
+    color: #94a3b8;
+    font-size: 14px;
+}
+
 .projects-section__header {
     display: flex;
     align-items: center;
@@ -422,6 +450,33 @@ main {
     flex-wrap: wrap;
     color: #94a3b8;
     font-size: 13px;
+}
+
+.project-card__details {
+    display: grid;
+    gap: 8px;
+}
+
+.project-card__detail {
+    display: grid;
+    gap: 3px;
+}
+
+.project-card__detail-label {
+    color: #94a3b8;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+.project-card__detail-value {
+    color: #e2e8f0;
+    font-size: 14px;
+    line-height: 1.35;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 .project-card__badge,
@@ -1891,6 +1946,127 @@ body.modal-open {
 
 .auth-card--wide {
     width: min(100%, 720px);
+}
+
+.share-page {
+    gap: 22px;
+}
+
+.share-section {
+    display: grid;
+    gap: 14px;
+    padding-top: 6px;
+    border-top: 1px solid rgba(148, 163, 184, 0.14);
+}
+
+.share-section:first-of-type {
+    border-top: 0;
+    padding-top: 0;
+}
+
+.share-section__header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.share-section__title {
+    margin: 0;
+    color: #f8fafc;
+    font-size: 20px;
+    font-weight: 700;
+}
+
+.share-form {
+    display: grid;
+    gap: 14px;
+}
+
+.share-form__actions {
+    display: flex;
+    justify-content: flex-start;
+}
+
+.share-list {
+    display: grid;
+    gap: 14px;
+}
+
+.share-card {
+    display: grid;
+    gap: 12px;
+    padding: 16px;
+    border-radius: 18px;
+    border: 1px solid rgba(148, 163, 184, 0.14);
+    background: rgba(15, 23, 42, 0.58);
+}
+
+.share-card__main,
+.share-card__actions,
+.share-card__copy,
+.share-inline-form {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+
+.share-card__main {
+    justify-content: space-between;
+}
+
+.share-card__identity {
+    display: grid;
+    gap: 4px;
+}
+
+.share-card__identity strong {
+    color: #f8fafc;
+}
+
+.share-card__identity span {
+    color: #94a3b8;
+    font-size: 14px;
+}
+
+.share-card__meta {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.share-card__copy input,
+.share-inline-form select {
+    min-height: 40px;
+    padding: 8px 10px;
+    border-radius: 10px;
+    border: 1px solid rgba(148, 163, 184, 0.18);
+    background: rgba(255, 255, 255, 0.06);
+    color: #f8fafc;
+}
+
+.share-card__copy input {
+    flex: 1 1 320px;
+}
+
+.share-inline-form {
+    margin: 0;
+}
+
+.share-button--danger {
+    border-color: rgba(248, 113, 113, 0.35);
+    background: rgba(127, 29, 29, 0.24);
+    color: #fecaca;
+}
+
+.share-button--danger:hover {
+    background: rgba(153, 27, 27, 0.34);
+}
+
+.anim-header__share-link {
+    white-space: nowrap;
 }
 
 .auth-card__eyebrow {

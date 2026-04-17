@@ -1,5 +1,17 @@
-from django.db import models
+from datetime import timedelta
+import uuid
+
 from django.conf import settings
+from django.db import models
+from django.utils import timezone
+
+
+def generate_project_invite_token():
+    return uuid.uuid4().hex
+
+
+def default_project_invite_expiry():
+    return timezone.now() + timedelta(days=7)
 
 
 class AnimationProject(models.Model):
@@ -19,6 +31,135 @@ class AnimationProject(models.Model):
 
     def __str__(self):
         return self.title
+
+    def ensure_owner_membership(self):
+        ProjectMember.objects.update_or_create(
+            project=self,
+            user=self.owner,
+            defaults={
+                'role': ProjectMember.Role.OWNER,
+                'invited_by': None,
+                'is_active': True,
+            },
+        )
+
+
+class ProjectMember(models.Model):
+    class Role(models.TextChoices):
+        OWNER = 'owner', 'Owner'
+        EDITOR = 'editor', 'Editor'
+        VIEWER = 'viewer', 'Viewer'
+
+    project = models.ForeignKey(
+        AnimationProject,
+        on_delete=models.CASCADE,
+        related_name='memberships',
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='project_memberships',
+    )
+    role = models.CharField(
+        max_length=16,
+        choices=Role.choices,
+        default=Role.VIEWER,
+    )
+    joined_at = models.DateTimeField(auto_now_add=True)
+    invited_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='sent_project_memberships',
+    )
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=['project', 'user'],
+                name='unique_project_member',
+            ),
+        ]
+
+    def __str__(self):
+        return f'{self.user} in {self.project} ({self.role})'
+
+    def can_edit(self):
+        return self.is_active and self.role in {self.Role.OWNER, self.Role.EDITOR}
+
+    def can_view(self):
+        return self.is_active and self.role in set(self.Role.values)
+
+    def can_manage_members(self):
+        return self.is_active and self.role == self.Role.OWNER
+
+
+class ProjectInvite(models.Model):
+    class Role(models.TextChoices):
+        EDITOR = 'editor', 'Editor'
+        VIEWER = 'viewer', 'Viewer'
+
+    class Status(models.TextChoices):
+        PENDING = 'pending', 'Pending'
+        ACCEPTED = 'accepted', 'Accepted'
+        REVOKED = 'revoked', 'Revoked'
+        EXPIRED = 'expired', 'Expired'
+
+    project = models.ForeignKey(
+        AnimationProject,
+        on_delete=models.CASCADE,
+        related_name='invites',
+    )
+    email = models.EmailField()
+    role = models.CharField(
+        max_length=16,
+        choices=Role.choices,
+        default=Role.VIEWER,
+    )
+    token = models.CharField(
+        max_length=255,
+        unique=True,
+        default=generate_project_invite_token,
+        editable=False,
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField(default=default_project_invite_expiry)
+    accepted_at = models.DateTimeField(null=True, blank=True)
+    accepted_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='accepted_project_invites',
+    )
+    invited_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='sent_project_invites',
+    )
+    status = models.CharField(
+        max_length=16,
+        choices=Status.choices,
+        default=Status.PENDING,
+    )
+
+    def __str__(self):
+        return f'{self.email} -> {self.project} ({self.role})'
+
+    def is_expired(self):
+        return timezone.now() >= self.expires_at
+
+    def is_pending(self):
+        return self.status == self.Status.PENDING and not self.is_expired()
+
+    def can_be_accepted_by(self, user):
+        if not user or not getattr(user, 'is_authenticated', False):
+            return False
+        if not getattr(user, 'email', ''):
+            return False
+        return self.is_pending() and user.email.casefold() == self.email.casefold()
 
 
 class Frame(models.Model):

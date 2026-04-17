@@ -102,6 +102,14 @@ const historyEmpty = document.getElementById('history-empty');
 const editorProjectId = (editorRoot && editorRoot.dataset.projectId) || 'unknown';
 const PANEL_POSITION_STORAGE_PREFIX = `anim.editor.${editorProjectId}.panelPosition.`;
 
+function parseDatasetBoolean(value) {
+    return String(value).trim().toLowerCase() === 'true';
+}
+
+const currentUserRole = (editorRoot && editorRoot.dataset.currentUserRole) || '';
+const projectCanEdit = parseDatasetBoolean(editorRoot && editorRoot.dataset.canEdit);
+const projectCanManageMembers = parseDatasetBoolean(editorRoot && editorRoot.dataset.canManageMembers);
+
 const timelineStrip = document.getElementById('timeline-strip');
 const addFrameButton = document.getElementById('add-frame-button');
 const duplicateFrameButton = document.getElementById('duplicate-frame-button');
@@ -513,7 +521,7 @@ function openToolSettingsPopover(anchorButton, options = {}) {
 }
 
 function setTool(toolName) {
-    if (isEditingLockedByPlayback()) return;
+    if (isEditingLocked()) return;
     if (!TOOL_SET.has(toolName)) return;
 
     currentTool = toolName;
@@ -593,7 +601,7 @@ function setBrushBlur(value) {
 }
 
 function setSelectionMode(mode) {
-    if (isEditingLockedByPlayback()) return;
+    if (isEditingLocked()) return;
     if (mode !== SELECT_RECT && mode !== SELECT_ELLIPSE && mode !== SELECT_LASSO && mode !== SELECT_MAGIC) {
         return;
     }
@@ -632,8 +640,16 @@ function isPlaybackRunning() {
     return playbackMode === PLAYBACK_PLAYING;
 }
 
+function isReadOnlyProject() {
+    return !projectCanEdit;
+}
+
 function isEditingLockedByPlayback() {
     return isPlaybackSessionActive() || playbackStopping;
+}
+
+function isEditingLocked() {
+    return isReadOnlyProject() || isEditingLockedByPlayback();
 }
 
 function getOrderedTimelineIndexes() {
@@ -1105,27 +1121,32 @@ function getFrameDeleteUrl(index) {
     return fillFrameUrl(frameDeleteUrlTemplate, index);
 }
 
-function shouldDisableTimelineControls() {
+function shouldDisableTimelineNavigation() {
     return timelineControlsTemporarilyDisabled || isPlaybackSessionActive() || playbackStopping;
 }
 
+function shouldDisableTimelineControls() {
+    return shouldDisableTimelineNavigation() || isReadOnlyProject();
+}
+
 function syncTimelineControlsState() {
-    const isDisabled = shouldDisableTimelineControls();
-    if (addFrameButton) addFrameButton.disabled = isDisabled;
-    if (duplicateFrameButton) duplicateFrameButton.disabled = isDisabled;
-    if (deleteFrameButton) deleteFrameButton.disabled = isDisabled;
-    if (onionToggleButton) onionToggleButton.disabled = isDisabled;
+    const areMutationsDisabled = shouldDisableTimelineControls();
+    const isNavigationDisabled = shouldDisableTimelineNavigation();
+    if (addFrameButton) addFrameButton.disabled = areMutationsDisabled;
+    if (duplicateFrameButton) duplicateFrameButton.disabled = areMutationsDisabled;
+    if (deleteFrameButton) deleteFrameButton.disabled = areMutationsDisabled;
+    if (onionToggleButton) onionToggleButton.disabled = isNavigationDisabled;
 
     if (timelineStrip) {
-        timelineStrip.classList.toggle('timeline-strip--locked', isDisabled);
+        timelineStrip.classList.toggle('timeline-strip--locked', isNavigationDisabled);
         timelineStrip.querySelectorAll('.timeline-frame').forEach((el) => {
-            el.draggable = !isDisabled;
+            el.draggable = !areMutationsDisabled;
         });
     }
 }
 
 function syncToolbarControlsState() {
-    const isDisabled = isEditingLockedByPlayback();
+    const isDisabled = isEditingLocked();
     toolButtons.forEach((button) => {
         button.disabled = isDisabled;
     });
@@ -1146,7 +1167,7 @@ function syncToolbarControlsState() {
 }
 
 function syncLayerControlsState() {
-    const isDisabled = isEditingLockedByPlayback();
+    const isDisabled = isEditingLocked();
     if (addLayerButton) addLayerButton.disabled = isDisabled;
     if (!layersList) return;
 
@@ -1160,9 +1181,12 @@ function syncLayerControlsState() {
 }
 
 function syncEditorInteractionLockUi() {
-    const isLocked = isEditingLockedByPlayback();
+    const isReadOnly = isReadOnlyProject();
     if (editorRoot) {
-        editorRoot.classList.toggle('editor-root--playback', isLocked);
+        editorRoot.dataset.currentUserRole = currentUserRole;
+        editorRoot.classList.toggle('editor-root--playback', isEditingLockedByPlayback());
+        editorRoot.classList.toggle('editor-root--readonly', isReadOnly);
+        editorRoot.classList.toggle('editor-root--can-manage-members', projectCanManageMembers);
     }
     syncToolbarControlsState();
     syncLayerControlsState();
@@ -1609,7 +1633,7 @@ function fillBackgroundLayerIfNeeded() {
 }
 
 async function createLayer() {
-    if (isEditingLockedByPlayback()) return;
+    if (isEditingLocked()) return;
     const listUrl = getLayerListUrl();
     if (!listUrl) return;
     beginFullHistory('layer_add');
@@ -1639,7 +1663,7 @@ async function createLayer() {
 }
 
 async function updateLayer(layerId, updates) {
-    if (isEditingLockedByPlayback()) return null;
+    if (isEditingLocked()) return null;
     const url = getLayerUpdateUrl(layerId);
     if (!url) return null;
     try {
@@ -1664,7 +1688,7 @@ async function updateLayer(layerId, updates) {
 }
 
 async function deleteLayer(layerId) {
-    if (isEditingLockedByPlayback()) return;
+    if (isEditingLocked()) return;
     const url = getLayerDeleteUrl(layerId);
     if (!url) return;
     beginFullHistory('layer_delete');
@@ -3937,6 +3961,10 @@ function updateLastSavedLabel() {
 
 function updateSaveButtonState() {
     if (!saveButton) return;
+    if (!projectCanEdit) {
+        saveButton.disabled = true;
+        return;
+    }
     saveButton.disabled = isSaving || isAutosaving || !hasUnsavedChanges;
 }
 
@@ -3944,6 +3972,7 @@ function updateSaveButtonState() {
  * Mark that the project has unsaved changes.
  */
 function markUnsavedChanges() {
+    if (!projectCanEdit) return;
     if (hasUnsavedChanges) return;
 
     hasUnsavedChanges = true;
@@ -3954,7 +3983,11 @@ function markUnsavedChanges() {
 
 function initSaveState() {
     setSaveIndicator('idle');
-    setSaveStatus(getText('no_changes'));
+    if (projectCanEdit) {
+        setSaveStatus(getText('no_changes'));
+    } else {
+        setSaveStatus('Read-only mode.');
+    }
     updateLastSavedLabel();
     updateSaveButtonState();
 }
@@ -3973,10 +4006,15 @@ function syncProjectFpsUi() {
 
 function syncPlaybackFpsControlState() {
     if (!playbackFpsInput) return;
-    playbackFpsInput.disabled = isUpdatingProjectFps;
+    playbackFpsInput.disabled = !projectCanEdit || isUpdatingProjectFps;
 }
 
 async function updateProjectFpsOnServer(nextFps) {
+    if (!projectCanEdit) {
+        setSaveStatus('Read-only mode.', 'error');
+        setSaveIndicator('error');
+        return false;
+    }
     if (!projectUpdateUrl) {
         setSaveStatus(getText('project_fps_update_failed'), 'error');
         setSaveIndicator('error');
@@ -5448,7 +5486,7 @@ async function loadFrameByIndex(targetIndex) {
 }
 
 async function switchToFrameIndex(targetIndex) {
-    if (shouldDisableTimelineControls()) return;
+    if (shouldDisableTimelineNavigation()) return;
     const index = Number(targetIndex);
     if (!Number.isFinite(index) || index <= 0) return;
     if (index === currentFrameIndex) return;
@@ -5620,7 +5658,7 @@ function bindTimelineEvents() {
     if (!timelineStrip) return;
 
     timelineStrip.addEventListener('click', (event) => {
-        if (shouldDisableTimelineControls()) return;
+        if (shouldDisableTimelineNavigation()) return;
         const item = event.target.closest('.timeline-frame');
         if (!item) return;
         const index = Number(item.dataset.frameIndex);
@@ -5977,6 +6015,9 @@ function getCurrentFramePayload() {
  * Send the current frame to the server.
  */
 async function saveCurrentFrame(options = {}) {
+    if (!projectCanEdit) {
+        return false;
+    }
     if (!frameSaveUrlTemplate) {
         setSaveStatus('Frame save URL was not found.', 'error');
         setSaveIndicator('error');
@@ -6116,7 +6157,7 @@ function stopPan() {
 }
 
 function handlePointerDown(event) {
-    if (isEditingLockedByPlayback()) return;
+    if (isEditingLocked()) return;
     // Middle mouse button: temporary panning without switching tools.
     if (event.button === 1) {
         event.preventDefault();
@@ -6206,7 +6247,7 @@ function handlePointerDown(event) {
 }
 
 function handlePointerMove(event) {
-    if (isEditingLockedByPlayback()) return;
+    if (isEditingLocked()) return;
     if (isTransformingSelection) {
         updateSelectionTransform(event);
         return;
@@ -6258,7 +6299,7 @@ function handlePointerMove(event) {
 }
 
 function handlePointerUp(event) {
-    if (isEditingLockedByPlayback()) return;
+    if (isEditingLocked()) return;
     pendingCanvasStartFromOutside = null;
     if (isTransformingSelection) {
         isTransformingSelection = false;
@@ -6326,7 +6367,7 @@ function handlePointerUp(event) {
 }
 
 function handlePointerLeave() {
-    if (isEditingLockedByPlayback()) return;
+    if (isEditingLocked()) return;
     hideEyedropperZoom();
     hideTransformHint();
     setCanvasCursorOverride(null);
@@ -6335,7 +6376,7 @@ function handlePointerLeave() {
 
 function handleCanvasContextMenu(event) {
     if (!event) return;
-    if (isEditingLockedByPlayback()) return;
+    if (isEditingLocked()) return;
     const shouldPrevent = currentTool === TOOL_BRUSH
         || currentTool === TOOL_ERASER
         || currentTool === TOOL_FILL
@@ -6348,7 +6389,7 @@ function handleCanvasContextMenu(event) {
 }
 
 function handleWindowPointerDown(event) {
-    if (isEditingLockedByPlayback()) {
+    if (isEditingLocked()) {
         pendingCanvasStartFromOutside = null;
         return;
     }
@@ -6390,7 +6431,7 @@ function handleWindowPointerDown(event) {
 }
 
 function tryStartCanvasInteractionFromOutside(event) {
-    if (isEditingLockedByPlayback()) return false;
+    if (isEditingLocked()) return false;
     if (!event || !canvas) return false;
     if (isDrawing || isSelecting || isPanning || isTransformingSelection) return false;
     if (isDraggingToolbarPanel || isDraggingLayersPanel || isDraggingHistoryPanel || isDraggingOnionPanel || isOpacityDragging) return false;
@@ -6418,7 +6459,7 @@ function tryStartCanvasInteractionFromOutside(event) {
 }
 
 function handleWindowPointerMove(event) {
-    if (isEditingLockedByPlayback()) return;
+    if (isEditingLocked()) return;
     if (!isDrawing && !isSelecting && !isPanning && !isTransformingSelection) {
         tryStartCanvasInteractionFromOutside(event);
         return;
@@ -6427,7 +6468,7 @@ function handleWindowPointerMove(event) {
 }
 
 function handleCanvasDoubleClick(event) {
-    if (isEditingLockedByPlayback()) return;
+    if (isEditingLocked()) return;
     if (!selection || isSelecting || isPanning || isTransformingSelection) return;
     const { x, y } = getCanvasCoords(event);
     if (!isPointInSelection(x, y, selection)) {
@@ -6542,7 +6583,7 @@ function pasteImageFile(file) {
 }
 
 function handlePaste(event) {
-    if (isEditingLockedByPlayback()) return;
+    if (isEditingLocked()) return;
     if (!event) return;
     if (isTextInputElement(event.target)) return;
     if (!bufferCtx || !bufferCanvas) return;
@@ -6594,6 +6635,10 @@ function handleKeyDown(event) {
             void stopPlaybackPreview({ restoreStartFrame: true });
             return;
         }
+        return;
+    }
+
+    if (isReadOnlyProject()) {
         return;
     }
 
@@ -6693,7 +6738,7 @@ function bindCanvasEvents() {
 function bindToolbarEvents() {
     if (toolbar) {
         toolbar.addEventListener('click', (event) => {
-            if (isEditingLockedByPlayback()) return;
+            if (isEditingLocked()) return;
             const modeButton = event.target.closest('[data-select-mode]');
             if (modeButton) {
                 const modeName = modeButton.dataset.selectMode;
@@ -6721,7 +6766,7 @@ function bindToolbarEvents() {
         });
 
         toolbar.addEventListener('contextmenu', (event) => {
-            if (isEditingLockedByPlayback()) return;
+            if (isEditingLocked()) return;
             const toolButton = event.target.closest('[data-tool]');
             if (!toolButton) return;
             const toolName = toolButton.dataset.tool;
@@ -6734,7 +6779,7 @@ function bindToolbarEvents() {
 
     if (toolSettingsPopover) {
         toolSettingsPopover.addEventListener('click', (event) => {
-            if (isEditingLockedByPlayback()) return;
+            if (isEditingLocked()) return;
             const modeButton = event.target.closest('[data-select-mode]');
             if (!modeButton) return;
             const modeName = modeButton.dataset.selectMode;
@@ -6775,21 +6820,21 @@ function bindToolbarEvents() {
 
     if (colorInput) {
         colorInput.addEventListener('input', (event) => {
-            if (isEditingLockedByPlayback()) return;
+            if (isEditingLocked()) return;
             setColor(event.target.value);
         });
     }
 
     if (secondaryColorInput) {
         secondaryColorInput.addEventListener('input', (event) => {
-            if (isEditingLockedByPlayback()) return;
+            if (isEditingLocked()) return;
             setColor(event.target.value, { secondary: true });
         });
     }
 
     if (sizeInput) {
         sizeInput.addEventListener('input', (event) => {
-            if (isEditingLockedByPlayback()) return;
+            if (isEditingLocked()) return;
             const value = parseInt(event.target.value, 10) || 1;
             setBrushSize(value);
         });
@@ -6797,21 +6842,21 @@ function bindToolbarEvents() {
 
     if (opacityInput) {
         opacityInput.addEventListener('input', (event) => {
-            if (isEditingLockedByPlayback()) return;
+            if (isEditingLocked()) return;
             setBrushOpacity(event.target.value);
         });
     }
 
     if (blurInput) {
         blurInput.addEventListener('input', (event) => {
-            if (isEditingLockedByPlayback()) return;
+            if (isEditingLocked()) return;
             setBrushBlur(event.target.value);
         });
     }
 
     if (wandSensitivityInput) {
         wandSensitivityInput.addEventListener('input', (event) => {
-            if (isEditingLockedByPlayback()) return;
+            if (isEditingLocked()) return;
             const value = parseInt(event.target.value, 10);
             if (!Number.isNaN(value)) {
                 wandTolerance = clamp(value, 0, 255);
@@ -6827,7 +6872,7 @@ function bindToolbarEvents() {
 function bindLayerEvents() {
     if (addLayerButton) {
         addLayerButton.addEventListener('click', () => {
-            if (isEditingLockedByPlayback()) return;
+            if (isEditingLocked()) return;
             createLayer();
         });
     }
@@ -6835,7 +6880,7 @@ function bindLayerEvents() {
     if (!layersList) return;
 
     layersList.addEventListener('pointerdown', (event) => {
-        if (isEditingLockedByPlayback()) return;
+        if (isEditingLocked()) return;
         if (event.target.matches('input[type="range"]')) {
             isOpacityDragging = true;
             beginFullHistory('layer_opacity_action');
@@ -6843,7 +6888,7 @@ function bindLayerEvents() {
     });
 
     layersList.addEventListener('click', async (event) => {
-        if (isEditingLockedByPlayback()) return;
+        if (isEditingLocked()) return;
         const actionTarget = event.target.closest('[data-action]');
         const action = actionTarget ? actionTarget.dataset.action : null;
         const item = event.target.closest('.layer-item');
@@ -6915,7 +6960,7 @@ function bindLayerEvents() {
     });
 
     layersList.addEventListener('input', (event) => {
-        if (isEditingLockedByPlayback()) return;
+        if (isEditingLocked()) return;
         if (event.target.dataset.action !== 'opacity') return;
         const item = event.target.closest('.layer-item');
         if (!item) return;
@@ -6929,7 +6974,7 @@ function bindLayerEvents() {
     });
 
     layersList.addEventListener('change', async (event) => {
-        if (isEditingLockedByPlayback()) return;
+        if (isEditingLocked()) return;
         if (event.target.dataset.action !== 'opacity') return;
         const item = event.target.closest('.layer-item');
         if (!item) return;
@@ -6949,7 +6994,7 @@ function bindLayerEvents() {
     });
 
     layersList.addEventListener('dragstart', (event) => {
-        if (isEditingLockedByPlayback()) {
+        if (isEditingLocked()) {
             event.preventDefault();
             return;
         }
@@ -6984,7 +7029,7 @@ function bindLayerEvents() {
     });
 
     layersList.addEventListener('dragover', (event) => {
-        if (isEditingLockedByPlayback()) return;
+        if (isEditingLocked()) return;
         event.preventDefault();
         const dragging = layersList.querySelector('.layer-item.is-dragging');
         const target = event.target.closest('.layer-item');
@@ -6999,7 +7044,7 @@ function bindLayerEvents() {
     });
 
     layersList.addEventListener('drop', (event) => {
-        if (isEditingLockedByPlayback()) return;
+        if (isEditingLocked()) return;
         event.preventDefault();
         beginFullHistory('layer_order');
         const orderedIds = [...layersList.querySelectorAll('.layer-item')]
