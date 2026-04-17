@@ -179,6 +179,7 @@ let projectFps = (() => {
 // =======================
 
 let currentTool = TOOL_BRUSH;
+let autoPanSelectionHoverActive = false;
 let currentColor = colorInput ? colorInput.value : '#000000';
 let secondaryColor = secondaryColorInput ? secondaryColorInput.value : '#ffffff';
 let currentSize = sizeInput ? parseInt(sizeInput.value, 10) || 4 : 4;
@@ -524,6 +525,7 @@ function setTool(toolName) {
     if (isEditingLocked()) return;
     if (!TOOL_SET.has(toolName)) return;
 
+    autoPanSelectionHoverActive = false;
     currentTool = toolName;
     activeTool = null;
     isDrawing = false;
@@ -557,6 +559,26 @@ function setTool(toolName) {
         }
     }
     updateCursor();
+}
+
+function canAutoPanSelectionHover() {
+    return currentTool === TOOL_SELECT
+        && !isSpacePressed
+        && Boolean(selection)
+        && selection.type !== SELECT_MAGIC
+        && !isSelecting
+        && !isTransformingSelection;
+}
+
+function setAutoPanSelectionHover(enabled) {
+    const nextValue = Boolean(enabled) && canAutoPanSelectionHover();
+    if (autoPanSelectionHoverActive === nextValue) return;
+    autoPanSelectionHoverActive = nextValue;
+    updateCursor();
+}
+
+function getEffectiveTool() {
+    return autoPanSelectionHoverActive ? TOOL_PAN : currentTool;
 }
 
 /**
@@ -2048,8 +2070,9 @@ function syncEditorLayout() {
 
 function updateCursor() {
     if (!canvas) return;
-    const isPanMode = isSpacePressed || currentTool === TOOL_PAN || isPanning;
-    canvas.classList.toggle('canvas--bucket', currentTool === TOOL_FILL && !isPanMode);
+    const activeTool = getEffectiveTool();
+    const isPanMode = isSpacePressed || activeTool === TOOL_PAN || isPanning;
+    canvas.classList.toggle('canvas--bucket', activeTool === TOOL_FILL && !isPanMode);
     canvas.classList.toggle('canvas--pan', isPanMode);
     canvas.classList.toggle('canvas--panning', isPanning);
 }
@@ -2728,7 +2751,7 @@ function clampSelectionBounds(bounds) {
 }
 
 function shouldShowSelectionTransformUI() {
-    return currentTool === TOOL_PAN
+    return (currentTool === TOOL_PAN || currentTool === TOOL_SELECT || autoPanSelectionHoverActive)
         && !isSpacePressed
         && Boolean(selection)
         && selection.type !== SELECT_MAGIC;
@@ -2995,6 +3018,7 @@ function resetSelectionTransformState() {
     selectionTransform = null;
     transformClipboard = null;
     hoverTransformHandle = null;
+    setAutoPanSelectionHover(false);
     hideTransformHint();
     setCanvasCursorOverride(null);
 }
@@ -3182,6 +3206,7 @@ function commitSelectionTransform() {
 function updateSelectionTransformHover(event, x, y) {
     if (isTransformingSelection) return;
     if (!shouldShowSelectionTransformUI() || selectionDraft || !selection) {
+        setAutoPanSelectionHover(false);
         if (hoverTransformHandle) {
             hoverTransformHandle = null;
             renderOverlay();
@@ -3195,6 +3220,7 @@ function updateSelectionTransformHover(event, x, y) {
         ? (selectionTransform.currentBounds || clampSelectionBounds(getSelectionBounds(selection)))
         : clampSelectionBounds(getSelectionBounds(selection));
     if (!bounds || bounds.width <= 0 || bounds.height <= 0) {
+        setAutoPanSelectionHover(false);
         hideTransformHint();
         setCanvasCursorOverride(null);
         return;
@@ -3202,6 +3228,7 @@ function updateSelectionTransformHover(event, x, y) {
 
     const handleId = getTransformHandleAtPoint(x, y, bounds);
     if (handleId) {
+        setAutoPanSelectionHover(currentTool === TOOL_SELECT);
         const cursor = getTransformHandleCursor(handleId);
         setCanvasCursorOverride(cursor);
         showTransformHint(getTransformHandleHint(handleId), event);
@@ -3213,7 +3240,8 @@ function updateSelectionTransformHover(event, x, y) {
     }
 
     if (isPointInSelection(x, y, selection)) {
-        setCanvasCursorOverride('move');
+        setAutoPanSelectionHover(currentTool === TOOL_SELECT);
+        setCanvasCursorOverride(null);
         showTransformHint('Move: drag the selection with the mouse', event);
         if (hoverTransformHandle) {
             hoverTransformHandle = null;
@@ -3226,6 +3254,7 @@ function updateSelectionTransformHover(event, x, y) {
         hoverTransformHandle = null;
         renderOverlay();
     }
+    setAutoPanSelectionHover(false);
     hideTransformHint();
     setCanvasCursorOverride(null);
 }
@@ -3405,6 +3434,7 @@ function clearSelection() {
     if (hasFloatingSelection()) {
         commitSelectionTransform();
     }
+    setAutoPanSelectionHover(false);
     selection = null;
     selectionDraft = null;
     isSelecting = false;
@@ -6158,6 +6188,7 @@ function stopPan() {
 
 function handlePointerDown(event) {
     if (isEditingLocked()) return;
+    const activeTool = getEffectiveTool();
     // Middle mouse button: temporary panning without switching tools.
     if (event.button === 1) {
         event.preventDefault();
@@ -6171,10 +6202,10 @@ function handlePointerDown(event) {
     if (isRightButton) {
         event.preventDefault();
     }
-    const allowRightButton = currentTool === TOOL_BRUSH
-        || currentTool === TOOL_FILL
-        || currentTool === TOOL_EYEDROPPER
-        || isShapeTool(currentTool);
+    const allowRightButton = activeTool === TOOL_BRUSH
+        || activeTool === TOOL_FILL
+        || activeTool === TOOL_EYEDROPPER
+        || isShapeTool(activeTool);
     if (isRightButton && !allowRightButton) return;
     activePointerButton = event.button;
     if (isTransformingSelection) return;
@@ -6182,7 +6213,7 @@ function handlePointerDown(event) {
         startPan(event);
         return;
     }
-    if (currentTool === TOOL_PAN) {
+    if (activeTool === TOOL_PAN) {
         if (bufferCtx && bufferCanvas) {
             const { x, y } = getCanvasCoords(event);
             lastPointerX = x;
@@ -6201,7 +6232,7 @@ function handlePointerDown(event) {
     const { x, y } = getCanvasCoords(event);
     lastPointerX = x;
     lastPointerY = y;
-    if (currentTool === TOOL_SELECT) {
+    if (activeTool === TOOL_SELECT) {
         if (isRightButton) return;
         logCoordDebug('select-down', event);
         if (selectionMode === SELECT_MAGIC) {
@@ -6217,7 +6248,7 @@ function handlePointerDown(event) {
         return;
     }
 
-    if (currentTool === TOOL_EYEDROPPER) {
+    if (activeTool === TOOL_EYEDROPPER) {
         updateEyedropperZoom(event);
         pickColorAt(x, y, { secondary: isRightButton });
         hideEyedropperZoom();
@@ -6229,7 +6260,7 @@ function handlePointerDown(event) {
         return;
     }
 
-    if (currentTool === TOOL_FILL) {
+    if (activeTool === TOOL_FILL) {
         beginLayerHistory(getToolHistoryLabel(TOOL_FILL));
         const didFill = floodFill(x, y, { color: getColorByMouseButton(activePointerButton) });
         if (didFill) {
@@ -6241,13 +6272,14 @@ function handlePointerDown(event) {
         return;
     }
 
-    if (currentTool === TOOL_BRUSH || currentTool === TOOL_ERASER || isShapeTool(currentTool)) {
-        startDrawing(x, y, currentTool);
+    if (activeTool === TOOL_BRUSH || activeTool === TOOL_ERASER || isShapeTool(activeTool)) {
+        startDrawing(x, y, activeTool);
     }
 }
 
 function handlePointerMove(event) {
     if (isEditingLocked()) return;
+    const activeTool = getEffectiveTool();
     if (isTransformingSelection) {
         updateSelectionTransform(event);
         return;
@@ -6259,7 +6291,7 @@ function handlePointerMove(event) {
     const { x, y } = getCanvasCoords(event);
     lastPointerX = x;
     lastPointerY = y;
-    if (currentTool === TOOL_EYEDROPPER) {
+    if (activeTool === TOOL_EYEDROPPER) {
         updateEyedropperZoom(event);
         return;
     }
@@ -6368,6 +6400,7 @@ function handlePointerUp(event) {
 
 function handlePointerLeave() {
     if (isEditingLocked()) return;
+    setAutoPanSelectionHover(false);
     hideEyedropperZoom();
     hideTransformHint();
     setCanvasCursorOverride(null);
@@ -6377,12 +6410,13 @@ function handlePointerLeave() {
 function handleCanvasContextMenu(event) {
     if (!event) return;
     if (isEditingLocked()) return;
-    const shouldPrevent = currentTool === TOOL_BRUSH
-        || currentTool === TOOL_ERASER
-        || currentTool === TOOL_FILL
-        || isShapeTool(currentTool)
-        || currentTool === TOOL_EYEDROPPER
-        || currentTool === TOOL_SELECT;
+    const activeTool = getEffectiveTool();
+    const shouldPrevent = activeTool === TOOL_BRUSH
+        || activeTool === TOOL_ERASER
+        || activeTool === TOOL_FILL
+        || isShapeTool(activeTool)
+        || activeTool === TOOL_EYEDROPPER
+        || activeTool === TOOL_SELECT;
     if (shouldPrevent) {
         event.preventDefault();
     }
