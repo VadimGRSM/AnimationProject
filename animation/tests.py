@@ -345,21 +345,6 @@ class ProjectAccessTests(TestCase):
         delete_response = client.post(reverse('animation:project_delete', kwargs={'pk': self.project.pk}))
         self.assertEqual(delete_response.status_code, 404)
 
-    def test_editor_can_update_project_dimensions(self):
-        client = Client()
-        client.force_login(self.editor)
-
-        response = client.post(
-            reverse('animation:project_update', kwargs={'pk': self.project.pk}),
-            data=json.dumps({'width': 1600, 'height': 900}),
-            content_type='application/json',
-        )
-
-        self.assertEqual(response.status_code, 200)
-        self.project.refresh_from_db()
-        self.assertEqual(self.project.width, 1600)
-        self.assertEqual(self.project.height, 900)
-
     def test_project_rename_is_owner_only(self):
         client = Client()
         client.force_login(self.editor)

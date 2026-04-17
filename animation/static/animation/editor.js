@@ -11,8 +11,6 @@ const TOOL_ELLIPSE = 'ellipse';
 const TOOL_LINE = 'line';
 const TOOL_SELECT = 'select';
 const TOOL_PAN = 'pan';
-const ARTBOARD_RESIZE_HANDLE_SIZE_PX = 10;
-const ARTBOARD_RESIZE_HIT_PX = 18;
 
 const SELECT_RECT = 'rect';
 const SELECT_ELLIPSE = 'ellipse';
@@ -263,10 +261,6 @@ let scale = 1;
 let offsetX = 0;
 let offsetY = 0;
 let isCanvasStageFullscreen = false;
-let isUpdatingProjectDimensions = false;
-let isResizingArtboard = false;
-let artboardResizeState = null;
-let hoverArtboardResizeHandle = null;
 let isPanning = false;
 let panStartX = 0;
 let panStartY = 0;
@@ -408,10 +402,6 @@ const UI_TEXT = {
     project_fps_updating: 'Updating project FPS...',
     project_fps_updated: 'Project FPS updated.',
     project_fps_invalid: 'Enter a valid project FPS (1-60).',
-    project_size_update_failed: 'Could not update canvas size.',
-    project_size_updating: 'Updating canvas size...',
-    project_size_updated: 'Canvas size updated.',
-    project_size_invalid: 'Enter a valid canvas size.',
 };
 
 function interpolateText(template, params = null) {
@@ -1228,7 +1218,6 @@ function syncEditorInteractionLockUi() {
     syncToolbarControlsState();
     syncLayerControlsState();
     syncTimelineControlsState();
-    syncCanvasStageControlsState();
 }
 
 function setTimelineControlsDisabled(isDisabled) {
@@ -1921,7 +1910,6 @@ function renderFrameOutline() {
         overlayCtx.setLineDash([dashSize, gapSize]);
         overlayCtx.strokeRect(0.5, 0.5, bufferCanvas.width - 1, bufferCanvas.height - 1);
         overlayCtx.restore();
-        drawArtboardResizeControls(overlayCtx, getArtboardBounds());
     });
 }
 
@@ -2131,7 +2119,6 @@ function syncCanvasStageUi() {
                 : 'Expand canvas to the full editor area',
         );
     }
-    syncCanvasStageControlsState();
 }
 
 function resetCanvasViewport() {
@@ -2941,121 +2928,6 @@ function drawSelectionTransformControls(targetCtx, bounds) {
     targetCtx.restore();
 }
 
-function getArtboardBounds() {
-    if (!canvas) return null;
-    return {
-        x: 0,
-        y: 0,
-        width: canvas.width,
-        height: canvas.height,
-    };
-}
-
-function getArtboardResizeHandleAtPoint(x, y, bounds) {
-    if (!bounds) return null;
-    const normalizedScale = scale || 1;
-    const hitSize = ARTBOARD_RESIZE_HIT_PX / normalizedScale;
-    const half = hitSize / 2;
-    const left = bounds.x;
-    const top = bounds.y;
-    const right = bounds.x + bounds.width;
-    const bottom = bounds.y + bounds.height;
-
-    const corners = [
-        { id: 'nw', x: left, y: top },
-        { id: 'ne', x: right, y: top },
-        { id: 'se', x: right, y: bottom },
-        { id: 'sw', x: left, y: bottom },
-    ];
-    for (const corner of corners) {
-        if (Math.abs(x - corner.x) <= half && Math.abs(y - corner.y) <= half) {
-            return corner.id;
-        }
-    }
-
-    const withinVertical = y >= top + half && y <= bottom - half;
-    const withinHorizontal = x >= left + half && x <= right - half;
-
-    if (withinVertical && Math.abs(x - left) <= half) return 'w';
-    if (withinVertical && Math.abs(x - right) <= half) return 'e';
-    if (withinHorizontal && Math.abs(y - top) <= half) return 'n';
-    if (withinHorizontal && Math.abs(y - bottom) <= half) return 's';
-
-    return null;
-}
-
-function drawArtboardResizeControls(targetCtx, bounds) {
-    if (!targetCtx || !bounds || !projectCanEdit) return;
-
-    const normalizedScale = scale || 1;
-    const handleSize = ARTBOARD_RESIZE_HANDLE_SIZE_PX / normalizedScale;
-    const halfHandle = handleSize / 2;
-
-    targetCtx.save();
-    targetCtx.lineWidth = Math.max(0.5, 1 / normalizedScale);
-    targetCtx.strokeStyle = 'rgba(99, 102, 241, 0.95)';
-    targetCtx.strokeRect(bounds.x, bounds.y, bounds.width, bounds.height);
-
-    for (const handle of getTransformHandles(bounds)) {
-        const isHover = hoverArtboardResizeHandle && hoverArtboardResizeHandle === handle.id;
-        targetCtx.fillStyle = isHover ? '#4f46e5' : '#ffffff';
-        targetCtx.strokeStyle = '#4f46e5';
-        targetCtx.beginPath();
-        targetCtx.rect(handle.x - halfHandle, handle.y - halfHandle, handleSize, handleSize);
-        targetCtx.fill();
-        targetCtx.stroke();
-    }
-
-    targetCtx.restore();
-}
-
-function copyCanvasElement(sourceCanvas) {
-    if (!sourceCanvas) return null;
-    const clone = document.createElement('canvas');
-    clone.width = sourceCanvas.width;
-    clone.height = sourceCanvas.height;
-    const cloneCtx = clone.getContext('2d');
-    if (!cloneCtx) return clone;
-    cloneCtx.drawImage(sourceCanvas, 0, 0);
-    return clone;
-}
-
-function buildArtboardResizeSnapshotMap() {
-    const snapshotMap = new Map();
-    layers.forEach((layer) => {
-        ensureLayerCanvases(layer);
-        snapshotMap.set(layer.id, copyCanvasElement(layer.bufferCanvas));
-    });
-    return snapshotMap;
-}
-
-function applyArtboardBounds(bounds, snapshotMap) {
-    if (!canvas || !bounds) return;
-
-    const nextWidth = Math.max(SELECTION_MIN_SIZE, Math.round(bounds.width));
-    const nextHeight = Math.max(SELECTION_MIN_SIZE, Math.round(bounds.height));
-    const shiftX = -bounds.x;
-    const shiftY = -bounds.y;
-
-    canvas.width = nextWidth;
-    canvas.height = nextHeight;
-    syncResponsiveCanvasSize();
-    syncCanvasSizes();
-
-    layers.forEach((layer) => {
-        ensureLayerCanvases(layer);
-        clearCanvas(layer.bufferCtx, layer.bufferCanvas);
-        const snapshot = snapshotMap.get(layer.id);
-        if (snapshot) {
-            layer.bufferCtx.drawImage(snapshot, Math.round(shiftX), Math.round(shiftY));
-        }
-    });
-
-    syncProjectFpsUi();
-    renderScene();
-    renderOverlay();
-}
-
 function scaleSelectionShape(selectionShape, fromBounds, toBounds) {
     if (!selectionShape || !fromBounds || !toBounds) return null;
     if (selectionShape.type === SELECT_MAGIC) return null;
@@ -3368,59 +3240,6 @@ function updateSelectionTransform(event) {
     renderOverlay();
 }
 
-function tryStartArtboardResizeAt(x, y, event) {
-    if (!projectCanEdit || !canvas) return false;
-    const bounds = getArtboardBounds();
-    const handleId = getArtboardResizeHandleAtPoint(x, y, bounds);
-    if (!handleId) return false;
-
-    if (selection || selectionDraft || isSelecting || hasFloatingSelection()) {
-        clearSelection();
-    }
-
-    artboardResizeState = {
-        handleId,
-        startPointerX: x,
-        startPointerY: y,
-        startBounds: bounds,
-        currentBounds: bounds,
-        snapshotMap: buildArtboardResizeSnapshotMap(),
-        didChange: false,
-    };
-    isResizingArtboard = true;
-    hoverArtboardResizeHandle = handleId;
-    syncCanvasStageControlsState();
-    setCanvasCursorOverride(getTransformHandleCursor(handleId));
-    showTransformHint('Resize canvas by dragging the border', event);
-    renderOverlay();
-    return true;
-}
-
-function updateArtboardResize(event) {
-    if (!isResizingArtboard || !artboardResizeState) return;
-
-    const { x, y } = getCanvasCoords(event);
-    lastPointerX = x;
-    lastPointerY = y;
-
-    const dx = x - artboardResizeState.startPointerX;
-    const dy = y - artboardResizeState.startPointerY;
-    const nextBounds = getResizedBoundsFromHandle(
-        artboardResizeState.startBounds,
-        artboardResizeState.handleId,
-        dx,
-        dy,
-    );
-    if (!nextBounds || nextBounds.width <= 0 || nextBounds.height <= 0) return;
-
-    artboardResizeState.currentBounds = nextBounds;
-    artboardResizeState.didChange = true;
-    applyArtboardBounds(nextBounds, artboardResizeState.snapshotMap);
-    markUnsavedChanges();
-    setCanvasCursorOverride(getTransformHandleCursor(artboardResizeState.handleId));
-    showTransformHint('Resize canvas by dragging the border', event);
-}
-
 function commitSelectionTransform() {
     if (!selectionTransform || !transformClipboard || !transformClipboard.canvas) {
         resetSelectionTransformState();
@@ -3518,37 +3337,6 @@ function updateSelectionTransformHover(event, x, y) {
     setAutoPanSelectionHover(false);
     hideTransformHint();
     setCanvasCursorOverride(null);
-}
-
-function updateArtboardResizeHover(event, x, y) {
-    if (!projectCanEdit || isResizingArtboard) return;
-
-    if (
-        hoverTransformHandle
-        || (selection && shouldShowSelectionTransformUI() && isPointInSelection(x, y, selection))
-    ) {
-        if (hoverArtboardResizeHandle) {
-            hoverArtboardResizeHandle = null;
-            renderOverlay();
-        }
-        return;
-    }
-
-    const handleId = getArtboardResizeHandleAtPoint(x, y, getArtboardBounds());
-    if (handleId) {
-        if (hoverArtboardResizeHandle !== handleId) {
-            hoverArtboardResizeHandle = handleId;
-            renderOverlay();
-        }
-        setCanvasCursorOverride(getTransformHandleCursor(handleId));
-        showTransformHint('Resize canvas by dragging the border', event);
-        return;
-    }
-
-    if (hoverArtboardResizeHandle) {
-        hoverArtboardResizeHandle = null;
-        renderOverlay();
-    }
 }
 
 function copySelectionToClipboard() {
@@ -4317,8 +4105,6 @@ function initSaveState() {
 function syncProjectFpsUi() {
     if (editorRoot) {
         editorRoot.dataset.projectFps = String(projectFps);
-        editorRoot.dataset.projectWidth = String(canvas.width);
-        editorRoot.dataset.projectHeight = String(canvas.height);
     }
     if (playbackFpsInput) {
         playbackFpsInput.value = String(projectFps);
@@ -4331,12 +4117,6 @@ function syncProjectFpsUi() {
 function syncPlaybackFpsControlState() {
     if (!playbackFpsInput) return;
     playbackFpsInput.disabled = !projectCanEdit || isUpdatingProjectFps;
-}
-
-function syncCanvasStageControlsState() {
-    const isDisabled = !projectCanEdit || isUpdatingProjectDimensions || isResizingArtboard;
-    if (resetCanvasViewButton) resetCanvasViewButton.disabled = isDisabled;
-    if (toggleCanvasFullscreenButton) toggleCanvasFullscreenButton.disabled = isDisabled;
 }
 
 async function updateProjectFpsOnServer(nextFps) {
@@ -4425,85 +4205,6 @@ async function updateProjectFpsOnServer(nextFps) {
     } finally {
         isUpdatingProjectFps = false;
         syncPlaybackFpsControlState();
-    }
-}
-
-async function updateProjectDimensionsOnServer(nextWidth, nextHeight) {
-    if (!projectCanEdit) {
-        setSaveStatus('Read-only mode.', 'error');
-        setSaveIndicator('error');
-        return false;
-    }
-    if (!projectUpdateUrl) {
-        setSaveStatus(getText('project_size_update_failed'), 'error');
-        setSaveIndicator('error');
-        return false;
-    }
-    if (isUpdatingProjectDimensions) return false;
-
-    isUpdatingProjectDimensions = true;
-    syncCanvasStageControlsState();
-    setSaveStatus(getText('project_size_updating'), 'saving');
-    setSaveIndicator('saving');
-
-    try {
-        const response = await fetch(projectUpdateUrl, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'X-CSRFToken': getCsrfToken(),
-            },
-            credentials: 'same-origin',
-            body: JSON.stringify({
-                width: nextWidth,
-                height: nextHeight,
-            }),
-        });
-
-        let data = null;
-        try {
-            data = await response.json();
-        } catch (error) {
-            data = null;
-        }
-
-        if (!response.ok || !data || !data.ok || !data.project) {
-            const errorMessage = data && data.error ? data.error : getText('project_size_update_failed');
-            throw new Error(errorMessage);
-        }
-
-        lastSavedAt = new Date();
-        syncProjectFpsUi();
-        updateLastSavedLabel();
-
-        if (hasUnsavedChanges) {
-            setSaveStatus(getText('unsaved_changes'), 'dirty');
-            setSaveIndicator('dirty');
-        } else {
-            setSaveStatus(getText('project_size_updated'), 'saved');
-            setSaveIndicator('saved');
-        }
-
-        return true;
-    } catch (error) {
-        console.error('Project size update error', error);
-        let errorText = getText('project_size_update_failed');
-        if (error instanceof Error && error.message) {
-            if (error.message === 'invalid_width' || error.message === 'invalid_height') {
-                errorText = getText('project_size_invalid');
-            } else if (error.message !== 'Failed to fetch') {
-                errorText = error.message;
-            }
-        }
-        if (error instanceof Error && error.message === 'Failed to fetch') {
-            errorText = 'Could not reach the server.';
-        }
-        setSaveStatus(errorText, 'error');
-        setSaveIndicator('error');
-        return false;
-    } finally {
-        isUpdatingProjectDimensions = false;
-        syncCanvasStageControlsState();
     }
 }
 
@@ -6611,12 +6312,6 @@ function handlePointerDown(event) {
     const { x, y } = getCanvasCoords(event);
     lastPointerX = x;
     lastPointerY = y;
-    if (tryStartSelectionTransformAt(x, y, event)) {
-        return;
-    }
-    if (tryStartArtboardResizeAt(x, y, event)) {
-        return;
-    }
     if (activeTool === TOOL_SELECT) {
         if (isRightButton) return;
         logCoordDebug('select-down', event);
@@ -6665,10 +6360,6 @@ function handlePointerDown(event) {
 function handlePointerMove(event) {
     if (isEditingLocked()) return;
     const activeTool = getEffectiveTool();
-    if (isResizingArtboard) {
-        updateArtboardResize(event);
-        return;
-    }
     if (isTransformingSelection) {
         updateSelectionTransform(event);
         return;
@@ -6714,7 +6405,6 @@ function handlePointerMove(event) {
 
     if (!isDrawing) {
         updateSelectionTransformHover(event, x, y);
-        updateArtboardResizeHover(event, x, y);
         return;
     }
     continueDrawing(x, y);
@@ -6723,22 +6413,6 @@ function handlePointerMove(event) {
 function handlePointerUp(event) {
     if (isEditingLocked()) return;
     pendingCanvasStartFromOutside = null;
-    if (isResizingArtboard) {
-        const resizedWidth = canvas.width;
-        const resizedHeight = canvas.height;
-        const shouldPersist = Boolean(artboardResizeState && artboardResizeState.didChange);
-        isResizingArtboard = false;
-        artboardResizeState = null;
-        hoverArtboardResizeHandle = null;
-        syncCanvasStageControlsState();
-        hideTransformHint();
-        setCanvasCursorOverride(null);
-        renderOverlay();
-        if (shouldPersist) {
-            void updateProjectDimensionsOnServer(resizedWidth, resizedHeight);
-        }
-        return;
-    }
     if (isTransformingSelection) {
         isTransformingSelection = false;
         hideTransformHint();
@@ -6807,7 +6481,6 @@ function handlePointerUp(event) {
 function handlePointerLeave() {
     if (isEditingLocked()) return;
     setAutoPanSelectionHover(false);
-    hoverArtboardResizeHandle = null;
     hideEyedropperZoom();
     hideTransformHint();
     setCanvasCursorOverride(null);
@@ -6901,7 +6574,7 @@ function tryStartCanvasInteractionFromOutside(event) {
 
 function handleWindowPointerMove(event) {
     if (isEditingLocked()) return;
-    if (!isDrawing && !isSelecting && !isPanning && !isTransformingSelection && !isResizingArtboard) {
+    if (!isDrawing && !isSelecting && !isPanning && !isTransformingSelection) {
         tryStartCanvasInteractionFromOutside(event);
         return;
     }
