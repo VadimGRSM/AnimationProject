@@ -140,7 +140,7 @@ def build_project_invite_rows(request, project):
     invites = project.invites.select_related('invited_by', 'accepted_by').order_by('-created_at', '-id')
     for invite in invites:
         state = get_project_invite_state(invite)
-        if state == 'accepted':
+        if state != 'pending':
             continue
         rows.append({
             'invite': invite,

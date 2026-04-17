@@ -531,7 +531,7 @@ class ProjectInviteFlowTests(TestCase):
     def test_owner_can_revoke_invite(self):
         invite = ProjectInvite.objects.create(
             project=self.project,
-            email='invitee@example.com',
+            email='revoked@example.com',
             role=ProjectInvite.Role.VIEWER,
             invited_by=self.owner,
             expires_at=timezone.now() + timedelta(days=7),
@@ -550,3 +550,39 @@ class ProjectInviteFlowTests(TestCase):
         self.assertEqual(response.status_code, 200)
         invite.refresh_from_db()
         self.assertEqual(invite.status, ProjectInvite.Status.REVOKED)
+
+        share_response = client.get(reverse('animation:project_share', kwargs={'pk': self.project.pk}))
+        self.assertEqual(share_response.status_code, 200)
+        self.assertNotContains(share_response, 'revoked@example.com')
+
+
+class FrameSaveLimitsTests(TestCase):
+    def test_frame_save_returns_413_when_request_body_is_too_large(self):
+        user = User.objects.create_user(email='save-limit@example.com', password='test')
+        project = AnimationProject.objects.create(
+            owner=user,
+            title='Body limit project',
+            width=1280,
+            height=720,
+            fps=12,
+        )
+        frame = Frame.objects.create(project=project, index=1)
+
+        client = Client()
+        client.force_login(user)
+
+        oversized_payload = json.dumps({
+            'image_data': 'x' * 2048,
+            'content_json': '{}',
+        })
+
+        with override_settings(DATA_UPLOAD_MAX_MEMORY_SIZE=256):
+            response = client.post(
+                reverse('animation:frame_save', kwargs={'pk': project.pk, 'index': frame.index}),
+                data=oversized_payload,
+                content_type='application/json',
+            )
+
+        self.assertEqual(response.status_code, 413)
+        self.assertFalse(response.json()['ok'])
+        self.assertIn('Maximum request size', response.json()['error'])

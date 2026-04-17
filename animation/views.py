@@ -10,6 +10,7 @@ from django.contrib import messages
 from django.conf import settings
 from django.core.files.base import ContentFile
 from django.core import signing
+from django.core.exceptions import RequestDataTooBig
 from django.db import transaction
 from django.db.models import Max, Prefetch
 from django.http import JsonResponse, FileResponse, Http404
@@ -613,6 +614,12 @@ def frame_save(request, pk, index):
 
     try:
         payload = json.loads(request.body.decode('utf-8'))
+    except RequestDataTooBig:
+        max_mb = max(1, settings.DATA_UPLOAD_MAX_MEMORY_SIZE // (1024 * 1024))
+        return JsonResponse({
+            'ok': False,
+            'error': f'Image payload is too large. Maximum request size is {max_mb} MB.',
+        }, status=413)
     except json.JSONDecodeError:
         return JsonResponse({'ok': False, 'error': 'Invalid JSON.'}, status=400)
 
