@@ -271,6 +271,7 @@ let scale = 1;
 let offsetX = 0;
 let offsetY = 0;
 let isCanvasStageFullscreen = false;
+let fullscreenCanvasDisplayScale = null;
 let isPanning = false;
 let panStartX = 0;
 let panStartY = 0;
@@ -2024,39 +2025,13 @@ function getListGapPx(listEl) {
 }
 
 function getCanvasDisplayFitSize() {
-    if (!canvas || !editorMain || !canvasStage) return null;
+    if (!canvas) return null;
 
-    const mainRect = editorMain.getBoundingClientRect();
-    const stageRect = canvasStage.getBoundingClientRect();
-    if (!mainRect.width || !mainRect.height || !stageRect.width) return null;
+    const availableSize = getCanvasStageAvailableDisplaySize();
+    if (!availableSize) return null;
 
-    const wrapperStyles = canvasWrapper ? window.getComputedStyle(canvasWrapper) : null;
-    const wrapperPaddingX = wrapperStyles
-        ? toPxNumber(wrapperStyles.paddingLeft) + toPxNumber(wrapperStyles.paddingRight)
-        : 24;
-    const wrapperPaddingY = wrapperStyles
-        ? toPxNumber(wrapperStyles.paddingTop) + toPxNumber(wrapperStyles.paddingBottom)
-        : 24;
-    const wrapperBorderX = wrapperStyles
-        ? toPxNumber(wrapperStyles.borderLeftWidth) + toPxNumber(wrapperStyles.borderRightWidth)
-        : 0;
-    const wrapperBorderY = wrapperStyles
-        ? toPxNumber(wrapperStyles.borderTopWidth) + toPxNumber(wrapperStyles.borderBottomWidth)
-        : 0;
-
-    const outerPaddingX = isCanvasStageFullscreen ? 24 : 40;
-    const outerPaddingY = isCanvasStageFullscreen ? 24 : 40;
-    const availableWidth = Math.max(
-        160,
-        Math.floor(stageRect.width - outerPaddingX - wrapperPaddingX - wrapperBorderX),
-    );
-    const availableHeight = Math.max(
-        160,
-        Math.floor(mainRect.height - outerPaddingY - wrapperPaddingY - wrapperBorderY),
-    );
-
-    const widthRatio = availableWidth / Math.max(1, canvas.width);
-    const heightRatio = availableHeight / Math.max(1, canvas.height);
+    const widthRatio = availableSize.width / Math.max(1, canvas.width);
+    const heightRatio = availableSize.height / Math.max(1, canvas.height);
     const displayScale = Math.max(0.1, Math.min(widthRatio, heightRatio));
 
     return {
@@ -2066,19 +2041,67 @@ function getCanvasDisplayFitSize() {
 }
 
 function getWorkspacePadding() {
-    const ratio = isCanvasStageFullscreen ? 0.32 : 0.18;
-    const minPadding = isCanvasStageFullscreen ? 160 : 96;
+    const ratio = 0.18;
+    const minPadding = 96;
     return {
         x: Math.max(minPadding, Math.round(projectFrameWidth * ratio)),
         y: Math.max(minPadding, Math.round(projectFrameHeight * ratio)),
     };
 }
 
+function getCanvasStageAvailableDisplaySize() {
+    if (!editorMain || !canvasStage || !canvasWrapper) return null;
+
+    const mainRect = editorMain.getBoundingClientRect();
+    const stageRect = canvasStage.getBoundingClientRect();
+    if (!mainRect.width || !mainRect.height || !stageRect.width) return null;
+
+    const wrapperStyles = window.getComputedStyle(canvasWrapper);
+    const wrapperPaddingX = toPxNumber(wrapperStyles.paddingLeft) + toPxNumber(wrapperStyles.paddingRight);
+    const wrapperPaddingY = toPxNumber(wrapperStyles.paddingTop) + toPxNumber(wrapperStyles.paddingBottom);
+    const wrapperBorderX = toPxNumber(wrapperStyles.borderLeftWidth) + toPxNumber(wrapperStyles.borderRightWidth);
+    const wrapperBorderY = toPxNumber(wrapperStyles.borderTopWidth) + toPxNumber(wrapperStyles.borderBottomWidth);
+
+    const outerPaddingX = isCanvasStageFullscreen ? 24 : 40;
+    const outerPaddingY = isCanvasStageFullscreen ? 24 : 40;
+    return {
+        width: Math.max(
+            160,
+            Math.floor(stageRect.width - outerPaddingX - wrapperPaddingX - wrapperBorderX),
+        ),
+        height: Math.max(
+            160,
+            Math.floor(mainRect.height - outerPaddingY - wrapperPaddingY - wrapperBorderY),
+        ),
+    };
+}
+
+function getCurrentCanvasDisplayScale() {
+    if (!canvas || !canvas.width) return null;
+    const rect = canvas.getBoundingClientRect();
+    if (!rect.width || !rect.height) return null;
+    return rect.width / canvas.width;
+}
+
 function getWorkspaceCanvasSize() {
     const padding = getWorkspacePadding();
-    return {
+    const baseSize = {
         width: projectFrameWidth + padding.x * 2,
         height: projectFrameHeight + padding.y * 2,
+    };
+
+    if (!isCanvasStageFullscreen || !fullscreenCanvasDisplayScale) {
+        return baseSize;
+    }
+
+    const availableSize = getCanvasStageAvailableDisplaySize();
+    if (!availableSize) {
+        return baseSize;
+    }
+
+    return {
+        width: Math.max(baseSize.width, Math.ceil(availableSize.width / fullscreenCanvasDisplayScale)),
+        height: Math.max(baseSize.height, Math.ceil(availableSize.height / fullscreenCanvasDisplayScale)),
     };
 }
 
@@ -2168,7 +2191,9 @@ function bindCanvasStageEvents() {
 
     if (toggleCanvasFullscreenButton) {
         toggleCanvasFullscreenButton.addEventListener('click', () => {
+            const previousDisplayScale = getCurrentCanvasDisplayScale();
             isCanvasStageFullscreen = !isCanvasStageFullscreen;
+            fullscreenCanvasDisplayScale = isCanvasStageFullscreen ? previousDisplayScale : null;
             syncCanvasStageUi();
             syncCanvasSizes();
             syncEditorLayout();
