@@ -172,6 +172,16 @@ let currentFrameUpdatedAt = (editorRoot && editorRoot.dataset.currentFrameUpdate
     || window.ANIM_CURRENT_FRAME_UPDATED_AT
     || '';
 let currentFrameContentJson = '';
+const projectFrameWidth = (() => {
+    const raw = editorRoot ? editorRoot.dataset.projectWidth : null;
+    const parsed = parseInt(raw, 10);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : (canvas ? canvas.width : 1280);
+})();
+const projectFrameHeight = (() => {
+    const raw = editorRoot ? editorRoot.dataset.projectHeight : null;
+    const parsed = parseInt(raw, 10);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : (canvas ? canvas.height : 720);
+})();
 let projectFps = (() => {
     const raw = editorRoot ? editorRoot.dataset.projectFps : null;
     const parsed = parseInt(raw, 10);
@@ -1294,22 +1304,24 @@ function ensureLayerCanvases(layer) {
 
 function syncLayerSizes() {
     if (!canvas) return;
-    const width = canvas.width;
-    const height = canvas.height;
+    const workspaceWidth = canvas.width;
+    const workspaceHeight = canvas.height;
+    const frameWidth = projectFrameWidth;
+    const frameHeight = projectFrameHeight;
 
     layers.forEach((layer) => {
         ensureLayerCanvases(layer);
-        if (layer.canvas.width !== width) {
-            layer.canvas.width = width;
+        if (layer.canvas.width !== workspaceWidth) {
+            layer.canvas.width = workspaceWidth;
         }
-        if (layer.canvas.height !== height) {
-            layer.canvas.height = height;
+        if (layer.canvas.height !== workspaceHeight) {
+            layer.canvas.height = workspaceHeight;
         }
-        if (layer.bufferCanvas.width !== width) {
-            layer.bufferCanvas.width = width;
+        if (layer.bufferCanvas.width !== frameWidth) {
+            layer.bufferCanvas.width = frameWidth;
         }
-        if (layer.bufferCanvas.height !== height) {
-            layer.bufferCanvas.height = height;
+        if (layer.bufferCanvas.height !== frameHeight) {
+            layer.bufferCanvas.height = frameHeight;
         }
     });
 }
@@ -1356,8 +1368,16 @@ function updateLayerPreview(layer) {
 function renderLayer(layer) {
     if (!layer || !layer.ctx || !layer.canvas || !layer.bufferCanvas) return;
     clearCanvas(layer.ctx, layer.canvas);
+    const frameOrigin = getFrameOrigin();
     layer.ctx.save();
-    layer.ctx.setTransform(scale, 0, 0, scale, offsetX, offsetY);
+    layer.ctx.setTransform(
+        scale,
+        0,
+        0,
+        scale,
+        offsetX + frameOrigin.x * scale,
+        offsetY + frameOrigin.y * scale,
+    );
     layer.ctx.drawImage(layer.bufferCanvas, 0, 0);
     if (layer.id === activeLayerId
         && selectionTransform
@@ -1850,8 +1870,16 @@ function clearCanvas(targetCtx, targetCanvas) {
 
 function withTransformedContext(targetCtx, callback, options = {}) {
     if (!targetCtx) return;
+    const frameOrigin = getFrameOrigin();
     targetCtx.save();
-    targetCtx.setTransform(scale, 0, 0, scale, offsetX, offsetY);
+    targetCtx.setTransform(
+        scale,
+        0,
+        0,
+        scale,
+        offsetX + frameOrigin.x * scale,
+        offsetY + frameOrigin.y * scale,
+    );
     if (options.clipToFrame && bufferCanvas) {
         targetCtx.beginPath();
         targetCtx.rect(0, 0, bufferCanvas.width, bufferCanvas.height);
@@ -1893,7 +1921,7 @@ function renderOverlay() {
                 drawSelectionTransformControls(overlayCtx, bounds);
             }
         }
-    }, { clipToFrame: true });
+    });
     updateSelectionAnimationState();
 }
 
@@ -1921,6 +1949,9 @@ function renderScene() {
 
 function syncCanvasSizes() {
     if (!canvas) return;
+    const workspaceSize = getWorkspaceCanvasSize();
+    canvas.width = workspaceSize.width;
+    canvas.height = workspaceSize.height;
     const width = canvas.width;
     const height = canvas.height;
 
@@ -2061,6 +2092,31 @@ function getCanvasDisplayFitSize() {
     };
 }
 
+function getWorkspacePadding() {
+    const ratio = isCanvasStageFullscreen ? 0.45 : 0.18;
+    const minPadding = isCanvasStageFullscreen ? 220 : 96;
+    return {
+        x: Math.max(minPadding, Math.round(projectFrameWidth * ratio)),
+        y: Math.max(minPadding, Math.round(projectFrameHeight * ratio)),
+    };
+}
+
+function getWorkspaceCanvasSize() {
+    const padding = getWorkspacePadding();
+    return {
+        width: projectFrameWidth + padding.x * 2,
+        height: projectFrameHeight + padding.y * 2,
+    };
+}
+
+function getFrameOrigin() {
+    const workspace = getWorkspaceCanvasSize();
+    return {
+        x: Math.floor((workspace.width - projectFrameWidth) / 2),
+        y: Math.floor((workspace.height - projectFrameHeight) / 2),
+    };
+}
+
 function applyListMaxVisibleHeight(listEl, itemSelector, maxVisible) {
     if (!listEl) return;
     const maxCount = Number(maxVisible);
@@ -2141,7 +2197,10 @@ function bindCanvasStageEvents() {
         toggleCanvasFullscreenButton.addEventListener('click', () => {
             isCanvasStageFullscreen = !isCanvasStageFullscreen;
             syncCanvasStageUi();
+            syncCanvasSizes();
             syncEditorLayout();
+            renderScene();
+            renderOverlay();
         });
     }
 }
@@ -3759,8 +3818,9 @@ function getCanvasRawCoords(event) {
 function getCanvasCoords(event) {
     const { x: rawX, y: rawY } = getCanvasRawCoords(event);
     const normalizedScale = scale || 1;
-    const x = (rawX - offsetX) / normalizedScale;
-    const y = (rawY - offsetY) / normalizedScale;
+    const frameOrigin = getFrameOrigin();
+    const x = (rawX - offsetX) / normalizedScale - frameOrigin.x;
+    const y = (rawY - offsetY) / normalizedScale - frameOrigin.y;
     return { x, y };
 }
 
