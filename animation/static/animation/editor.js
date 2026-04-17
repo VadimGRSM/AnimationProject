@@ -2066,8 +2066,8 @@ function getCanvasDisplayFitSize() {
 }
 
 function getWorkspacePadding() {
-    const ratio = isCanvasStageFullscreen ? 0.45 : 0.18;
-    const minPadding = isCanvasStageFullscreen ? 220 : 96;
+    const ratio = isCanvasStageFullscreen ? 0.32 : 0.18;
+    const minPadding = isCanvasStageFullscreen ? 160 : 96;
     return {
         x: Math.max(minPadding, Math.round(projectFrameWidth * ratio)),
         y: Math.max(minPadding, Math.round(projectFrameHeight * ratio)),
@@ -2076,23 +2076,10 @@ function getWorkspacePadding() {
 
 function getWorkspaceCanvasSize() {
     const padding = getWorkspacePadding();
-    let width = projectFrameWidth + padding.x * 2;
-    let height = projectFrameHeight + padding.y * 2;
-
-    if (isCanvasStageFullscreen && editorMain) {
-        const mainRect = editorMain.getBoundingClientRect();
-        if (mainRect.width > 0 && mainRect.height > 0) {
-            const targetAspect = mainRect.width / mainRect.height;
-            const currentAspect = width / Math.max(1, height);
-            if (currentAspect < targetAspect) {
-                width = Math.max(width, Math.round(height * targetAspect));
-            } else if (currentAspect > targetAspect) {
-                height = Math.max(height, Math.round(width / targetAspect));
-            }
-        }
-    }
-
-    return { width, height };
+    return {
+        width: projectFrameWidth + padding.x * 2,
+        height: projectFrameHeight + padding.y * 2,
+    };
 }
 
 function getFrameOrigin() {
