@@ -419,20 +419,40 @@ def project_update(request, pk):
     if not isinstance(payload, dict):
         return JsonResponse({'ok': False, 'error': 'invalid_payload'}, status=400)
 
-    if 'fps' not in payload:
-        return JsonResponse({'ok': False, 'error': 'fps_required'}, status=400)
+    update_fields = ['updated_at']
 
-    fps = _parse_int(payload.get('fps'), default_value=None, min_value=1, max_value=60)
-    if fps is None:
-        return JsonResponse({'ok': False, 'error': 'invalid_fps'}, status=400)
+    if 'fps' not in payload and 'width' not in payload and 'height' not in payload:
+        return JsonResponse({'ok': False, 'error': 'no_updates'}, status=400)
 
-    project.fps = fps
-    project.save(update_fields=['fps', 'updated_at'])
+    if 'fps' in payload:
+        fps = _parse_int(payload.get('fps'), default_value=None, min_value=1, max_value=60)
+        if fps is None:
+            return JsonResponse({'ok': False, 'error': 'invalid_fps'}, status=400)
+        project.fps = fps
+        update_fields.append('fps')
+
+    if 'width' in payload:
+        width = _parse_int(payload.get('width'), default_value=None, min_value=1, max_value=8192)
+        if width is None:
+            return JsonResponse({'ok': False, 'error': 'invalid_width'}, status=400)
+        project.width = width
+        update_fields.append('width')
+
+    if 'height' in payload:
+        height = _parse_int(payload.get('height'), default_value=None, min_value=1, max_value=8192)
+        if height is None:
+            return JsonResponse({'ok': False, 'error': 'invalid_height'}, status=400)
+        project.height = height
+        update_fields.append('height')
+
+    project.save(update_fields=update_fields)
 
     return JsonResponse({
         'ok': True,
         'project': {
             'id': project.pk,
+            'width': project.width,
+            'height': project.height,
             'fps': project.fps,
             'updated_at': project.updated_at.isoformat() if project.updated_at else '',
         },
