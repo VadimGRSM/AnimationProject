@@ -101,7 +101,7 @@ MEDIA_URL = "/media/"
 MEDIA_ROOT = BASE_DIR / "media"
 
 AUTH_USER_MODEL = "accounts.User"
-SITE_ID = 1
+SITE_ID = 4
 
 LOGIN_URL = "/accounts/login/"
 LOGIN_REDIRECT_URL = "animation:project_list"
