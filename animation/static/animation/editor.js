@@ -2030,6 +2030,13 @@ function getCanvasDisplayFitSize() {
     const availableSize = getCanvasStageAvailableDisplaySize();
     if (!availableSize) return null;
 
+    if (isCanvasStageFullscreen && fullscreenCanvasDisplayScale) {
+        return {
+            width: Math.max(1, Math.floor(canvas.width * fullscreenCanvasDisplayScale)),
+            height: Math.max(1, Math.floor(canvas.height * fullscreenCanvasDisplayScale)),
+        };
+    }
+
     const widthRatio = availableSize.width / Math.max(1, canvas.width);
     const heightRatio = availableSize.height / Math.max(1, canvas.height);
     const displayScale = Math.max(0.1, Math.min(widthRatio, heightRatio));
@@ -2052,9 +2059,8 @@ function getWorkspacePadding() {
 function getCanvasStageAvailableDisplaySize() {
     if (!editorMain || !canvasStage || !canvasWrapper) return null;
 
-    const mainRect = editorMain.getBoundingClientRect();
     const stageRect = canvasStage.getBoundingClientRect();
-    if (!mainRect.width || !mainRect.height || !stageRect.width) return null;
+    if (!stageRect.width || !stageRect.height) return null;
 
     const wrapperStyles = window.getComputedStyle(canvasWrapper);
     const wrapperPaddingX = toPxNumber(wrapperStyles.paddingLeft) + toPxNumber(wrapperStyles.paddingRight);
@@ -2071,7 +2077,7 @@ function getCanvasStageAvailableDisplaySize() {
         ),
         height: Math.max(
             160,
-            Math.floor(mainRect.height - outerPaddingY - wrapperPaddingY - wrapperBorderY),
+            Math.floor(stageRect.height - outerPaddingY - wrapperPaddingY - wrapperBorderY),
         ),
     };
 }
@@ -2100,8 +2106,14 @@ function getWorkspaceCanvasSize() {
     }
 
     return {
-        width: Math.max(baseSize.width, Math.ceil(availableSize.width / fullscreenCanvasDisplayScale)),
-        height: Math.max(baseSize.height, Math.ceil(availableSize.height / fullscreenCanvasDisplayScale)),
+        width: Math.max(
+            baseSize.width,
+            Math.floor(availableSize.width / fullscreenCanvasDisplayScale),
+        ),
+        height: Math.max(
+            baseSize.height,
+            Math.floor(availableSize.height / fullscreenCanvasDisplayScale),
+        ),
     };
 }
 
