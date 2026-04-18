@@ -965,7 +965,8 @@ body.modal-open {
 
 .tool-settings-popover.editor-popup--suppressed {
     z-index: 1850;
-    opacity: 0.18;
+    opacity: 0.08;
+    filter: grayscale(1) brightness(0.72);
     pointer-events: none;
     box-shadow: none;
 }
@@ -1691,7 +1692,8 @@ body.modal-open {
 
 .onion-panel.editor-popup--suppressed {
     z-index: 1850;
-    opacity: 0.18;
+    opacity: 0.08;
+    filter: grayscale(1) brightness(0.72);
     pointer-events: none;
     box-shadow: none;
 }

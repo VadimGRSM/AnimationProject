@@ -527,6 +527,16 @@ function setActiveEditorPopup(popupId) {
     syncPopupBackdropState();
 }
 
+function applyEditorPopupVisualState(popupEl, isActive, isSuppressed) {
+    if (!popupEl) return;
+    popupEl.classList.toggle('editor-popup--active', Boolean(isActive));
+    popupEl.classList.toggle('editor-popup--suppressed', Boolean(isSuppressed));
+    popupEl.setAttribute('aria-hidden', isSuppressed ? 'true' : 'false');
+    if ('inert' in popupEl) {
+        popupEl.inert = Boolean(isSuppressed);
+    }
+}
+
 function syncPopupBackdropState() {
     const exportOpen = isExportModalOpen();
     const openEditorPopups = getOpenEditorPopupIds();
@@ -548,20 +558,16 @@ function syncPopupBackdropState() {
     if (toolbarPanel) {
         toolbarPanel.classList.toggle('editor-toolbar-panel--popup-active', activeEditorPopup === 'tool-settings');
     }
-    if (toolSettingsPopover) {
-        toolSettingsPopover.classList.toggle('editor-popup--active', activeEditorPopup === 'tool-settings');
-        toolSettingsPopover.classList.toggle(
-            'editor-popup--suppressed',
-            exportOpen && isToolSettingsPopoverOpen(),
-        );
-    }
-    if (onionPanel) {
-        onionPanel.classList.toggle('editor-popup--active', activeEditorPopup === 'onion');
-        onionPanel.classList.toggle(
-            'editor-popup--suppressed',
-            exportOpen && isOnionPanelOpen(),
-        );
-    }
+    applyEditorPopupVisualState(
+        toolSettingsPopover,
+        activeEditorPopup === 'tool-settings',
+        exportOpen && isToolSettingsPopoverOpen(),
+    );
+    applyEditorPopupVisualState(
+        onionPanel,
+        activeEditorPopup === 'onion',
+        exportOpen && isOnionPanelOpen(),
+    );
 }
 
 function closeToolSettingsPopover() {
