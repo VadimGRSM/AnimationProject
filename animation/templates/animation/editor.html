@@ -23,49 +23,53 @@
     <span class="anim-header__project-meta">
         {{ current_user_role|title }}{% if not can_edit %} · Read only{% endif %}
     </span>
-    {% if can_manage_members %}
-        <a href="{{ share_url }}" class="tool-button tool-button--small anim-header__share-link">Share</a>
-    {% endif %}
 </div>
 {% endblock %}
 
 {% block header_project_controls %}
 <div class="anim-header__editor">
-    <div class="editor-save">
-        <div class="save-button-tooltip">
-            <button type="button"
-                    id="save-project-button"
-                    class="tool-button"
-                    {% if not can_edit %}hidden{% endif %}
-                    disabled>
-                Save project
-            </button>
-            <div class="save-status-tooltip">
-                <span class="save-status" id="save-status" aria-live="polite">
-                    No changes
-                </span>
-                <span class="save-last-time" id="last-saved-time"></span>
+    <div class="editor-header-actions">
+        <div class="editor-save">
+            {% if can_manage_members %}
+                <a href="{{ share_url }}" class="tool-button tool-button--small anim-header__share-link">Share</a>
+            {% endif %}
+            <div class="save-button-tooltip">
+                <button type="button"
+                        id="save-project-button"
+                        class="tool-button"
+                        {% if not can_edit %}hidden{% endif %}
+                        disabled>
+                    Save project
+                </button>
+                <div class="save-status-tooltip">
+                    <span class="save-status" id="save-status" aria-live="polite">
+                        No changes
+                    </span>
+                    <span class="save-last-time" id="last-saved-time"></span>
+                </div>
             </div>
+            <button type="button"
+                    id="export-project-button"
+                    class="tool-button">
+                Export
+            </button>
         </div>
-        <button type="button"
-                id="export-project-button"
-                class="tool-button">
-            Export
-        </button>
     </div>
-    <div class="project-presence" id="project-presence" aria-live="polite">
-        <div class="project-presence__header">
-            <span class="project-presence__title">Online</span>
-            <span class="project-presence__count" id="project-presence-count">0</span>
+    <div class="editor-status-row">
+        <div class="project-presence" id="project-presence" aria-live="polite">
+            <div class="project-presence__header">
+                <span class="project-presence__title">Online</span>
+                <span class="project-presence__count" id="project-presence-count">0</span>
+            </div>
+            <ul class="project-presence__list" id="project-presence-list"></ul>
+            <p class="project-presence__empty" id="project-presence-empty">Connecting realtime presence...</p>
         </div>
-        <ul class="project-presence__list" id="project-presence-list"></ul>
-        <p class="project-presence__empty" id="project-presence-empty">Connecting realtime presence...</p>
-    </div>
-    <div class="frame-lock-status frame-lock-status--pending"
-         id="frame-lock-status"
-         aria-live="polite">
-        <span class="frame-lock-status__title">Frame lock</span>
-        <span class="frame-lock-status__text" id="frame-lock-status-text">Connecting collaborative lock...</span>
+        <div class="frame-lock-status frame-lock-status--pending"
+             id="frame-lock-status"
+             aria-live="polite">
+            <span class="frame-lock-status__title">Frame lock</span>
+            <span class="frame-lock-status__text" id="frame-lock-status-text">Connecting collaborative lock...</span>
+        </div>
     </div>
 </div>
 {% endblock %}
