@@ -550,9 +550,17 @@ function syncPopupBackdropState() {
     }
     if (toolSettingsPopover) {
         toolSettingsPopover.classList.toggle('editor-popup--active', activeEditorPopup === 'tool-settings');
+        toolSettingsPopover.classList.toggle(
+            'editor-popup--suppressed',
+            exportOpen && isToolSettingsPopoverOpen(),
+        );
     }
     if (onionPanel) {
         onionPanel.classList.toggle('editor-popup--active', activeEditorPopup === 'onion');
+        onionPanel.classList.toggle(
+            'editor-popup--suppressed',
+            exportOpen && isOnionPanelOpen(),
+        );
     }
 }
 

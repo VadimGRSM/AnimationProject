@@ -963,6 +963,13 @@ body.modal-open {
     z-index: 2250;
 }
 
+.tool-settings-popover.editor-popup--suppressed {
+    z-index: 1850;
+    opacity: 0.18;
+    pointer-events: none;
+    box-shadow: none;
+}
+
 .tool-settings-popover::before {
     content: "";
     position: absolute;
@@ -1680,6 +1687,13 @@ body.modal-open {
 
 .onion-panel.editor-popup--active {
     z-index: 2250;
+}
+
+.onion-panel.editor-popup--suppressed {
+    z-index: 1850;
+    opacity: 0.18;
+    pointer-events: none;
+    box-shadow: none;
 }
 
 .onion-panel.is-dragging .onion-panel__header {
