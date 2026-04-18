@@ -54,6 +54,7 @@ const toolSettingsBlur = document.getElementById('tool-settings-blur');
 const toolSettingsSensitivity = document.getElementById('tool-settings-sensitivity');
 const selectToolIcon = document.getElementById('select-tool-icon');
 const canvasStage = document.getElementById('canvas-stage');
+const canvasStageWorkspace = canvasStage ? canvasStage.querySelector('.canvas-stage__workspace') : null;
 const canvasStageControls = canvasStage ? canvasStage.querySelector('.canvas-stage__controls') : null;
 const canvasWrapper = document.querySelector('.canvas-wrapper');
 const resetCanvasViewButton = document.getElementById('reset-canvas-view-button');
@@ -3010,8 +3011,10 @@ function getWorkspacePadding() {
 function getCanvasStageAvailableDisplaySize() {
     if (!editorMain || !canvasStage || !canvasWrapper) return null;
 
-    const stageRect = canvasStage.getBoundingClientRect();
-    if (!stageRect.width || !stageRect.height) return null;
+    const availableRect = canvasStageWorkspace
+        ? canvasStageWorkspace.getBoundingClientRect()
+        : canvasStage.getBoundingClientRect();
+    if (!availableRect.width || !availableRect.height) return null;
 
     const wrapperStyles = window.getComputedStyle(canvasWrapper);
     const wrapperPaddingX = toPxNumber(wrapperStyles.paddingLeft) + toPxNumber(wrapperStyles.paddingRight);
@@ -3019,16 +3022,14 @@ function getCanvasStageAvailableDisplaySize() {
     const wrapperBorderX = toPxNumber(wrapperStyles.borderLeftWidth) + toPxNumber(wrapperStyles.borderRightWidth);
     const wrapperBorderY = toPxNumber(wrapperStyles.borderTopWidth) + toPxNumber(wrapperStyles.borderBottomWidth);
 
-    const outerPaddingX = isCanvasStageFullscreen ? 24 : 40;
-    const outerPaddingY = isCanvasStageFullscreen ? 24 : 40;
     return {
         width: Math.max(
             160,
-            Math.floor(stageRect.width - outerPaddingX - wrapperPaddingX - wrapperBorderX),
+            Math.floor(availableRect.width - wrapperPaddingX - wrapperBorderX),
         ),
         height: Math.max(
             160,
-            Math.floor(stageRect.height - outerPaddingY - wrapperPaddingY - wrapperBorderY),
+            Math.floor(availableRect.height - wrapperPaddingY - wrapperBorderY),
         ),
     };
 }
