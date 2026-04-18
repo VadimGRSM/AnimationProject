@@ -19,10 +19,12 @@
     <span class="anim-header__status-dot save-indicator save-indicator--idle"
           id="save-indicator"
           aria-hidden="true"></span>
-    <span class="anim-header__project-title">{{ project.title }}</span>
-    <span class="anim-header__project-meta">
-        {{ current_user_role|title }}{% if not can_edit %} · Read only{% endif %}
-    </span>
+    <div class="anim-header__project-copy">
+        <span class="anim-header__project-title">{{ project.title }}</span>
+        <span class="anim-header__project-meta">
+            {{ current_user_role|title }}{% if not can_edit %} · Read only{% endif %}
+        </span>
+    </div>
 </div>
 {% endblock %}
 
@@ -53,22 +55,6 @@
                     class="tool-button">
                 Export
             </button>
-        </div>
-    </div>
-    <div class="editor-status-row">
-        <div class="project-presence" id="project-presence" aria-live="polite">
-            <div class="project-presence__header">
-                <span class="project-presence__title">Online</span>
-                <span class="project-presence__count" id="project-presence-count">0</span>
-            </div>
-            <ul class="project-presence__list" id="project-presence-list"></ul>
-            <p class="project-presence__empty" id="project-presence-empty">Connecting realtime presence...</p>
-        </div>
-        <div class="frame-lock-status frame-lock-status--pending"
-             id="frame-lock-status"
-             aria-live="polite">
-            <span class="frame-lock-status__title">Frame lock</span>
-            <span class="frame-lock-status__text" id="frame-lock-status-text">Connecting collaborative lock...</span>
         </div>
     </div>
 </div>
@@ -109,7 +95,8 @@
     <div class="editor-main">
         <aside class="editor-toolbar-panel"
                aria-label="Tools panel">
-            <div class="editor-toolbar-panel__header"></div>
+            <div class="editor-toolbar-panel__header" aria-hidden="true"></div>
+            <div class="editor-toolbar-panel__label">Tools</div>
             <div class="editor-toolbar">
                 <button type="button"
                         class="tool-button tool-button--active"
@@ -260,56 +247,60 @@
             </div>
         </aside>
 
-        <div class="canvas-stage" id="canvas-stage">
-            <div class="canvas-stage__controls">
-                <button type="button"
-                        class="tool-button tool-button--small"
-                        id="reset-canvas-view-button"
-                        title="Reset canvas position and zoom">
-                    Reset view
-                </button>
-                <button type="button"
-                        class="tool-button tool-button--small"
-                        id="fit-canvas-frame-button"
-                        title="Zoom viewport to fit the frame">
-                    Fit frame
-                </button>
-                <button type="button"
-                        class="tool-button tool-button--small"
-                        id="toggle-canvas-fullscreen-button"
-                        title="Expand canvas to the full editor area">
-                    Fullscreen
-                </button>
-            </div>
-            <div class="canvas-wrapper">
-                <canvas id="editor-canvas"
-                        width="{{ project.width }}"
-                        height="{{ project.height }}">
-                </canvas>
-                <canvas id="editor-onion-prev"
-                        class="onion-canvas onion-canvas--prev"
-                        width="{{ project.width }}"
-                        height="{{ project.height }}"
-                        aria-hidden="true"
-                        hidden>
-                </canvas>
-                <canvas id="editor-onion-next"
-                        class="onion-canvas onion-canvas--next"
-                        width="{{ project.width }}"
-                        height="{{ project.height }}"
-                        aria-hidden="true"
-                        hidden>
-                </canvas>
-                <canvas id="editor-overlay"
-                        width="{{ project.width }}"
-                        height="{{ project.height }}"
-                        aria-hidden="true">
-                </canvas>
-                <div class="eyedropper-zoom" id="eyedropper-zoom" aria-hidden="true">
-                    <canvas id="eyedropper-zoom-canvas" width="120" height="120"></canvas>
+        <section class="editor-workspace" aria-label="Canvas workspace">
+            <div class="canvas-stage" id="canvas-stage">
+                <div class="canvas-stage__controls">
+                    <button type="button"
+                            class="tool-button tool-button--small"
+                            id="reset-canvas-view-button"
+                            title="Reset canvas position and zoom">
+                        Reset view
+                    </button>
+                    <button type="button"
+                            class="tool-button tool-button--small"
+                            id="fit-canvas-frame-button"
+                            title="Zoom viewport to fit the frame">
+                        Fit frame
+                    </button>
+                    <button type="button"
+                            class="tool-button tool-button--small"
+                            id="toggle-canvas-fullscreen-button"
+                            title="Expand canvas to the full editor area">
+                        Fullscreen
+                    </button>
+                </div>
+                <div class="canvas-stage__workspace">
+                    <div class="canvas-wrapper">
+                        <canvas id="editor-canvas"
+                                width="{{ project.width }}"
+                                height="{{ project.height }}">
+                        </canvas>
+                        <canvas id="editor-onion-prev"
+                                class="onion-canvas onion-canvas--prev"
+                                width="{{ project.width }}"
+                                height="{{ project.height }}"
+                                aria-hidden="true"
+                                hidden>
+                        </canvas>
+                        <canvas id="editor-onion-next"
+                                class="onion-canvas onion-canvas--next"
+                                width="{{ project.width }}"
+                                height="{{ project.height }}"
+                                aria-hidden="true"
+                                hidden>
+                        </canvas>
+                        <canvas id="editor-overlay"
+                                width="{{ project.width }}"
+                                height="{{ project.height }}"
+                                aria-hidden="true">
+                        </canvas>
+                        <div class="eyedropper-zoom" id="eyedropper-zoom" aria-hidden="true">
+                            <canvas id="eyedropper-zoom-canvas" width="120" height="120"></canvas>
+                        </div>
+                    </div>
                 </div>
             </div>
-        </div>
+        </section>
 
         <div class="onion-panel" id="onion-skin-panel" hidden>
             <div class="onion-panel__header">
@@ -389,103 +380,141 @@
             </div>
         </div>
 
-        <aside class="history-panel"
-               aria-label="Action history">
-            <div class="history-panel__header">
-                <h3 class="history-panel__title">History</h3>
-            </div>
-            <ul class="history-list" id="history-list"></ul>
-            <p class="history-empty" id="history-empty" hidden>No actions yet</p>
-        </aside>
+        <aside class="editor-sidebar" aria-label="Editor sidebar">
+            <section class="editor-sidebar__section editor-sidebar__section--collab"
+                     aria-label="Collaboration">
+                <div class="editor-section-heading">
+                    <div>
+                        <p class="editor-section-heading__eyebrow">Collaboration</p>
+                        <h3 class="editor-section-heading__title">Session</h3>
+                    </div>
+                </div>
+                <div class="editor-collab-grid">
+                    <div class="project-presence" id="project-presence" aria-live="polite">
+                        <div class="project-presence__header">
+                            <span class="project-presence__title">Online</span>
+                            <span class="project-presence__count" id="project-presence-count">0</span>
+                        </div>
+                        <ul class="project-presence__list" id="project-presence-list"></ul>
+                        <p class="project-presence__empty" id="project-presence-empty">Connecting realtime presence...</p>
+                    </div>
+                    <div class="frame-lock-status frame-lock-status--pending"
+                         id="frame-lock-status"
+                         aria-live="polite">
+                        <span class="frame-lock-status__title">Frame lock</span>
+                        <span class="frame-lock-status__text" id="frame-lock-status-text">Connecting collaborative lock...</span>
+                    </div>
+                </div>
+            </section>
 
-        <aside class="layers-panel" aria-label="Layers">
-            <div class="layers-panel__header">
-                <h3 class="layers-panel__title">Layers</h3>
-                <button type="button"
-                        class="tool-button tool-button--small layers-panel__add"
-                        id="add-layer-button"
-                        {% if not can_edit %}hidden{% endif %}
-                        aria-label="Add layer"
-                        title="Add layer">
-                    <img class="tool-icon tool-icon--small"
-                         src="{% static 'animation/icons/plus.svg' %}"
-                         alt="">
-                </button>
-            </div>
-            <ul class="layers-list" id="layers-list"></ul>
-            <p class="layers-empty" id="layers-empty" hidden>No layers found</p>
+            <aside class="layers-panel" aria-label="Layers">
+                <div class="layers-panel__header" aria-hidden="true"></div>
+                <div class="editor-section-heading editor-section-heading--with-actions">
+                    <div>
+                        <p class="editor-section-heading__eyebrow">Stack</p>
+                        <h3 class="layers-panel__title">Layers</h3>
+                    </div>
+                    <button type="button"
+                            class="tool-button tool-button--small layers-panel__add"
+                            id="add-layer-button"
+                            {% if not can_edit %}hidden{% endif %}
+                            aria-label="Add layer"
+                            title="Add layer">
+                        <img class="tool-icon tool-icon--small"
+                             src="{% static 'animation/icons/plus.svg' %}"
+                             alt="">
+                    </button>
+                </div>
+                <ul class="layers-list" id="layers-list"></ul>
+                <p class="layers-empty" id="layers-empty" hidden>No layers found</p>
+            </aside>
+
+            <aside class="history-panel"
+                   aria-label="Action history">
+                <div class="history-panel__header" aria-hidden="true"></div>
+                <div class="editor-section-heading">
+                    <div>
+                        <p class="editor-section-heading__eyebrow">Undo stack</p>
+                        <h3 class="history-panel__title">History</h3>
+                    </div>
+                </div>
+                <ul class="history-list" id="history-list"></ul>
+                <p class="history-empty" id="history-empty" hidden>No actions yet</p>
+            </aside>
         </aside>
     </div>
 
     <div class="timeline-wrapper" aria-label="Frame timeline">
-        <div class="timeline-controls">
-            <button type="button"
-                    class="tool-button tool-button--small"
-                    id="add-frame-button"
-                    {% if not can_edit %}hidden{% endif %}
-                    title="Add frame"
-                    aria-label="Add frame">
-                +
-            </button>
-            <button type="button"
-                    class="tool-button tool-button--small"
-                    id="duplicate-frame-button"
-                    {% if not can_edit %}hidden{% endif %}
-                    title="Duplicate frame"
-                    aria-label="Duplicate frame">
-                ⧉
-            </button>
-            <button type="button"
-                    class="tool-button tool-button--small"
-                    id="delete-frame-button"
-                    {% if not can_edit %}hidden{% endif %}
-                    title="Delete frame"
-                    aria-label="Delete frame">
-                <img class="tool-icon tool-icon--small" src="{% static 'animation/icons/trash.svg' %}" alt="">
-            </button>
-
-            <div class="timeline-onion">
+        <div class="timeline-toolbar">
+            <div class="timeline-controls">
                 <button type="button"
                         class="tool-button tool-button--small"
-                        id="onion-skin-toggle"
-                        title="Onion-Skin (adjacent frames)"
-                        aria-label="Onion-Skin (preview adjacent frames)">
-                    <img class="tool-icon tool-icon--small"
-                         src="{% static 'animation/icons/onion.svg' %}"
-                         alt="">
+                        id="add-frame-button"
+                        {% if not can_edit %}hidden{% endif %}
+                        title="Add frame"
+                        aria-label="Add frame">
+                    +
                 </button>
+                <button type="button"
+                        class="tool-button tool-button--small"
+                        id="duplicate-frame-button"
+                        {% if not can_edit %}hidden{% endif %}
+                        title="Duplicate frame"
+                        aria-label="Duplicate frame">
+                    ⧉
+                </button>
+                <button type="button"
+                        class="tool-button tool-button--small"
+                        id="delete-frame-button"
+                        {% if not can_edit %}hidden{% endif %}
+                        title="Delete frame"
+                        aria-label="Delete frame">
+                    <img class="tool-icon tool-icon--small" src="{% static 'animation/icons/trash.svg' %}" alt="">
+                </button>
+
+                <div class="timeline-onion">
+                    <button type="button"
+                            class="tool-button tool-button--small"
+                            id="onion-skin-toggle"
+                            title="Onion-Skin (adjacent frames)"
+                            aria-label="Onion-Skin (preview adjacent frames)">
+                        <img class="tool-icon tool-icon--small"
+                             src="{% static 'animation/icons/onion.svg' %}"
+                             alt="">
+                    </button>
+                </div>
+            </div>
+            <div class="playback-controls" id="playback-controls">
+                <button type="button"
+                        class="tool-button tool-button--small"
+                        id="playback-play-button"
+                        aria-label="Play">
+                    Play
+                </button>
+                <button type="button"
+                        class="tool-button tool-button--small"
+                        id="playback-stop-button"
+                        aria-label="Stop">
+                    Stop
+                </button>
+                <label class="playback-loop">
+                    <input type="checkbox" id="playback-loop-toggle">
+                    <span>Loop</span>
+                </label>
+                <label class="playback-fps">
+                    <span>Project FPS</span>
+                    <input type="number"
+                           id="playback-fps-input"
+                           min="1"
+                           max="60"
+                           step="1"
+                           value="{{ project.fps }}"
+                           {% if not can_edit %}disabled{% endif %}
+                           aria-label="Project FPS">
+                </label>
             </div>
         </div>
         <div class="timeline-strip" id="timeline-strip" role="list"></div>
-        <div class="playback-controls" id="playback-controls">
-            <button type="button"
-                    class="tool-button tool-button--small"
-                    id="playback-play-button"
-                    aria-label="Play">
-                Play
-            </button>
-            <button type="button"
-                    class="tool-button tool-button--small"
-                    id="playback-stop-button"
-                    aria-label="Stop">
-                Stop
-            </button>
-            <label class="playback-loop">
-                <input type="checkbox" id="playback-loop-toggle">
-                <span>Loop</span>
-            </label>
-            <label class="playback-fps">
-                <span>Project FPS</span>
-                <input type="number"
-                       id="playback-fps-input"
-                       min="1"
-                       max="60"
-                       step="1"
-                       value="{{ project.fps }}"
-                       {% if not can_edit %}disabled{% endif %}
-                       aria-label="Project FPS">
-            </label>
-        </div>
     </div>
 
 </div>
