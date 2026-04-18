@@ -599,7 +599,9 @@ body.modal-open {
 }
 
 .modal__overlay {
-    display: none;
+    position: absolute;
+    inset: 0;
+    background-color: rgba(17, 24, 39, 0.55);
 }
 
 .modal__content {
@@ -894,7 +896,7 @@ body.modal-open {
 }
 
 .editor-toolbar-panel.editor-toolbar-panel--popup-active {
-    z-index: 2250;
+    z-index: auto;
 }
 
 .editor-toolbar-panel__header {
@@ -954,7 +956,11 @@ body.modal-open {
     border-radius: 10px;
     background-color: #ffffff;
     box-shadow: 0 12px 22px rgba(0, 0, 0, 0.14);
-    z-index: 2200;
+    z-index: 1850;
+}
+
+.tool-settings-popover.editor-popup--active {
+    z-index: 2250;
 }
 
 .tool-settings-popover::before {
@@ -1666,10 +1672,14 @@ body.modal-open {
     border-radius: 12px;
     border: 1px solid #e5e7eb;
     box-shadow: 0 14px 30px rgba(0, 0, 0, 0.14);
-    z-index: 2000;
+    z-index: 1850;
     display: grid;
     gap: 10px;
     line-height: normal;
+}
+
+.onion-panel.editor-popup--active {
+    z-index: 2250;
 }
 
 .onion-panel.is-dragging .onion-panel__header {

@@ -211,6 +211,7 @@ let brushStampSpacing = 1;
 let brushStampCarryDistance = 0;
 let activePointerButton = 0;
 let toolSettingsAnchorButton = null;
+let activeEditorPopupId = null;
 
 // =======================
 // Layer state
@@ -499,14 +500,59 @@ function isOnionPanelOpen() {
     return Boolean(onionPanel && !onionPanel.hidden);
 }
 
-function syncPopupBackdropState() {
-    const hasPopup = isExportModalOpen() || isOnionPanelOpen() || isToolSettingsPopoverOpen();
-    if (editorPopupBackdrop) {
-        editorPopupBackdrop.hidden = !hasPopup;
+function getOpenEditorPopupIds() {
+    const openIds = [];
+    if (isOnionPanelOpen()) {
+        openIds.push('onion');
     }
-    document.body.classList.toggle('modal-open', hasPopup);
+    if (isToolSettingsPopoverOpen()) {
+        openIds.push('tool-settings');
+    }
+    return openIds;
+}
+
+function getResolvedActiveEditorPopupId() {
+    const openIds = getOpenEditorPopupIds();
+    if (!openIds.length) {
+        return null;
+    }
+    if (activeEditorPopupId && openIds.includes(activeEditorPopupId)) {
+        return activeEditorPopupId;
+    }
+    return openIds[openIds.length - 1];
+}
+
+function setActiveEditorPopup(popupId) {
+    activeEditorPopupId = popupId || null;
+    syncPopupBackdropState();
+}
+
+function syncPopupBackdropState() {
+    const exportOpen = isExportModalOpen();
+    const openEditorPopups = getOpenEditorPopupIds();
+    const hasEditorPopup = openEditorPopups.length > 0;
+    const resolvedActivePopup = getResolvedActiveEditorPopupId();
+    if (resolvedActivePopup) {
+        activeEditorPopupId = resolvedActivePopup;
+    } else if (!hasEditorPopup) {
+        activeEditorPopupId = null;
+    }
+
+    if (editorPopupBackdrop) {
+        editorPopupBackdrop.hidden = exportOpen || !hasEditorPopup;
+    }
+    document.body.classList.toggle('modal-open', exportOpen || hasEditorPopup);
+
+    const activeEditorPopup = exportOpen ? null : resolvedActivePopup;
+
     if (toolbarPanel) {
-        toolbarPanel.classList.toggle('editor-toolbar-panel--popup-active', isToolSettingsPopoverOpen());
+        toolbarPanel.classList.toggle('editor-toolbar-panel--popup-active', activeEditorPopup === 'tool-settings');
+    }
+    if (toolSettingsPopover) {
+        toolSettingsPopover.classList.toggle('editor-popup--active', activeEditorPopup === 'tool-settings');
+    }
+    if (onionPanel) {
+        onionPanel.classList.toggle('editor-popup--active', activeEditorPopup === 'onion');
     }
 }
 
@@ -514,6 +560,9 @@ function closeToolSettingsPopover() {
     if (!toolSettingsPopover) return;
     toolSettingsPopover.hidden = true;
     toolSettingsAnchorButton = null;
+    if (activeEditorPopupId === 'tool-settings') {
+        activeEditorPopupId = null;
+    }
     syncPopupBackdropState();
 }
 
@@ -557,6 +606,7 @@ function openToolSettingsPopover(anchorButton, options = {}) {
     toolSettingsPopover.hidden = false;
     toolSettingsAnchorButton = anchorButton;
     positionToolSettingsPopover(anchorButton);
+    activeEditorPopupId = 'tool-settings';
     syncPopupBackdropState();
 }
 
@@ -4767,9 +4817,13 @@ function setOnionEnabled(nextEnabled) {
     if (!onionEnabled) {
         stopOnionPanelDrag();
         clearOnionCanvases();
+        if (activeEditorPopupId === 'onion') {
+            activeEditorPopupId = null;
+        }
     } else {
         // Keep panel placement in sync because canvases may be hidden or shown.
         syncOverlayPlacement();
+        activeEditorPopupId = 'onion';
     }
     if (onionEnabled && onionPanel) {
         // Hide visually but keep the element in layout so measurements remain valid.
@@ -5068,6 +5122,13 @@ function bindOnionSkinEvents() {
     if (onionCloseButton) {
         onionCloseButton.addEventListener('click', () => {
             setOnionEnabled(false);
+        });
+    }
+
+    if (onionPanel) {
+        onionPanel.addEventListener('mousedown', () => {
+            if (!isOnionPanelOpen() || isExportModalOpen()) return;
+            setActiveEditorPopup('onion');
         });
     }
 
@@ -7256,6 +7317,11 @@ function bindToolbarEvents() {
     }
 
     if (toolSettingsPopover) {
+        toolSettingsPopover.addEventListener('mousedown', () => {
+            if (!isToolSettingsPopoverOpen() || isExportModalOpen()) return;
+            setActiveEditorPopup('tool-settings');
+        });
+
         toolSettingsPopover.addEventListener('click', (event) => {
             if (isEditingLocked()) return;
             const modeButton = event.target.closest('[data-select-mode]');
@@ -8096,16 +8162,13 @@ function bindExportEvents() {
         editorPopupBackdrop.addEventListener('click', (event) => {
             event.preventDefault();
             event.stopPropagation();
-            if (isToolSettingsPopoverOpen()) {
+            const activePopup = getResolvedActiveEditorPopupId();
+            if (activePopup === 'tool-settings') {
                 closeToolSettingsPopover();
                 return;
             }
-            if (isOnionPanelOpen()) {
+            if (activePopup === 'onion') {
                 setOnionEnabled(false);
-                return;
-            }
-            if (isExportModalOpen()) {
-                closeExportModal();
             }
         });
     }
