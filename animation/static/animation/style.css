@@ -1190,7 +1190,7 @@ body.modal-open {
 .editor-main {
     margin-top: 0;
     display: grid;
-    grid-template-columns: 96px minmax(0, 1fr) 320px;
+    grid-template-columns: 96px minmax(0, 1fr) var(--editor-sidebar-width, 320px);
     align-items: stretch;
     gap: 18px;
     flex: 1 1 auto;
@@ -1458,14 +1458,26 @@ body.modal-open {
 }
 
 .editor-sidebar {
-    display: grid;
-    grid-template-rows: auto minmax(0, 1fr) minmax(220px, 0.9fr);
+    display: flex;
+    flex-direction: column;
     gap: 16px;
-    width: 320px;
-    min-width: 320px;
-    max-width: 320px;
+    flex: 0 0 var(--editor-sidebar-width, 320px);
+    width: var(--editor-sidebar-width, 320px);
+    min-width: var(--editor-sidebar-width, 320px);
+    max-width: var(--editor-sidebar-width, 320px);
     min-height: 0;
-    justify-self: stretch;
+    align-self: stretch;
+    box-sizing: border-box;
+}
+
+.editor-sidebar__panels {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    flex: 1 1 auto;
+    width: 100%;
+    min-width: 0;
+    min-height: 0;
     align-self: stretch;
     box-sizing: border-box;
 }
@@ -1485,6 +1497,7 @@ body.modal-open {
     gap: 14px;
     width: 100%;
     min-width: 0;
+    flex: 0 0 auto;
     align-self: stretch;
     box-sizing: border-box;
 }
@@ -1503,6 +1516,7 @@ body.modal-open {
     overflow: hidden;
     min-height: 0;
     min-width: 0;
+    flex: 1 1 0;
     align-self: stretch;
     box-sizing: border-box;
 }
@@ -1520,6 +1534,7 @@ body.modal-open {
     overflow: hidden;
     min-height: 0;
     min-width: 0;
+    flex: 1 1 0;
     align-self: stretch;
     box-sizing: border-box;
     --layer-preview-size: 36px;
@@ -2322,11 +2337,16 @@ body.modal-open {
 
     .editor-sidebar {
         grid-column: 1 / -1;
-        grid-template-columns: repeat(3, minmax(0, 1fr));
-        grid-template-rows: none;
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
+        align-items: start;
         width: 100%;
         min-width: 0;
         max-width: none;
+    }
+
+    .editor-sidebar__panels {
+        width: 100%;
     }
 
     .canvas-stage {
@@ -2353,6 +2373,10 @@ body.modal-open {
         min-width: 0;
         max-width: none;
     }
+
+    .editor-sidebar__panels {
+        width: 100%;
+    }
 }
 
 @media (max-width: 860px) {
@@ -2365,6 +2389,8 @@ body.modal-open {
     }
 
     .editor-sidebar {
+        display: flex;
+        flex-direction: column;
         width: 100%;
         min-width: 0;
         max-width: none;

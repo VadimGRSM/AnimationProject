@@ -407,40 +407,42 @@
                 </div>
             </section>
 
-            <aside class="layers-panel" aria-label="Layers">
-                <div class="layers-panel__header" aria-hidden="true"></div>
-                <div class="editor-section-heading editor-section-heading--with-actions">
-                    <div>
-                        <p class="editor-section-heading__eyebrow">Stack</p>
-                        <h3 class="layers-panel__title">Layers</h3>
+            <div class="editor-sidebar__panels">
+                <aside class="history-panel"
+                       aria-label="Action history">
+                    <div class="history-panel__header" aria-hidden="true"></div>
+                    <div class="editor-section-heading">
+                        <div>
+                            <p class="editor-section-heading__eyebrow">Undo stack</p>
+                            <h3 class="history-panel__title">History</h3>
+                        </div>
                     </div>
-                    <button type="button"
-                            class="tool-button tool-button--small layers-panel__add"
-                            id="add-layer-button"
-                            {% if not can_edit %}hidden{% endif %}
-                            aria-label="Add layer"
-                            title="Add layer">
-                        <img class="tool-icon tool-icon--small"
-                             src="{% static 'animation/icons/plus.svg' %}"
-                             alt="">
-                    </button>
-                </div>
-                <ul class="layers-list" id="layers-list"></ul>
-                <p class="layers-empty" id="layers-empty" hidden>No layers found</p>
-            </aside>
+                    <ul class="history-list" id="history-list"></ul>
+                    <p class="history-empty" id="history-empty" hidden>No actions yet</p>
+                </aside>
 
-            <aside class="history-panel"
-                   aria-label="Action history">
-                <div class="history-panel__header" aria-hidden="true"></div>
-                <div class="editor-section-heading">
-                    <div>
-                        <p class="editor-section-heading__eyebrow">Undo stack</p>
-                        <h3 class="history-panel__title">History</h3>
+                <aside class="layers-panel" aria-label="Layers">
+                    <div class="layers-panel__header" aria-hidden="true"></div>
+                    <div class="editor-section-heading editor-section-heading--with-actions">
+                        <div>
+                            <p class="editor-section-heading__eyebrow">Stack</p>
+                            <h3 class="layers-panel__title">Layers</h3>
+                        </div>
+                        <button type="button"
+                                class="tool-button tool-button--small layers-panel__add"
+                                id="add-layer-button"
+                                {% if not can_edit %}hidden{% endif %}
+                                aria-label="Add layer"
+                                title="Add layer">
+                            <img class="tool-icon tool-icon--small"
+                                 src="{% static 'animation/icons/plus.svg' %}"
+                                 alt="">
+                        </button>
                     </div>
-                </div>
-                <ul class="history-list" id="history-list"></ul>
-                <p class="history-empty" id="history-empty" hidden>No actions yet</p>
-            </aside>
+                    <ul class="layers-list" id="layers-list"></ul>
+                    <p class="layers-empty" id="layers-empty" hidden>No layers found</p>
+                </aside>
+            </div>
         </aside>
     </div>
 
