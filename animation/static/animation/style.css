@@ -899,6 +899,13 @@ body.modal-open {
     z-index: auto;
 }
 
+.editor-toolbar-panel.editor-ui--global-modal-suppressed {
+    visibility: hidden;
+    opacity: 0;
+    pointer-events: none;
+    box-shadow: none;
+}
+
 .editor-toolbar-panel__header {
     display: flex;
     align-items: center;
@@ -963,10 +970,9 @@ body.modal-open {
     z-index: 2250;
 }
 
-.tool-settings-popover.editor-popup--suppressed {
-    z-index: 1850;
-    opacity: 0.08;
-    filter: grayscale(1) brightness(0.72);
+.tool-settings-popover.editor-ui--global-modal-suppressed {
+    visibility: hidden;
+    opacity: 0;
     pointer-events: none;
     box-shadow: none;
 }
@@ -1690,10 +1696,9 @@ body.modal-open {
     z-index: 2250;
 }
 
-.onion-panel.editor-popup--suppressed {
-    z-index: 1850;
-    opacity: 0.08;
-    filter: grayscale(1) brightness(0.72);
+.onion-panel.editor-ui--global-modal-suppressed {
+    visibility: hidden;
+    opacity: 0;
     pointer-events: none;
     box-shadow: none;
 }

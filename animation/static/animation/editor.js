@@ -527,13 +527,19 @@ function setActiveEditorPopup(popupId) {
     syncPopupBackdropState();
 }
 
-function applyEditorPopupVisualState(popupEl, isActive, isSuppressed) {
+function applyEditorPopupVisualState(popupEl, isActive) {
     if (!popupEl) return;
     popupEl.classList.toggle('editor-popup--active', Boolean(isActive));
-    popupEl.classList.toggle('editor-popup--suppressed', Boolean(isSuppressed));
-    popupEl.setAttribute('aria-hidden', isSuppressed ? 'true' : 'false');
-    if ('inert' in popupEl) {
-        popupEl.inert = Boolean(isSuppressed);
+}
+
+function applyGlobalModalSuppressionState(element, isSuppressed) {
+    if (!element) return;
+    const suppressed = Boolean(isSuppressed);
+    element.classList.toggle('editor-ui--global-modal-suppressed', suppressed);
+    const ariaHidden = suppressed || Boolean(element.hidden);
+    element.setAttribute('aria-hidden', ariaHidden ? 'true' : 'false');
+    if ('inert' in element) {
+        element.inert = suppressed;
     }
 }
 
@@ -554,20 +560,21 @@ function syncPopupBackdropState() {
     document.body.classList.toggle('modal-open', exportOpen || hasEditorPopup);
 
     const activeEditorPopup = exportOpen ? null : resolvedActivePopup;
+    const suppressToolSettingsForGlobalModal = exportOpen && isToolSettingsPopoverOpen();
+    const suppressOnionForGlobalModal = exportOpen && isOnionPanelOpen();
+    const suppressToolbarForGlobalModal = suppressToolSettingsForGlobalModal;
 
     if (toolbarPanel) {
-        toolbarPanel.classList.toggle('editor-toolbar-panel--popup-active', activeEditorPopup === 'tool-settings');
+        toolbarPanel.classList.toggle(
+            'editor-toolbar-panel--popup-active',
+            activeEditorPopup === 'tool-settings' && !suppressToolbarForGlobalModal,
+        );
     }
-    applyEditorPopupVisualState(
-        toolSettingsPopover,
-        activeEditorPopup === 'tool-settings',
-        exportOpen && isToolSettingsPopoverOpen(),
-    );
-    applyEditorPopupVisualState(
-        onionPanel,
-        activeEditorPopup === 'onion',
-        exportOpen && isOnionPanelOpen(),
-    );
+    applyEditorPopupVisualState(toolSettingsPopover, activeEditorPopup === 'tool-settings');
+    applyEditorPopupVisualState(onionPanel, activeEditorPopup === 'onion');
+    applyGlobalModalSuppressionState(toolbarPanel, suppressToolbarForGlobalModal);
+    applyGlobalModalSuppressionState(toolSettingsPopover, suppressToolSettingsForGlobalModal);
+    applyGlobalModalSuppressionState(onionPanel, suppressOnionForGlobalModal);
 }
 
 function closeToolSettingsPopover() {
