@@ -574,13 +574,24 @@ body.modal-open {
     overflow: hidden;
 }
 
+.editor-popup-backdrop {
+    position: fixed;
+    inset: 0;
+    background-color: rgba(17, 24, 39, 0.55);
+    z-index: 1900;
+}
+
+.editor-popup-backdrop[hidden] {
+    display: none;
+}
+
 .modal {
     position: fixed;
     inset: 0;
     display: flex;
     align-items: center;
     justify-content: center;
-    z-index: 1000;
+    z-index: 2300;
 }
 
 .modal[hidden] {
@@ -588,9 +599,7 @@ body.modal-open {
 }
 
 .modal__overlay {
-    position: absolute;
-    inset: 0;
-    background-color: rgba(17, 24, 39, 0.55);
+    display: none;
 }
 
 .modal__content {
@@ -882,6 +891,10 @@ body.modal-open {
     z-index: 1140;
     line-height: normal;
     overflow: visible;
+}
+
+.editor-toolbar-panel.editor-toolbar-panel--popup-active {
+    z-index: 2250;
 }
 
 .editor-toolbar-panel__header {

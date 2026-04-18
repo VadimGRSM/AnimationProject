@@ -78,6 +78,7 @@ const exportModal = document.getElementById('export-modal');
 const exportModalCloseButton = document.getElementById('export-modal-close');
 const exportCancelButton = document.getElementById('export-cancel-button');
 const exportConfirmButton = document.getElementById('export-confirm-button');
+const editorPopupBackdrop = document.getElementById('editor-popup-backdrop');
 const exportResolutionSelect = document.getElementById('export-resolution');
 const exportFpsField = document.getElementById('export-fps-field');
 const exportFpsInput = document.getElementById('export-fps');
@@ -490,10 +491,30 @@ function applyToolSettingsVisibility(toolName) {
         || config.showSensitivity;
 }
 
+function isToolSettingsPopoverOpen() {
+    return Boolean(toolSettingsPopover && !toolSettingsPopover.hidden);
+}
+
+function isOnionPanelOpen() {
+    return Boolean(onionPanel && !onionPanel.hidden);
+}
+
+function syncPopupBackdropState() {
+    const hasPopup = isExportModalOpen() || isOnionPanelOpen() || isToolSettingsPopoverOpen();
+    if (editorPopupBackdrop) {
+        editorPopupBackdrop.hidden = !hasPopup;
+    }
+    document.body.classList.toggle('modal-open', hasPopup);
+    if (toolbarPanel) {
+        toolbarPanel.classList.toggle('editor-toolbar-panel--popup-active', isToolSettingsPopoverOpen());
+    }
+}
+
 function closeToolSettingsPopover() {
     if (!toolSettingsPopover) return;
     toolSettingsPopover.hidden = true;
     toolSettingsAnchorButton = null;
+    syncPopupBackdropState();
 }
 
 function positionToolSettingsPopover(anchorButton) {
@@ -536,6 +557,7 @@ function openToolSettingsPopover(anchorButton, options = {}) {
     toolSettingsPopover.hidden = false;
     toolSettingsAnchorButton = anchorButton;
     positionToolSettingsPopover(anchorButton);
+    syncPopupBackdropState();
 }
 
 function setTool(toolName) {
@@ -3763,6 +3785,14 @@ function clearSelection() {
     updateSelectionAnimationState();
 }
 
+function resolveActiveSelectionForNewGesture() {
+    if (!selection && !selectionDraft && !hasFloatingSelection()) {
+        return false;
+    }
+    clearSelection();
+    return true;
+}
+
 function buildSelectionMaskCanvas(mask, width, height) {
     const maskCanvas = document.createElement('canvas');
     maskCanvas.width = width;
@@ -4746,6 +4776,7 @@ function setOnionEnabled(nextEnabled) {
         onionPanel.style.visibility = 'hidden';
     }
     syncOnionUI();
+    syncPopupBackdropState();
     storeOnionSkinSettings();
     if (onionEnabled) {
         positionOnionPanelOnOpen();
@@ -6577,6 +6608,12 @@ function handlePointerDown(event) {
     if (activeTool === TOOL_SELECT) {
         if (isRightButton) return;
         logCoordDebug('select-down', event);
+        if (selection && tryStartSelectionTransformAt(x, y, event)) {
+            return;
+        }
+        if (selection || hasFloatingSelection()) {
+            resolveActiveSelectionForNewGesture();
+        }
         if (selectionMode === SELECT_MAGIC) {
             createMagicWandSelection(x, y);
             return;
@@ -7895,7 +7932,7 @@ function openExportModal() {
     if (!exportModal) return;
     resetExportModalUi();
     exportModal.hidden = false;
-    document.body.classList.add('modal-open');
+    syncPopupBackdropState();
     if (getSelectedExportFormat() === 'gif' && exportFpsInput) {
         exportFpsInput.focus();
         exportFpsInput.select();
@@ -7908,7 +7945,7 @@ function closeExportModal() {
     if (!exportModal) return;
     if (isExporting) return;
     exportModal.hidden = true;
-    document.body.classList.remove('modal-open');
+    syncPopupBackdropState();
 }
 
 function triggerDownload(url) {
@@ -8051,9 +8088,31 @@ function bindExportEvents() {
         openExportModal();
     });
 
+    if (editorPopupBackdrop) {
+        editorPopupBackdrop.addEventListener('mousedown', (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+        });
+        editorPopupBackdrop.addEventListener('click', (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            if (isToolSettingsPopoverOpen()) {
+                closeToolSettingsPopover();
+                return;
+            }
+            if (isOnionPanelOpen()) {
+                setOnionEnabled(false);
+                return;
+            }
+            if (isExportModalOpen()) {
+                closeExportModal();
+            }
+        });
+    }
+
     exportModal.addEventListener('click', (event) => {
         const closeTarget = event.target && event.target.closest('[data-export-action="close"]');
-        if (closeTarget) {
+        if (closeTarget || event.target === exportModal) {
             closeExportModal();
         }
     });
