@@ -1,0 +1,46 @@
+services:
+  web:
+    build:
+      context: .
+    command: daphne -b 0.0.0.0 -p 8000 animstudio.asgi:application
+    restart: unless-stopped
+    volumes:
+      - .:/app
+    ports:
+      - "8000:8000"
+    environment:
+      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:-dev-only-key}
+      DJANGO_DEBUG: ${DJANGO_DEBUG:-True}
+      DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:-localhost,127.0.0.1}
+      DJANGO_CSRF_TRUSTED_ORIGINS: ${DJANGO_CSRF_TRUSTED_ORIGINS:-http://localhost:8000}
+      POSTGRES_DB: ${POSTGRES_DB:-animstudio}
+      POSTGRES_USER: ${POSTGRES_USER:-animstudio}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-animstudio}
+      POSTGRES_HOST: ${POSTGRES_HOST:-db}
+      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+      REDIS_HOST: ${REDIS_HOST:-redis}
+      REDIS_PORT: ${REDIS_PORT:-6379}
+    depends_on:
+      - db
+      - redis
+
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-animstudio}
+      POSTGRES_USER: ${POSTGRES_USER:-animstudio}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-animstudio}
+    ports:
+      - "5432:5432"
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+
+volumes:
+  postgres_data:

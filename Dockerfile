@@ -17,4 +17,4 @@ COPY . /app/
 
 RUN mkdir -p /app/staticfiles /app/media
 
-CMD ["gunicorn", "animstudio.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "3", "--timeout", "120"]
+CMD ["daphne", "-b", "0.0.0.0", "-p", "8000", "animstudio.asgi:application"]
