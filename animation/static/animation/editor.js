@@ -1338,9 +1338,6 @@ function isOnionPanelOpen() {
 
 function getOpenEditorPopupIds() {
     const openIds = [];
-    if (isOnionPanelOpen()) {
-        openIds.push('onion');
-    }
     if (isToolSettingsPopoverOpen()) {
         openIds.push('tool-settings');
     }
@@ -1407,7 +1404,7 @@ function syncPopupBackdropState() {
         );
     }
     applyEditorPopupVisualState(toolSettingsPopover, activeEditorPopup === 'tool-settings');
-    applyEditorPopupVisualState(onionPanel, activeEditorPopup === 'onion');
+    applyEditorPopupVisualState(onionPanel, false);
     applyGlobalModalSuppressionState(toolbarPanel, suppressToolbarForGlobalModal);
     applyGlobalModalSuppressionState(toolSettingsPopover, suppressToolSettingsForGlobalModal);
     applyGlobalModalSuppressionState(onionPanel, suppressOnionForGlobalModal);
@@ -5696,13 +5693,9 @@ function setOnionEnabled(nextEnabled) {
     if (!onionEnabled) {
         stopOnionPanelDrag();
         clearOnionCanvases();
-        if (activeEditorPopupId === 'onion') {
-            activeEditorPopupId = null;
-        }
     } else {
         // Keep panel placement in sync because canvases may be hidden or shown.
         syncOverlayPlacement();
-        activeEditorPopupId = 'onion';
     }
     if (onionEnabled && onionPanel) {
         // Hide visually but keep the element in layout so measurements remain valid.
@@ -6007,7 +6000,7 @@ function bindOnionSkinEvents() {
     if (onionPanel) {
         onionPanel.addEventListener('mousedown', () => {
             if (!isOnionPanelOpen() || isExportModalOpen()) return;
-            setActiveEditorPopup('onion');
+            syncPopupBackdropState();
         });
     }
 
