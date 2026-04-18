@@ -1,15 +1,328 @@
-from channels.generic.websocket import AsyncWebsocketConsumer
+from channels.db import database_sync_to_async
+from channels.generic.websocket import AsyncJsonWebsocketConsumer
+
+from .access import get_project_connection_context
+from .locks import (
+    acquire_frame_lock,
+    get_project_frame_lock_snapshot,
+    heartbeat_frame_lock,
+    release_frame_locks,
+)
+from .presence import (
+    activate_project_presence_session,
+    deactivate_project_presence_session,
+    set_project_presence_frame,
+    touch_project_presence_session,
+)
 
 
-class ProjectConsumer(AsyncWebsocketConsumer):
+class ProjectConsumer(AsyncJsonWebsocketConsumer):
+    BAD_REQUEST_CLOSE_CODE = 4400
+    UNAUTHORIZED_CLOSE_CODE = 4401
+    FORBIDDEN_CLOSE_CODE = 4403
+    NOT_FOUND_CLOSE_CODE = 4404
+
     async def connect(self):
-        self.project_id = self.scope["url_route"]["kwargs"]["project_id"]
-        self.project_group_name = f"project_{self.project_id}"
+        raw_project_id = self.scope["url_route"]["kwargs"].get("project_id")
+        try:
+            project_id = int(raw_project_id)
+        except (TypeError, ValueError):
+            await self.close(code=self.BAD_REQUEST_CLOSE_CODE)
+            return
+
+        user = self.scope.get("user")
+        if not user or not getattr(user, "is_authenticated", False):
+            await self.close(code=self.UNAUTHORIZED_CLOSE_CODE)
+            return
+
+        connection_context = await self.get_connection_context(project_id, user.id)
+        if not connection_context["project_exists"]:
+            await self.close(code=self.NOT_FOUND_CLOSE_CODE)
+            return
+        if connection_context["role"] is None:
+            await self.close(code=self.FORBIDDEN_CLOSE_CODE)
+            return
+
+        self.project_id = connection_context["project_id"]
+        self.project_group_name = self.build_project_group_name(self.project_id)
+        self.user_id = connection_context["user_id"]
+        self.role = connection_context["role"]
+        presence_state = await self.activate_presence_session()
+        self.presence_session_id = presence_state["presence_session_id"]
+        lock_state = await self.get_frame_lock_snapshot()
 
         await self.channel_layer.group_add(self.project_group_name, self.channel_name)
         await self.accept()
+        await self.send_event(
+            "connection_ready",
+            {
+                "project_id": self.project_id,
+                "user_id": self.user_id,
+                "role": self.role,
+                "presence_session_id": self.presence_session_id,
+            },
+        )
+        await self.send_event(
+            "presence_snapshot",
+            {
+                "project_id": self.project_id,
+                "users": presence_state["snapshot"],
+            },
+        )
+        await self.send_event(
+            "frame_lock_snapshot",
+            {
+                "project_id": self.project_id,
+                "locks": lock_state["locks"],
+            },
+        )
+        await self.broadcast_released_locks(lock_state["stale_releases"])
+        if presence_state["joined_user"] is not None:
+            await self.channel_layer.group_send(
+                self.project_group_name,
+                {
+                    "type": "presence.user_joined",
+                    "project_id": self.project_id,
+                    "sender_channel_name": self.channel_name,
+                    "user": presence_state["joined_user"],
+                },
+            )
 
     async def disconnect(self, close_code):
         project_group_name = getattr(self, "project_group_name", None)
+        project_id = getattr(self, "project_id", None)
+        user_id = getattr(self, "user_id", None)
+        presence_session_id = getattr(self, "presence_session_id", None)
+        leave_state = None
+        released_locks = []
+        if project_id and user_id and presence_session_id:
+            released_locks = await self.release_all_locks()
+        if project_id and user_id:
+            leave_state = await self.deactivate_presence_session()
         if project_group_name:
             await self.channel_layer.group_discard(project_group_name, self.channel_name)
+        await self.broadcast_released_locks(released_locks)
+        if project_group_name and leave_state and leave_state["left_user_id"] is not None:
+            await self.channel_layer.group_send(
+                project_group_name,
+                {
+                    "type": "presence.user_left",
+                    "project_id": project_id,
+                    "sender_channel_name": self.channel_name,
+                    "user_id": leave_state["left_user_id"],
+                },
+            )
+
+    async def receive_json(self, content, **kwargs):
+        message_type = content.get("type")
+        payload = content.get("payload") or {}
+
+        if message_type == "ping":
+            await self.touch_presence_session()
+            await self.send_event(
+                "pong",
+                {
+                    "project_id": self.project_id,
+                    "payload": payload,
+                },
+            )
+            return
+
+        if message_type == "presence_set_frame":
+            frame_id = payload.get("frame_id")
+            frame_state = await self.update_presence_frame(frame_id)
+            if frame_state["changed"] and frame_state["user"] is not None:
+                await self.channel_layer.group_send(
+                    self.project_group_name,
+                    {
+                        "type": "presence.frame_changed",
+                        "project_id": self.project_id,
+                        "user": frame_state["user"],
+                    },
+                )
+            return
+
+        if message_type == "frame_lock_acquire":
+            frame_id = payload.get("frame_id")
+            lock_state = await self.acquire_frame_lock(frame_id)
+            await self.broadcast_released_locks(lock_state["released"])
+            if lock_state["status"] == "acquired" and lock_state["lock"] is not None:
+                await self.channel_layer.group_send(
+                    self.project_group_name,
+                    {
+                        "type": "frame.lock_acquired",
+                        "project_id": self.project_id,
+                        "lock": lock_state["lock"],
+                    },
+                )
+            else:
+                await self.send_event(
+                    "frame_lock_denied",
+                    {
+                        "project_id": self.project_id,
+                        "frame_id": frame_id,
+                        "reason": lock_state["reason"],
+                        "lock": lock_state["lock"],
+                    },
+                )
+            return
+
+        if message_type == "frame_lock_release":
+            released_locks = await self.release_requested_locks(payload.get("frame_id"))
+            await self.broadcast_released_locks(released_locks)
+            return
+
+        if message_type == "frame_lock_heartbeat":
+            heartbeat_state = await self.heartbeat_frame_lock(payload.get("frame_id"))
+            await self.broadcast_released_locks(heartbeat_state["released"])
+
+    async def send_event(self, event_type, payload):
+        await self.send_json(
+            {
+                "type": event_type,
+                "payload": payload,
+            }
+        )
+
+    @staticmethod
+    def build_project_group_name(project_id):
+        return f"project_{project_id}"
+
+    @database_sync_to_async
+    def get_connection_context(self, project_id, user_id):
+        return get_project_connection_context(project_id, user_id)
+
+    @database_sync_to_async
+    def activate_presence_session(self):
+        return activate_project_presence_session(
+            project_id=self.project_id,
+            user_id=self.user_id,
+            channel_name=self.channel_name,
+            role=self.role,
+        )
+
+    @database_sync_to_async
+    def deactivate_presence_session(self):
+        return deactivate_project_presence_session(
+            project_id=self.project_id,
+            user_id=self.user_id,
+            channel_name=self.channel_name,
+        )
+
+    @database_sync_to_async
+    def touch_presence_session(self):
+        return touch_project_presence_session(
+            project_id=self.project_id,
+            user_id=self.user_id,
+            channel_name=self.channel_name,
+        )
+
+    @database_sync_to_async
+    def update_presence_frame(self, frame_id):
+        return set_project_presence_frame(
+            project_id=self.project_id,
+            user_id=self.user_id,
+            channel_name=self.channel_name,
+            frame_id=frame_id,
+        )
+
+    @database_sync_to_async
+    def get_frame_lock_snapshot(self):
+        return get_project_frame_lock_snapshot(project_id=self.project_id)
+
+    @database_sync_to_async
+    def acquire_frame_lock(self, frame_id):
+        return acquire_frame_lock(
+            project_id=self.project_id,
+            frame_id=frame_id,
+            user_id=self.user_id,
+            role=self.role,
+            presence_session_id=self.presence_session_id,
+        )
+
+    @database_sync_to_async
+    def release_requested_locks(self, frame_id):
+        return release_frame_locks(
+            project_id=self.project_id,
+            user_id=self.user_id,
+            presence_session_id=self.presence_session_id,
+            frame_id=frame_id,
+        )
+
+    @database_sync_to_async
+    def release_all_locks(self):
+        return release_frame_locks(
+            project_id=self.project_id,
+            user_id=self.user_id,
+            presence_session_id=self.presence_session_id,
+            frame_id=None,
+        )
+
+    @database_sync_to_async
+    def heartbeat_frame_lock(self, frame_id):
+        return heartbeat_frame_lock(
+            project_id=self.project_id,
+            frame_id=frame_id,
+            user_id=self.user_id,
+            presence_session_id=self.presence_session_id,
+        )
+
+    async def broadcast_released_locks(self, released_locks):
+        for lock in released_locks or []:
+            await self.channel_layer.group_send(
+                self.project_group_name,
+                {
+                    "type": "frame.lock_released",
+                    "project_id": self.project_id,
+                    "lock": lock,
+                },
+            )
+
+    async def presence_user_joined(self, event):
+        if event.get("sender_channel_name") == self.channel_name:
+            return
+        await self.send_event(
+            "presence_user_joined",
+            {
+                "project_id": event["project_id"],
+                "user": event["user"],
+            },
+        )
+
+    async def frame_lock_acquired(self, event):
+        await self.send_event(
+            "frame_lock_acquired",
+            {
+                "project_id": event["project_id"],
+                "lock": event["lock"],
+            },
+        )
+
+    async def frame_lock_released(self, event):
+        await self.send_event(
+            "frame_lock_released",
+            {
+                "project_id": event["project_id"],
+                "lock": event["lock"],
+            },
+        )
+
+    async def presence_user_left(self, event):
+        if event.get("sender_channel_name") == self.channel_name:
+            return
+        await self.send_event(
+            "presence_user_left",
+            {
+                "project_id": event["project_id"],
+                "user_id": event["user_id"],
+            },
+        )
+
+    async def presence_frame_changed(self, event):
+        await self.send_event(
+            "presence_frame_changed",
+            {
+                "project_id": event["project_id"],
+                "user": event["user"],
+            },
+        )

@@ -53,6 +53,20 @@
             Export
         </button>
     </div>
+    <div class="project-presence" id="project-presence" aria-live="polite">
+        <div class="project-presence__header">
+            <span class="project-presence__title">Online</span>
+            <span class="project-presence__count" id="project-presence-count">0</span>
+        </div>
+        <ul class="project-presence__list" id="project-presence-list"></ul>
+        <p class="project-presence__empty" id="project-presence-empty">Connecting realtime presence...</p>
+    </div>
+    <div class="frame-lock-status frame-lock-status--pending"
+         id="frame-lock-status"
+         aria-live="polite">
+        <span class="frame-lock-status__title">Frame lock</span>
+        <span class="frame-lock-status__text" id="frame-lock-status-text">Connecting collaborative lock...</span>
+    </div>
 </div>
 {% endblock %}
 

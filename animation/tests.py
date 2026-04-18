@@ -4,13 +4,18 @@ import json
 import tempfile
 import zipfile
 
+from asgiref.sync import async_to_sync
+from channels.db import database_sync_to_async
+from channels.testing import WebsocketCommunicator
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.files.base import ContentFile
 from django.http import Http404
-from django.test import Client, TestCase, override_settings
+from django.test import Client, TestCase, TransactionTestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 
+from animstudio.asgi import application
 from .access import (
     can_edit_project,
     can_manage_project,
@@ -18,11 +23,14 @@ from .access import (
     get_accessible_project_or_404,
     get_editable_project_or_404,
     get_manageable_project_or_404,
+    get_project_connection_context,
     get_project_membership,
+    get_project_membership_for_user,
     get_project_role,
+    user_can_access_project,
 )
 from .services.invite_service import PENDING_PROJECT_INVITE_SESSION_KEY
-from .models import AnimationProject, Frame, ProjectInvite, ProjectMember
+from .models import AnimationProject, Frame, FrameLock, ProjectInvite, ProjectMember, ProjectPresenceSession
 
 User = get_user_model()
 
@@ -234,6 +242,16 @@ class ProjectAccessTests(TestCase):
         self.assertEqual(get_project_role(self.viewer, self.project), ProjectMember.Role.VIEWER)
         self.assertIsNone(get_project_role(self.outsider, self.project))
 
+        viewer_ws_membership = get_project_membership_for_user(self.project.pk, self.viewer.pk)
+        self.assertIsNotNone(viewer_ws_membership)
+        self.assertEqual(viewer_ws_membership.role, ProjectMember.Role.VIEWER)
+        self.assertTrue(user_can_access_project(self.project.pk, self.viewer.pk))
+        self.assertFalse(user_can_access_project(self.project.pk, self.outsider.pk))
+        self.assertEqual(
+            get_project_connection_context(self.project.pk, self.editor.pk)["role"],
+            ProjectMember.Role.EDITOR,
+        )
+
         self.assertTrue(can_view_project(self.viewer, self.project))
         self.assertFalse(can_edit_project(self.viewer, self.project))
         self.assertFalse(can_manage_project(self.viewer, self.project))
@@ -392,6 +410,556 @@ class ProjectAccessTests(TestCase):
         )
         self.assertEqual(remove_response.status_code, 302)
         self.assertFalse(ProjectMember.objects.filter(pk=editor_membership.pk).exists())
+
+
+TEST_CHANNEL_LAYERS = {
+    "default": {
+        "BACKEND": "channels.layers.InMemoryChannelLayer",
+    }
+}
+
+
+@override_settings(CHANNEL_LAYERS=TEST_CHANNEL_LAYERS)
+class ProjectWebsocketRoomTests(TransactionTestCase):
+    def setUp(self):
+        self.owner = User.objects.create_user(email='owner-ws@example.com', password='test')
+        self.editor = User.objects.create_user(email='editor-ws@example.com', password='test')
+        self.viewer = User.objects.create_user(email='viewer-ws@example.com', password='test')
+        self.outsider = User.objects.create_user(email='outsider-ws@example.com', password='test')
+
+        self.project = AnimationProject.objects.create(
+            owner=self.owner,
+            title='Realtime room',
+            width=1280,
+            height=720,
+            fps=12,
+        )
+        self.frame_one = Frame.objects.create(project=self.project, index=1, content_json='{}')
+        self.frame_two = Frame.objects.create(project=self.project, index=2, content_json='{}')
+        ProjectMember.objects.create(
+            project=self.project,
+            user=self.editor,
+            role=ProjectMember.Role.EDITOR,
+            invited_by=self.owner,
+        )
+        ProjectMember.objects.create(
+            project=self.project,
+            user=self.viewer,
+            role=ProjectMember.Role.VIEWER,
+            invited_by=self.owner,
+        )
+        self.auth_headers = {
+            self.owner.pk: self._build_auth_headers(self.owner),
+            self.editor.pk: self._build_auth_headers(self.editor),
+            self.viewer.pk: self._build_auth_headers(self.viewer),
+            self.outsider.pk: self._build_auth_headers(self.outsider),
+        }
+
+    def _build_auth_headers(self, user):
+        client = Client()
+        client.force_login(user)
+        session_cookie = client.cookies[settings.SESSION_COOKIE_NAME].value
+        return [(b'cookie', f'{settings.SESSION_COOKIE_NAME}={session_cookie}'.encode())]
+
+    async def _connect(self, user=None, project_id=None):
+        headers = self.auth_headers[user.pk] if user is not None else []
+        communicator = WebsocketCommunicator(
+            application,
+            f'/ws/projects/{project_id or self.project.pk}/',
+            headers=headers,
+        )
+        connected, detail = await communicator.connect()
+        return communicator, connected, detail
+
+    async def _assert_member_can_connect(self, user, expected_role, expected_user_count=1):
+        communicator, connected, _ = await self._connect(user=user)
+        self.assertTrue(connected)
+        ready_event = await communicator.receive_json_from()
+        self.assertEqual(ready_event['type'], 'connection_ready')
+        self.assertEqual(ready_event['payload']['project_id'], self.project.pk)
+        self.assertEqual(ready_event['payload']['user_id'], user.pk)
+        self.assertEqual(ready_event['payload']['role'], expected_role)
+        self.assertIsNotNone(ready_event['payload']['presence_session_id'])
+
+        snapshot_event = await communicator.receive_json_from()
+        self.assertEqual(snapshot_event['type'], 'presence_snapshot')
+        self.assertEqual(snapshot_event['payload']['project_id'], self.project.pk)
+        self.assertEqual(len(snapshot_event['payload']['users']), expected_user_count)
+
+        self_user = next(
+            (item for item in snapshot_event['payload']['users'] if item['user_id'] == user.pk),
+            None,
+        )
+        self.assertIsNotNone(self_user)
+        self.assertEqual(self_user['role'], expected_role)
+        self.assertEqual(self_user['current_frame_id'], self.frame_one.pk)
+        self.assertEqual(self_user['current_frame_index'], self.frame_one.index)
+
+        lock_snapshot_event = await communicator.receive_json_from()
+        self.assertEqual(
+            lock_snapshot_event,
+            {
+                'type': 'frame_lock_snapshot',
+                'payload': {
+                    'project_id': self.project.pk,
+                    'locks': [],
+                },
+            },
+        )
+        return communicator, {
+            'ready_event': ready_event,
+            'presence_snapshot': snapshot_event,
+            'lock_snapshot': lock_snapshot_event,
+            'presence_session_id': ready_event['payload']['presence_session_id'],
+        }
+
+    def _latest_presence_row(self, user_id):
+        return ProjectPresenceSession.objects.filter(
+            project_id=self.project.pk,
+            user_id=user_id,
+        ).order_by('-joined_at', '-id').first()
+
+    def _active_presence_count(self, user_id):
+        return ProjectPresenceSession.objects.filter(
+            project_id=self.project.pk,
+            user_id=user_id,
+            is_active=True,
+        ).count()
+
+    def _frame_lock_row(self, frame_id):
+        return FrameLock.objects.filter(
+            project_id=self.project.pk,
+            frame_id=frame_id,
+        ).select_related('frame', 'user', 'presence_session').first()
+
+    def test_anonymous_connection_is_rejected(self):
+        async def scenario():
+            communicator, connected, close_code = await self._connect()
+            self.assertFalse(connected)
+            self.assertEqual(close_code, 4401)
+
+        async_to_sync(scenario)()
+
+    def test_user_without_project_access_is_rejected(self):
+        async def scenario():
+            communicator, connected, close_code = await self._connect(user=self.outsider)
+            self.assertFalse(connected)
+            self.assertEqual(close_code, 4403)
+            self.assertEqual(
+                await database_sync_to_async(self._active_presence_count)(self.outsider.pk),
+                0,
+            )
+
+        async_to_sync(scenario)()
+
+    def test_connect_creates_presence_for_viewer(self):
+        async def scenario():
+            communicator, connection = await self._assert_member_can_connect(
+                self.viewer,
+                ProjectMember.Role.VIEWER,
+            )
+            self.assertEqual(connection['presence_snapshot']['payload']['users'][0]['user_id'], self.viewer.pk)
+
+            presence_row = await database_sync_to_async(self._latest_presence_row)(self.viewer.pk)
+            self.assertIsNotNone(presence_row)
+            self.assertTrue(presence_row.is_active)
+            self.assertEqual(presence_row.role, ProjectMember.Role.VIEWER)
+            self.assertEqual(presence_row.current_frame_id, self.frame_one.pk)
+
+            await communicator.disconnect()
+
+        async_to_sync(scenario)()
+
+    def test_editor_can_connect(self):
+        async def scenario():
+            communicator, _ = await self._assert_member_can_connect(
+                self.editor,
+                ProjectMember.Role.EDITOR,
+            )
+            await communicator.disconnect()
+
+        async_to_sync(scenario)()
+
+    def test_owner_can_connect(self):
+        async def scenario():
+            communicator, _ = await self._assert_member_can_connect(
+                self.owner,
+                ProjectMember.Role.OWNER,
+            )
+            await communicator.disconnect()
+
+        async_to_sync(scenario)()
+
+    def test_second_user_sees_join_event(self):
+        async def scenario():
+            owner_communicator, _ = await self._assert_member_can_connect(
+                self.owner,
+                ProjectMember.Role.OWNER,
+            )
+            viewer_communicator, viewer_connection = await self._assert_member_can_connect(
+                self.viewer,
+                ProjectMember.Role.VIEWER,
+                expected_user_count=2,
+            )
+
+            joined_event = await owner_communicator.receive_json_from()
+            self.assertEqual(
+                joined_event,
+                {
+                    'type': 'presence_user_joined',
+                    'payload': {
+                        'project_id': self.project.pk,
+                        'user': {
+                            'user_id': self.viewer.pk,
+                            'display_name': self.viewer.display_name,
+                            'email': self.viewer.email,
+                            'role': ProjectMember.Role.VIEWER,
+                            'current_frame_id': self.frame_one.pk,
+                            'current_frame_index': self.frame_one.index,
+                        },
+                    },
+                },
+            )
+            self.assertEqual(len(viewer_connection['presence_snapshot']['payload']['users']), 2)
+
+            await viewer_communicator.disconnect()
+            await owner_communicator.disconnect()
+
+        async_to_sync(scenario)()
+
+    def test_disconnect_deactivates_presence_and_emits_leave_event(self):
+        async def scenario():
+            owner_communicator, _ = await self._assert_member_can_connect(
+                self.owner,
+                ProjectMember.Role.OWNER,
+            )
+            viewer_communicator, _ = await self._assert_member_can_connect(
+                self.viewer,
+                ProjectMember.Role.VIEWER,
+                expected_user_count=2,
+            )
+            await owner_communicator.receive_json_from()
+
+            await viewer_communicator.disconnect()
+
+            left_event = await owner_communicator.receive_json_from()
+            self.assertEqual(
+                left_event,
+                {
+                    'type': 'presence_user_left',
+                    'payload': {
+                        'project_id': self.project.pk,
+                        'user_id': self.viewer.pk,
+                    },
+                },
+            )
+
+            presence_row = await database_sync_to_async(self._latest_presence_row)(self.viewer.pk)
+            self.assertIsNotNone(presence_row)
+            self.assertFalse(presence_row.is_active)
+            self.assertEqual(
+                await database_sync_to_async(self._active_presence_count)(self.viewer.pk),
+                0,
+            )
+
+            await owner_communicator.disconnect()
+
+        async_to_sync(scenario)()
+
+    def test_frame_change_updates_presence_and_broadcasts_event(self):
+        async def scenario():
+            owner_communicator, _ = await self._assert_member_can_connect(
+                self.owner,
+                ProjectMember.Role.OWNER,
+            )
+            viewer_communicator, _ = await self._assert_member_can_connect(
+                self.viewer,
+                ProjectMember.Role.VIEWER,
+                expected_user_count=2,
+            )
+            await owner_communicator.receive_json_from()
+
+            await viewer_communicator.send_json_to({
+                'type': 'presence_set_frame',
+                'payload': {
+                    'frame_id': self.frame_two.pk,
+                },
+            })
+
+            viewer_event = await viewer_communicator.receive_json_from()
+            owner_event = await owner_communicator.receive_json_from()
+            expected_event = {
+                'type': 'presence_frame_changed',
+                'payload': {
+                    'project_id': self.project.pk,
+                    'user': {
+                        'user_id': self.viewer.pk,
+                        'display_name': self.viewer.display_name,
+                        'email': self.viewer.email,
+                        'role': ProjectMember.Role.VIEWER,
+                        'current_frame_id': self.frame_two.pk,
+                        'current_frame_index': self.frame_two.index,
+                    },
+                },
+            }
+            self.assertEqual(viewer_event, expected_event)
+            self.assertEqual(owner_event, expected_event)
+
+            presence_row = await database_sync_to_async(self._latest_presence_row)(self.viewer.pk)
+            self.assertIsNotNone(presence_row)
+            self.assertEqual(presence_row.current_frame_id, self.frame_two.pk)
+
+            await viewer_communicator.disconnect()
+            await owner_communicator.disconnect()
+
+        async_to_sync(scenario)()
+
+    def test_editor_can_acquire_frame_lock(self):
+        async def scenario():
+            communicator, connection = await self._assert_member_can_connect(
+                self.editor,
+                ProjectMember.Role.EDITOR,
+            )
+            presence_session_id = connection['presence_session_id']
+
+            await communicator.send_json_to({
+                'type': 'frame_lock_acquire',
+                'payload': {
+                    'frame_id': self.frame_one.pk,
+                },
+            })
+
+            event = await communicator.receive_json_from()
+            self.assertEqual(event['type'], 'frame_lock_acquired')
+            self.assertEqual(event['payload']['project_id'], self.project.pk)
+            lock = event['payload']['lock']
+            self.assertEqual(lock['frame_id'], self.frame_one.pk)
+            self.assertEqual(lock['frame_index'], self.frame_one.index)
+            self.assertEqual(lock['user_id'], self.editor.pk)
+            self.assertEqual(lock['role'], ProjectMember.Role.EDITOR)
+            self.assertEqual(lock['presence_session_id'], presence_session_id)
+            self.assertTrue(lock['expires_at'])
+
+            lock_row = await database_sync_to_async(self._frame_lock_row)(self.frame_one.pk)
+            self.assertIsNotNone(lock_row)
+            self.assertEqual(lock_row.user_id, self.editor.pk)
+            self.assertEqual(lock_row.presence_session_id, presence_session_id)
+
+            await communicator.disconnect()
+
+        async_to_sync(scenario)()
+
+    def test_viewer_cannot_acquire_frame_lock(self):
+        async def scenario():
+            communicator, _ = await self._assert_member_can_connect(
+                self.viewer,
+                ProjectMember.Role.VIEWER,
+            )
+
+            await communicator.send_json_to({
+                'type': 'frame_lock_acquire',
+                'payload': {
+                    'frame_id': self.frame_one.pk,
+                },
+            })
+
+            event = await communicator.receive_json_from()
+            self.assertEqual(
+                event,
+                {
+                    'type': 'frame_lock_denied',
+                    'payload': {
+                        'project_id': self.project.pk,
+                        'frame_id': self.frame_one.pk,
+                        'reason': 'read_only_role',
+                        'lock': None,
+                    },
+                },
+            )
+            self.assertIsNone(await database_sync_to_async(self._frame_lock_row)(self.frame_one.pk))
+
+            await communicator.disconnect()
+
+        async_to_sync(scenario)()
+
+    def test_second_editor_denied_while_lock_active(self):
+        async def scenario():
+            owner_communicator, owner_connection = await self._assert_member_can_connect(
+                self.owner,
+                ProjectMember.Role.OWNER,
+            )
+            editor_communicator, _ = await self._assert_member_can_connect(
+                self.editor,
+                ProjectMember.Role.EDITOR,
+                expected_user_count=2,
+            )
+            await owner_communicator.receive_json_from()
+
+            await owner_communicator.send_json_to({
+                'type': 'frame_lock_acquire',
+                'payload': {
+                    'frame_id': self.frame_one.pk,
+                },
+            })
+
+            owner_acquired = await owner_communicator.receive_json_from()
+            editor_seen = await editor_communicator.receive_json_from()
+            self.assertEqual(owner_acquired['type'], 'frame_lock_acquired')
+            self.assertEqual(editor_seen['type'], 'frame_lock_acquired')
+            self.assertEqual(owner_acquired['payload']['lock']['presence_session_id'], owner_connection['presence_session_id'])
+
+            await editor_communicator.send_json_to({
+                'type': 'frame_lock_acquire',
+                'payload': {
+                    'frame_id': self.frame_one.pk,
+                },
+            })
+
+            denied = await editor_communicator.receive_json_from()
+            self.assertEqual(denied['type'], 'frame_lock_denied')
+            self.assertEqual(denied['payload']['reason'], 'locked_by_other')
+            self.assertEqual(denied['payload']['lock']['user_id'], self.owner.pk)
+            self.assertEqual(denied['payload']['lock']['frame_id'], self.frame_one.pk)
+
+            lock_row = await database_sync_to_async(self._frame_lock_row)(self.frame_one.pk)
+            self.assertIsNotNone(lock_row)
+            self.assertEqual(lock_row.user_id, self.owner.pk)
+
+            await editor_communicator.disconnect()
+            await owner_communicator.disconnect()
+
+        async_to_sync(scenario)()
+
+    def test_lock_released_on_disconnect(self):
+        async def scenario():
+            owner_communicator, _ = await self._assert_member_can_connect(
+                self.owner,
+                ProjectMember.Role.OWNER,
+            )
+            editor_communicator, _ = await self._assert_member_can_connect(
+                self.editor,
+                ProjectMember.Role.EDITOR,
+                expected_user_count=2,
+            )
+            await owner_communicator.receive_json_from()
+
+            await owner_communicator.send_json_to({
+                'type': 'frame_lock_acquire',
+                'payload': {
+                    'frame_id': self.frame_one.pk,
+                },
+            })
+            await owner_communicator.receive_json_from()
+            await editor_communicator.receive_json_from()
+
+            await owner_communicator.disconnect()
+
+            released = await editor_communicator.receive_json_from()
+            self.assertEqual(released['type'], 'frame_lock_released')
+            self.assertEqual(released['payload']['lock']['frame_id'], self.frame_one.pk)
+            self.assertIsNone(await database_sync_to_async(self._frame_lock_row)(self.frame_one.pk))
+
+            await editor_communicator.disconnect()
+
+        async_to_sync(scenario)()
+
+    def test_lock_released_on_frame_switch(self):
+        async def scenario():
+            communicator, _ = await self._assert_member_can_connect(
+                self.editor,
+                ProjectMember.Role.EDITOR,
+            )
+
+            await communicator.send_json_to({
+                'type': 'frame_lock_acquire',
+                'payload': {
+                    'frame_id': self.frame_one.pk,
+                },
+            })
+            await communicator.receive_json_from()
+
+            await communicator.send_json_to({
+                'type': 'frame_lock_release',
+                'payload': {
+                    'frame_id': self.frame_one.pk,
+                },
+            })
+            released = await communicator.receive_json_from()
+            self.assertEqual(released['type'], 'frame_lock_released')
+            self.assertEqual(released['payload']['lock']['frame_id'], self.frame_one.pk)
+
+            await communicator.send_json_to({
+                'type': 'frame_lock_acquire',
+                'payload': {
+                    'frame_id': self.frame_two.pk,
+                },
+            })
+            acquired = await communicator.receive_json_from()
+            self.assertEqual(acquired['type'], 'frame_lock_acquired')
+            self.assertEqual(acquired['payload']['lock']['frame_id'], self.frame_two.pk)
+            self.assertIsNone(await database_sync_to_async(self._frame_lock_row)(self.frame_one.pk))
+            self.assertIsNotNone(await database_sync_to_async(self._frame_lock_row)(self.frame_two.pk))
+
+            await communicator.disconnect()
+
+        async_to_sync(scenario)()
+
+    def test_expired_lock_can_be_replaced(self):
+        async def scenario():
+            owner_communicator, owner_connection = await self._assert_member_can_connect(
+                self.owner,
+                ProjectMember.Role.OWNER,
+            )
+            editor_communicator, editor_connection = await self._assert_member_can_connect(
+                self.editor,
+                ProjectMember.Role.EDITOR,
+                expected_user_count=2,
+            )
+            await owner_communicator.receive_json_from()
+
+            owner_presence = await database_sync_to_async(self._latest_presence_row)(self.owner.pk)
+            self.assertIsNotNone(owner_presence)
+
+            await database_sync_to_async(FrameLock.objects.create)(
+                project=self.project,
+                frame=self.frame_one,
+                user=self.owner,
+                presence_session=owner_presence,
+                last_heartbeat_at=timezone.now() - timedelta(minutes=2),
+                expires_at=timezone.now() - timedelta(seconds=1),
+            )
+
+            await editor_communicator.send_json_to({
+                'type': 'frame_lock_acquire',
+                'payload': {
+                    'frame_id': self.frame_one.pk,
+                },
+            })
+
+            editor_stale_release = await editor_communicator.receive_json_from()
+            owner_stale_release = await owner_communicator.receive_json_from()
+            self.assertEqual(editor_stale_release['type'], 'frame_lock_released')
+            self.assertEqual(owner_stale_release['type'], 'frame_lock_released')
+            self.assertEqual(editor_stale_release['payload']['lock']['frame_id'], self.frame_one.pk)
+            self.assertEqual(owner_stale_release['payload']['lock']['frame_id'], self.frame_one.pk)
+
+            editor_acquired = await editor_communicator.receive_json_from()
+            owner_seen = await owner_communicator.receive_json_from()
+            self.assertEqual(editor_acquired['type'], 'frame_lock_acquired')
+            self.assertEqual(owner_seen['type'], 'frame_lock_acquired')
+            self.assertEqual(
+                editor_acquired['payload']['lock']['presence_session_id'],
+                editor_connection['presence_session_id'],
+            )
+
+            lock_row = await database_sync_to_async(self._frame_lock_row)(self.frame_one.pk)
+            self.assertIsNotNone(lock_row)
+            self.assertEqual(lock_row.user_id, self.editor.pk)
+
+            await editor_communicator.disconnect()
+            await owner_communicator.disconnect()
+
+        async_to_sync(scenario)()
 
 
 class ProjectInviteFlowTests(TestCase):

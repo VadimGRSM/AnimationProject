@@ -26,6 +26,42 @@ def get_project_membership(user, project):
     ).select_related('project', 'user').first()
 
 
+def get_project_membership_for_user(project_id, user_id):
+    if not project_id or not user_id:
+        return None
+
+    membership = ProjectMember.objects.filter(
+        project_id=project_id,
+        user_id=user_id,
+        is_active=True,
+    ).select_related('project', 'user').first()
+    if membership is None or not membership.can_view():
+        return None
+    return membership
+
+
+def user_can_access_project(project_id, user_id):
+    return get_project_membership_for_user(project_id, user_id) is not None
+
+
+def get_project_connection_context(project_id, user_id):
+    membership = get_project_membership_for_user(project_id, user_id)
+    if membership is not None:
+        return {
+            'project_id': membership.project_id,
+            'user_id': membership.user_id,
+            'role': membership.role,
+            'project_exists': True,
+        }
+
+    return {
+        'project_id': project_id,
+        'user_id': user_id,
+        'role': None,
+        'project_exists': AnimationProject.objects.filter(pk=project_id).exists(),
+    }
+
+
 def get_project_role(user, project):
     membership = get_project_membership(user, project)
     if membership is None or not membership.is_active:

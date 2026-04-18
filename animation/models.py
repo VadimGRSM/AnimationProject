@@ -178,6 +178,81 @@ class Frame(models.Model):
         return f'{self.project.title} - frame {self.index}'
 
 
+class ProjectPresenceSession(models.Model):
+    project = models.ForeignKey(
+        AnimationProject,
+        on_delete=models.CASCADE,
+        related_name='presence_sessions',
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='project_presence_sessions',
+    )
+    channel_name = models.CharField(max_length=255, unique=True)
+    current_frame = models.ForeignKey(
+        Frame,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='presence_sessions',
+    )
+    role = models.CharField(
+        max_length=16,
+        choices=ProjectMember.Role.choices,
+        default=ProjectMember.Role.VIEWER,
+    )
+    joined_at = models.DateTimeField(auto_now_add=True)
+    last_seen_at = models.DateTimeField(default=timezone.now)
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=['project', 'is_active', 'last_seen_at']),
+            models.Index(fields=['project', 'user', 'is_active']),
+        ]
+
+    def __str__(self):
+        return f'{self.user} online in {self.project} ({self.channel_name})'
+
+
+class FrameLock(models.Model):
+    project = models.ForeignKey(
+        AnimationProject,
+        on_delete=models.CASCADE,
+        related_name='frame_locks',
+    )
+    frame = models.OneToOneField(
+        Frame,
+        on_delete=models.CASCADE,
+        related_name='frame_lock',
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='frame_locks',
+    )
+    presence_session = models.ForeignKey(
+        ProjectPresenceSession,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='frame_locks',
+    )
+    acquired_at = models.DateTimeField(auto_now_add=True)
+    last_heartbeat_at = models.DateTimeField(default=timezone.now)
+    expires_at = models.DateTimeField()
+
+    class Meta:
+        indexes = [
+            models.Index(fields=['project', 'expires_at']),
+            models.Index(fields=['project', 'user']),
+        ]
+
+    def __str__(self):
+        return f'{self.frame} locked by {self.user}'
+
+
 class Layer(models.Model):
     frame = models.ForeignKey(Frame, on_delete=models.CASCADE, related_name='layers')
     order = models.PositiveIntegerField(default=1, verbose_name='Layer order')

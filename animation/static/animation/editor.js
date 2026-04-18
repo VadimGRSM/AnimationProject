@@ -73,6 +73,12 @@ const exportButton = document.getElementById('export-project-button');
 const saveStatus = document.getElementById('save-status');
 const saveIndicator = document.getElementById('save-indicator');
 const lastSavedLabel = document.getElementById('last-saved-time');
+const projectPresencePanel = document.getElementById('project-presence');
+const projectPresenceCount = document.getElementById('project-presence-count');
+const projectPresenceList = document.getElementById('project-presence-list');
+const projectPresenceEmpty = document.getElementById('project-presence-empty');
+const frameLockStatus = document.getElementById('frame-lock-status');
+const frameLockStatusText = document.getElementById('frame-lock-status-text');
 
 const exportModal = document.getElementById('export-modal');
 const exportModalCloseButton = document.getElementById('export-modal-close');
@@ -323,6 +329,21 @@ let panStartedByMiddle = false;
 let isExporting = false;
 let timelineControlsTemporarilyDisabled = false;
 let isUpdatingProjectFps = false;
+const projectPresence = new Map();
+const frameLocksById = new Map();
+let presenceSocket = null;
+let presenceCurrentUserId = null;
+let presenceSessionId = null;
+let collaborationConnectionReady = false;
+let presencePingTimerId = null;
+let frameLockHeartbeatTimerId = null;
+let presenceReconnectTimerId = null;
+let presenceIsClosing = false;
+let pendingFrameLockId = null;
+let currentHeldFrameLockId = null;
+const PRESENCE_PING_INTERVAL_MS = 30000;
+const FRAME_LOCK_HEARTBEAT_INTERVAL_MS = 12000;
+const PRESENCE_RECONNECT_DELAY_MS = 2000;
 
 const PLAYBACK_IDLE = 'idle';
 const PLAYBACK_PLAYING = 'playing';
@@ -428,6 +449,604 @@ function interpolateText(template, params = null) {
 
 function getText(key, params = null) {
     return interpolateText(UI_TEXT[key] || key, params);
+}
+
+function capitalizePresenceLabel(value) {
+    if (!value) return '';
+    return value.charAt(0).toUpperCase() + value.slice(1);
+}
+
+function normalizePresenceUser(rawUser) {
+    if (!rawUser || typeof rawUser !== 'object') return null;
+    const userId = Number(rawUser.user_id);
+    if (!Number.isFinite(userId) || userId <= 0) return null;
+    const currentFrameId = rawUser.current_frame_id === null || rawUser.current_frame_id === undefined
+        ? null
+        : Number(rawUser.current_frame_id);
+    const currentFrameIndex = rawUser.current_frame_index === null || rawUser.current_frame_index === undefined
+        ? null
+        : Number(rawUser.current_frame_index);
+    return {
+        user_id: userId,
+        display_name: rawUser.display_name || rawUser.email || `User ${userId}`,
+        email: rawUser.email || '',
+        role: rawUser.role || '',
+        current_frame_id: Number.isFinite(currentFrameId) ? currentFrameId : null,
+        current_frame_index: Number.isFinite(currentFrameIndex) ? currentFrameIndex : null,
+    };
+}
+
+function normalizeFrameLock(rawLock) {
+    if (!rawLock || typeof rawLock !== 'object') return null;
+    const frameId = Number(rawLock.frame_id);
+    const frameIndex = Number(rawLock.frame_index);
+    const userId = Number(rawLock.user_id);
+    const presenceSession = Number(rawLock.presence_session_id);
+    if (!Number.isFinite(frameId) || frameId <= 0) return null;
+    return {
+        frame_id: frameId,
+        frame_index: Number.isFinite(frameIndex) ? frameIndex : null,
+        user_id: Number.isFinite(userId) ? userId : null,
+        display_name: rawLock.display_name || rawLock.email || 'Unknown user',
+        email: rawLock.email || '',
+        role: rawLock.role || '',
+        presence_session_id: Number.isFinite(presenceSession) ? presenceSession : null,
+        expires_at: rawLock.expires_at || '',
+    };
+}
+
+function canCurrentUserUseFrameLocks() {
+    return Boolean(projectCanEdit);
+}
+
+function isCollaborationReady() {
+    return collaborationConnectionReady && Number.isFinite(presenceSessionId) && presenceSessionId > 0;
+}
+
+function getFrameLock(frameId) {
+    const numericFrameId = Number(frameId);
+    if (!Number.isFinite(numericFrameId) || numericFrameId <= 0) return null;
+    return frameLocksById.get(numericFrameId) || null;
+}
+
+function getCurrentFrameLock() {
+    return getFrameLock(currentFrameId);
+}
+
+function isLockOwnedByCurrentSession(lock) {
+    return Boolean(
+        lock
+        && Number.isFinite(lock.presence_session_id)
+        && Number.isFinite(presenceSessionId)
+        && lock.presence_session_id === presenceSessionId,
+    );
+}
+
+function getCurrentFrameLockOwnerName() {
+    const lock = getCurrentFrameLock();
+    return lock ? lock.display_name : '';
+}
+
+function refreshHeldFrameLockId() {
+    currentHeldFrameLockId = null;
+    for (const lock of frameLocksById.values()) {
+        if (isLockOwnedByCurrentSession(lock)) {
+            currentHeldFrameLockId = lock.frame_id;
+            if (lock.frame_id === currentFrameId) {
+                break;
+            }
+        }
+    }
+}
+
+function isCurrentFrameReadOnlyByLock() {
+    if (!canCurrentUserUseFrameLocks()) {
+        return false;
+    }
+    if (!isCollaborationReady()) {
+        return true;
+    }
+    if (!Number.isFinite(currentFrameId) || currentFrameId <= 0) {
+        return true;
+    }
+    if (pendingFrameLockId === currentFrameId) {
+        return true;
+    }
+    const lock = getCurrentFrameLock();
+    return !isLockOwnedByCurrentSession(lock);
+}
+
+function getCurrentFrameEditingState() {
+    if (!canCurrentUserUseFrameLocks()) {
+        return {
+            mode: 'readonly',
+            text: Number.isFinite(currentFrameIndex) && currentFrameIndex > 0
+                ? `Frame ${currentFrameIndex} is read-only for your role.`
+                : 'Read-only project access.',
+        };
+    }
+    if (isEditingLockedByPlayback()) {
+        return {
+            mode: 'pending',
+            text: 'Playback is active. Editing is temporarily paused.',
+        };
+    }
+    if (!isCollaborationReady()) {
+        return {
+            mode: 'pending',
+            text: 'Connecting collaborative lock...',
+        };
+    }
+    if (!Number.isFinite(currentFrameIndex) || currentFrameIndex <= 0) {
+        return {
+            mode: 'pending',
+            text: 'Loading frame lock...',
+        };
+    }
+    if (pendingFrameLockId === currentFrameId) {
+        return {
+            mode: 'pending',
+            text: `Requesting frame ${currentFrameIndex} lock...`,
+        };
+    }
+
+    const currentLock = getCurrentFrameLock();
+    if (isLockOwnedByCurrentSession(currentLock)) {
+        return {
+            mode: 'editable',
+            text: `Editing frame ${currentLock.frame_index || currentFrameIndex}.`,
+        };
+    }
+    if (currentLock) {
+        return {
+            mode: 'readonly',
+            text: `Frame ${currentLock.frame_index || currentFrameIndex} locked by ${currentLock.display_name}. Read-only.`,
+        };
+    }
+    return {
+        mode: 'readonly',
+        text: `Frame ${currentFrameIndex} is not locked yet. Read-only.`,
+    };
+}
+
+function syncFrameLockStatusUi() {
+    if (!frameLockStatus || !frameLockStatusText) return;
+    const state = getCurrentFrameEditingState();
+    frameLockStatus.classList.remove(
+        'frame-lock-status--pending',
+        'frame-lock-status--editable',
+        'frame-lock-status--readonly',
+    );
+    frameLockStatus.classList.add(`frame-lock-status--${state.mode}`);
+    frameLockStatusText.textContent = state.text;
+}
+
+function stopFrameLockHeartbeat() {
+    if (frameLockHeartbeatTimerId) {
+        clearInterval(frameLockHeartbeatTimerId);
+        frameLockHeartbeatTimerId = null;
+    }
+}
+
+function startFrameLockHeartbeat() {
+    stopFrameLockHeartbeat();
+    if (!isProjectPresenceSocketOpen()) return;
+    if (!Number.isFinite(currentHeldFrameLockId) || currentHeldFrameLockId <= 0) return;
+    frameLockHeartbeatTimerId = window.setInterval(() => {
+        if (!isProjectPresenceSocketOpen()) return;
+        if (!Number.isFinite(currentHeldFrameLockId) || currentHeldFrameLockId <= 0) return;
+        sendProjectPresenceMessage('frame_lock_heartbeat', { frame_id: currentHeldFrameLockId });
+    }, FRAME_LOCK_HEARTBEAT_INTERVAL_MS);
+}
+
+function syncFrameLockHeartbeat() {
+    const currentLock = getCurrentFrameLock();
+    if (isLockOwnedByCurrentSession(currentLock) && currentLock.frame_id === currentHeldFrameLockId) {
+        startFrameLockHeartbeat();
+        return;
+    }
+    stopFrameLockHeartbeat();
+}
+
+function syncCollaborativeEditorUi() {
+    refreshHeldFrameLockId();
+    syncFrameLockStatusUi();
+    syncEditorInteractionLockUi();
+    updateSaveButtonState();
+    renderTimelineFrames();
+    syncFrameLockHeartbeat();
+}
+
+function setProjectPresenceEmptyState(text) {
+    if (!projectPresenceEmpty) return;
+    projectPresenceEmpty.textContent = text;
+}
+
+function renderProjectPresence() {
+    if (!projectPresenceList || !projectPresenceEmpty || !projectPresenceCount) return;
+
+    const users = [...projectPresence.values()].sort((left, right) => {
+        const leftIsSelf = presenceCurrentUserId && left.user_id === presenceCurrentUserId;
+        const rightIsSelf = presenceCurrentUserId && right.user_id === presenceCurrentUserId;
+        if (leftIsSelf !== rightIsSelf) {
+            return leftIsSelf ? -1 : 1;
+        }
+        return left.display_name.localeCompare(right.display_name, undefined, { sensitivity: 'base' });
+    });
+
+    projectPresenceCount.textContent = String(users.length);
+    projectPresenceList.innerHTML = '';
+    projectPresenceEmpty.hidden = users.length > 0;
+    if (!users.length) {
+        if (!projectPresenceEmpty.textContent) {
+            setProjectPresenceEmptyState('No one online right now.');
+        }
+        return;
+    }
+
+    users.forEach((user) => {
+        const isSelf = presenceCurrentUserId && user.user_id === presenceCurrentUserId;
+        const item = document.createElement('li');
+        item.className = 'project-presence__item';
+        if (isSelf) {
+            item.classList.add('project-presence__item--self');
+        }
+
+        const indicator = document.createElement('span');
+        indicator.className = 'project-presence__indicator';
+        indicator.setAttribute('aria-hidden', 'true');
+
+        const body = document.createElement('span');
+        body.className = 'project-presence__body';
+
+        const name = document.createElement('span');
+        name.className = 'project-presence__name';
+        name.textContent = user.display_name;
+        body.appendChild(name);
+
+        if (isSelf) {
+            const selfLabel = document.createElement('span');
+            selfLabel.className = 'project-presence__you';
+            selfLabel.textContent = 'You';
+            body.appendChild(selfLabel);
+        }
+
+        const metaParts = [];
+        if (user.role) {
+            metaParts.push(capitalizePresenceLabel(user.role));
+        }
+        if (user.current_frame_index !== null) {
+            metaParts.push(`Frame ${user.current_frame_index}`);
+        }
+        if (metaParts.length) {
+            const meta = document.createElement('span');
+            meta.className = 'project-presence__meta';
+            meta.textContent = metaParts.join(' · ');
+            body.appendChild(meta);
+        }
+
+        item.appendChild(indicator);
+        item.appendChild(body);
+        projectPresenceList.appendChild(item);
+    });
+}
+
+function setProjectPresenceSnapshot(users) {
+    projectPresence.clear();
+    (Array.isArray(users) ? users : []).forEach((rawUser) => {
+        const user = normalizePresenceUser(rawUser);
+        if (!user) return;
+        projectPresence.set(user.user_id, user);
+    });
+    setProjectPresenceEmptyState('No one online right now.');
+    renderProjectPresence();
+}
+
+function upsertProjectPresenceUser(rawUser) {
+    const user = normalizePresenceUser(rawUser);
+    if (!user) return;
+    projectPresence.set(user.user_id, user);
+    renderProjectPresence();
+}
+
+function removeProjectPresenceUser(userId) {
+    const numericUserId = Number(userId);
+    if (!Number.isFinite(numericUserId)) return;
+    projectPresence.delete(numericUserId);
+    if (!projectPresence.size) {
+        setProjectPresenceEmptyState('No one online right now.');
+    }
+    renderProjectPresence();
+}
+
+function buildProjectPresenceSocketUrl() {
+    if (!editorRoot || !editorProjectId || editorProjectId === 'unknown') return '';
+    const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
+    return `${protocol}://${window.location.host}/ws/projects/${editorProjectId}/`;
+}
+
+function isProjectPresenceSocketOpen() {
+    return Boolean(presenceSocket && presenceSocket.readyState === WebSocket.OPEN);
+}
+
+function sendProjectPresenceMessage(type, payload = {}) {
+    if (!isProjectPresenceSocketOpen()) return false;
+    presenceSocket.send(JSON.stringify({ type, payload }));
+    return true;
+}
+
+function stopProjectPresencePing() {
+    if (presencePingTimerId) {
+        clearInterval(presencePingTimerId);
+        presencePingTimerId = null;
+    }
+}
+
+function startProjectPresencePing() {
+    stopProjectPresencePing();
+    presencePingTimerId = window.setInterval(() => {
+        sendProjectPresenceMessage('ping', { at: Date.now() });
+    }, PRESENCE_PING_INTERVAL_MS);
+}
+
+function notifyCurrentFramePresence() {
+    const frameId = Number.isFinite(currentFrameId) ? currentFrameId : null;
+    sendProjectPresenceMessage('presence_set_frame', { frame_id: frameId });
+}
+
+function setFrameLockSnapshot(locks) {
+    frameLocksById.clear();
+    (Array.isArray(locks) ? locks : []).forEach((rawLock) => {
+        const lock = normalizeFrameLock(rawLock);
+        if (!lock) return;
+        frameLocksById.set(lock.frame_id, lock);
+    });
+    syncCollaborativeEditorUi();
+}
+
+function upsertFrameLock(rawLock) {
+    const lock = normalizeFrameLock(rawLock);
+    if (!lock) return;
+    frameLocksById.set(lock.frame_id, lock);
+    if (pendingFrameLockId === lock.frame_id && isLockOwnedByCurrentSession(lock)) {
+        pendingFrameLockId = null;
+    }
+    syncCollaborativeEditorUi();
+}
+
+function removeFrameLock(frameId) {
+    const numericFrameId = Number(frameId);
+    if (!Number.isFinite(numericFrameId) || numericFrameId <= 0) return;
+    if (pendingFrameLockId === numericFrameId) {
+        pendingFrameLockId = null;
+    }
+    if (currentHeldFrameLockId === numericFrameId) {
+        currentHeldFrameLockId = null;
+    }
+    frameLocksById.delete(numericFrameId);
+    syncCollaborativeEditorUi();
+}
+
+function requestFrameLock(frameId) {
+    const numericFrameId = Number(frameId);
+    if (!canCurrentUserUseFrameLocks()) {
+        syncCollaborativeEditorUi();
+        return false;
+    }
+    if (!Number.isFinite(numericFrameId) || numericFrameId <= 0) {
+        syncCollaborativeEditorUi();
+        return false;
+    }
+    if (!isProjectPresenceSocketOpen() || !isCollaborationReady()) {
+        pendingFrameLockId = numericFrameId;
+        syncCollaborativeEditorUi();
+        return false;
+    }
+    pendingFrameLockId = numericFrameId;
+    syncCollaborativeEditorUi();
+    return sendProjectPresenceMessage('frame_lock_acquire', { frame_id: numericFrameId });
+}
+
+function releaseFrameLock(frameId) {
+    const numericFrameId = Number(frameId);
+    if (!Number.isFinite(numericFrameId) || numericFrameId <= 0) return false;
+    const lock = getFrameLock(numericFrameId);
+    if (!isLockOwnedByCurrentSession(lock) && currentHeldFrameLockId !== numericFrameId) {
+        return false;
+    }
+    if (pendingFrameLockId === numericFrameId) {
+        pendingFrameLockId = null;
+    }
+    if (!isProjectPresenceSocketOpen()) {
+        syncCollaborativeEditorUi();
+        return false;
+    }
+    return sendProjectPresenceMessage('frame_lock_release', { frame_id: numericFrameId });
+}
+
+function syncCurrentFrameLock(previousFrameId = null) {
+    const previousId = Number(previousFrameId);
+    if (Number.isFinite(previousId) && previousId > 0 && previousId !== currentFrameId) {
+        releaseFrameLock(previousId);
+    }
+
+    if (!canCurrentUserUseFrameLocks()) {
+        pendingFrameLockId = null;
+        syncCollaborativeEditorUi();
+        return;
+    }
+
+    if (!Number.isFinite(currentFrameId) || currentFrameId <= 0) {
+        pendingFrameLockId = null;
+        syncCollaborativeEditorUi();
+        return;
+    }
+
+    const currentLock = getCurrentFrameLock();
+    if (isLockOwnedByCurrentSession(currentLock)) {
+        pendingFrameLockId = null;
+        currentHeldFrameLockId = currentFrameId;
+        syncCollaborativeEditorUi();
+        return;
+    }
+
+    requestFrameLock(currentFrameId);
+}
+
+function scheduleProjectPresenceReconnect() {
+    if (presenceIsClosing || presenceReconnectTimerId) return;
+    presenceReconnectTimerId = window.setTimeout(() => {
+        presenceReconnectTimerId = null;
+        connectProjectPresence();
+    }, PRESENCE_RECONNECT_DELAY_MS);
+}
+
+function disconnectProjectPresence() {
+    presenceIsClosing = true;
+    stopProjectPresencePing();
+    stopFrameLockHeartbeat();
+    if (Number.isFinite(currentHeldFrameLockId) && currentHeldFrameLockId > 0) {
+        sendProjectPresenceMessage('frame_lock_release', { frame_id: currentHeldFrameLockId });
+    }
+    if (presenceReconnectTimerId) {
+        clearTimeout(presenceReconnectTimerId);
+        presenceReconnectTimerId = null;
+    }
+    if (presenceSocket) {
+        presenceSocket.close();
+        presenceSocket = null;
+    }
+}
+
+function handleProjectPresenceMessage(message) {
+    if (!message || typeof message !== 'object') return;
+    const payload = message.payload || {};
+
+    if (message.type === 'connection_ready') {
+        const userId = Number(payload.user_id);
+        const sessionId = Number(payload.presence_session_id);
+        if (Number.isFinite(userId) && userId > 0) {
+            presenceCurrentUserId = userId;
+        }
+        presenceSessionId = Number.isFinite(sessionId) && sessionId > 0 ? sessionId : null;
+        collaborationConnectionReady = true;
+        renderProjectPresence();
+        syncCollaborativeEditorUi();
+        notifyCurrentFramePresence();
+        syncCurrentFrameLock();
+        return;
+    }
+
+    if (message.type === 'presence_snapshot') {
+        setProjectPresenceSnapshot(payload.users);
+        return;
+    }
+
+    if (message.type === 'presence_user_joined') {
+        upsertProjectPresenceUser(payload.user);
+        return;
+    }
+
+    if (message.type === 'presence_user_left') {
+        removeProjectPresenceUser(payload.user_id);
+        return;
+    }
+
+    if (message.type === 'presence_frame_changed') {
+        upsertProjectPresenceUser(payload.user);
+        return;
+    }
+
+    if (message.type === 'frame_lock_snapshot') {
+        setFrameLockSnapshot(payload.locks);
+        syncCurrentFrameLock();
+        return;
+    }
+
+    if (message.type === 'frame_lock_acquired') {
+        upsertFrameLock(payload.lock);
+        return;
+    }
+
+    if (message.type === 'frame_lock_released') {
+        const releasedLock = normalizeFrameLock(payload.lock);
+        if (!releasedLock) return;
+        const wasCurrentFrame = releasedLock.frame_id === currentFrameId;
+        removeFrameLock(releasedLock.frame_id);
+        if (wasCurrentFrame && canCurrentUserUseFrameLocks() && isCollaborationReady()) {
+            syncCurrentFrameLock();
+        }
+        return;
+    }
+
+    if (message.type === 'frame_lock_denied') {
+        if (payload.lock) {
+            upsertFrameLock(payload.lock);
+        }
+        const deniedFrameId = Number(payload.frame_id);
+        if (Number.isFinite(deniedFrameId) && deniedFrameId > 0 && pendingFrameLockId === deniedFrameId) {
+            pendingFrameLockId = null;
+        }
+        syncCollaborativeEditorUi();
+    }
+}
+
+function connectProjectPresence() {
+    if (
+        !window.WebSocket
+        || !projectPresencePanel
+        || presenceIsClosing
+        || (presenceSocket && presenceSocket.readyState !== WebSocket.CLOSED)
+    ) {
+        return;
+    }
+
+    const socketUrl = buildProjectPresenceSocketUrl();
+    if (!socketUrl) return;
+
+    setProjectPresenceEmptyState('Connecting realtime presence...');
+
+    const socket = new WebSocket(socketUrl);
+    presenceSocket = socket;
+
+    socket.addEventListener('open', () => {
+        collaborationConnectionReady = false;
+        startProjectPresencePing();
+        syncCollaborativeEditorUi();
+    });
+
+    socket.addEventListener('message', (event) => {
+        try {
+            const message = JSON.parse(event.data);
+            handleProjectPresenceMessage(message);
+        } catch (error) {
+            console.error('Presence message parsing error', error);
+        }
+    });
+
+    socket.addEventListener('close', () => {
+        if (presenceSocket === socket) {
+            presenceSocket = null;
+        }
+        stopProjectPresencePing();
+        stopFrameLockHeartbeat();
+        collaborationConnectionReady = false;
+        presenceSessionId = null;
+        pendingFrameLockId = null;
+        currentHeldFrameLockId = null;
+        frameLocksById.clear();
+        if (!presenceIsClosing) {
+            projectPresence.clear();
+            setProjectPresenceEmptyState('Realtime connection lost. Reconnecting...');
+            renderProjectPresence();
+            syncCollaborativeEditorUi();
+            scheduleProjectPresenceReconnect();
+        }
+    });
+
+    socket.addEventListener('error', () => {
+        socket.close();
+    });
 }
 
 // =======================
@@ -776,12 +1395,16 @@ function isReadOnlyProject() {
     return !projectCanEdit;
 }
 
+function isCurrentFrameReadOnly() {
+    return isReadOnlyProject() || isCurrentFrameReadOnlyByLock();
+}
+
 function isEditingLockedByPlayback() {
     return isPlaybackSessionActive() || playbackStopping;
 }
 
 function isEditingLocked() {
-    return isReadOnlyProject() || isEditingLockedByPlayback();
+    return isCurrentFrameReadOnly() || isEditingLockedByPlayback();
 }
 
 function getOrderedTimelineIndexes() {
@@ -1258,7 +1881,7 @@ function shouldDisableTimelineNavigation() {
 }
 
 function shouldDisableTimelineControls() {
-    return shouldDisableTimelineNavigation() || isReadOnlyProject();
+    return shouldDisableTimelineNavigation() || isCurrentFrameReadOnly();
 }
 
 function syncTimelineControlsState() {
@@ -1313,7 +1936,7 @@ function syncLayerControlsState() {
 }
 
 function syncEditorInteractionLockUi() {
-    const isReadOnly = isReadOnlyProject();
+    const isReadOnly = isCurrentFrameReadOnly();
     if (editorRoot) {
         editorRoot.dataset.currentUserRole = currentUserRole;
         editorRoot.classList.toggle('editor-root--playback', isEditingLockedByPlayback());
@@ -4410,7 +5033,7 @@ function updateLastSavedLabel() {
 
 function updateSaveButtonState() {
     if (!saveButton) return;
-    if (!projectCanEdit) {
+    if (isCurrentFrameReadOnly()) {
         saveButton.disabled = true;
         return;
     }
@@ -4421,7 +5044,7 @@ function updateSaveButtonState() {
  * Mark that the project has unsaved changes.
  */
 function markUnsavedChanges() {
-    if (!projectCanEdit) return;
+    if (isCurrentFrameReadOnly()) return;
     if (hasUnsavedChanges) return;
 
     hasUnsavedChanges = true;
@@ -4432,10 +5055,10 @@ function markUnsavedChanges() {
 
 function initSaveState() {
     setSaveIndicator('idle');
-    if (projectCanEdit) {
-        setSaveStatus(getText('no_changes'));
+    if (isCurrentFrameReadOnly()) {
+        setSaveStatus(getCurrentFrameEditingState().text);
     } else {
-        setSaveStatus('Read-only mode.');
+        setSaveStatus(getText('no_changes'));
     }
     updateLastSavedLabel();
     updateSaveButtonState();
@@ -4455,12 +5078,12 @@ function syncProjectFpsUi() {
 
 function syncPlaybackFpsControlState() {
     if (!playbackFpsInput) return;
-    playbackFpsInput.disabled = !projectCanEdit || isUpdatingProjectFps;
+    playbackFpsInput.disabled = isCurrentFrameReadOnly() || isUpdatingProjectFps;
 }
 
 async function updateProjectFpsOnServer(nextFps) {
-    if (!projectCanEdit) {
-        setSaveStatus('Read-only mode.', 'error');
+    if (isCurrentFrameReadOnly()) {
+        setSaveStatus(getCurrentFrameEditingState().text, 'error');
         setSaveIndicator('error');
         return false;
     }
@@ -5762,7 +6385,7 @@ function renderTimelineFrames() {
         button.dataset.frameId = String(frame.id);
         button.dataset.frameIndex = String(frame.index);
         button.draggable = !shouldDisableTimelineControls();
-        button.title = `Frame ${frame.index}`;
+        let frameTitle = `Frame ${frame.index}`;
 
         const number = document.createElement('span');
         number.className = 'timeline-frame__number';
@@ -5790,6 +6413,28 @@ function renderTimelineFrames() {
             placeholder.textContent = String(frame.index);
             button.appendChild(placeholder);
         }
+
+        const lock = getFrameLock(frame.id);
+        if (lock) {
+            const isMine = isLockOwnedByCurrentSession(lock);
+            button.classList.add('timeline-frame--locked');
+            if (isMine) {
+                button.classList.add('timeline-frame--locked-self');
+            }
+            frameTitle += isMine
+                ? ' • Editing in this session'
+                : ` • Locked by ${lock.display_name}`;
+
+            const lockBadge = document.createElement('span');
+            lockBadge.className = 'timeline-frame__lock';
+            if (isMine) {
+                lockBadge.classList.add('timeline-frame__lock--self');
+            }
+            lockBadge.textContent = isMine ? 'Editing' : 'Locked';
+            button.appendChild(lockBadge);
+        }
+
+        button.title = frameTitle;
 
         timelineStrip.appendChild(button);
     });
@@ -5903,6 +6548,7 @@ async function loadTimelineFrames() {
 async function loadFrameByIndex(targetIndex) {
     const index = Number(targetIndex);
     if (!Number.isFinite(index) || index <= 0) return false;
+    const previousFrameId = currentFrameId;
 
     const url = getFrameDetailUrl(index);
     if (!url) return false;
@@ -5950,6 +6596,8 @@ async function loadFrameByIndex(targetIndex) {
         updateHistoryPanel();
         prefetchOnionFramesForCurrent();
         requestOnionSkinRender();
+        notifyCurrentFramePresence();
+        syncCurrentFrameLock(previousFrameId);
         return true;
     } catch (error) {
         console.error('Frame loading error', error);
@@ -6500,7 +7148,7 @@ function getCurrentFramePayload() {
  * Send the current frame to the server.
  */
 async function saveCurrentFrame(options = {}) {
-    if (!projectCanEdit) {
+    if (isCurrentFrameReadOnly()) {
         return false;
     }
     if (!frameSaveUrlTemplate) {
@@ -7188,7 +7836,7 @@ function handleKeyDown(event) {
         return;
     }
 
-    if (isReadOnlyProject()) {
+    if (isCurrentFrameReadOnly()) {
         return;
     }
 
@@ -8276,6 +8924,7 @@ async function initEditor() {
     initOnionSkin();
     syncEditorLayout();
     await loadFrameByIndex(currentFrameIndex);
+    connectProjectPresence();
 
     // Apply initial values.
     setTool(currentTool);
@@ -8300,6 +8949,7 @@ async function initEditor() {
     updatePlaybackControlsState();
     hydratePanelPositions();
     startLastSavedTicker();
+    window.addEventListener('beforeunload', disconnectProjectPresence);
     window.addEventListener('resize', syncEditorLayout);
 }
 
