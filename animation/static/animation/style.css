@@ -817,11 +817,12 @@ body.modal-open {
 
 .anim-header__editor,
 .site-header__editor {
-    display: grid;
-    align-items: start;
+    display: flex;
+    align-items: center;
     gap: 10px;
     min-width: 0;
     flex: 1 1 auto;
+    flex-wrap: wrap;
 }
 
 .editor-header-actions {
@@ -850,12 +851,14 @@ body.modal-open {
     align-items: stretch;
     gap: 10px;
     min-width: 0;
+    flex: 0 1 auto;
+    flex-wrap: nowrap;
 }
 
 .project-presence {
     min-width: 0;
-    max-width: none;
-    flex: 1 1 420px;
+    max-width: 250px;
+    flex: 0 1 250px;
     padding: 8px 10px;
     border-radius: 14px;
     border: 1px solid rgba(148, 163, 184, 0.18);
@@ -954,8 +957,8 @@ body.modal-open {
 
 .frame-lock-status {
     min-width: 0;
-    max-width: none;
-    flex: 0 1 360px;
+    max-width: 210px;
+    flex: 0 1 210px;
     padding: 8px 10px;
     border-radius: 14px;
     border: 1px solid rgba(148, 163, 184, 0.18);
@@ -2199,6 +2202,7 @@ body.modal-open {
 
     .editor-status-row {
         width: 100%;
+        flex-wrap: wrap;
     }
 }
 
