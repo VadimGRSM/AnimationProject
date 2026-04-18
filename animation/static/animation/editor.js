@@ -3553,6 +3553,41 @@ function copySelectionToClipboard() {
     return true;
 }
 
+function getFrameImageSourceSize(image) {
+    if (!image) return null;
+    const sourceWidth = Math.min(
+        projectFrameWidth,
+        image.naturalWidth || image.width || 0,
+    );
+    const sourceHeight = Math.min(
+        projectFrameHeight,
+        image.naturalHeight || image.height || 0,
+    );
+    if (!sourceWidth || !sourceHeight) return null;
+    return {
+        width: sourceWidth,
+        height: sourceHeight,
+    };
+}
+
+function drawFrameImageToContext(targetCtx, image, dx, dy, dWidth, dHeight) {
+    if (!targetCtx || !image) return false;
+    const sourceSize = getFrameImageSourceSize(image);
+    if (!sourceSize) return false;
+    targetCtx.drawImage(
+        image,
+        0,
+        0,
+        sourceSize.width,
+        sourceSize.height,
+        dx,
+        dy,
+        dWidth,
+        dHeight,
+    );
+    return true;
+}
+
 function clearSelectionContent() {
     if (!selection || !bufferCtx || !bufferCanvas) return false;
     if (selection.type === SELECT_MAGIC && selection.maskCanvas) {
@@ -3570,6 +3605,31 @@ function clearSelectionContent() {
     renderScene();
     markUnsavedChanges();
     return true;
+}
+
+function deleteSelectionContent() {
+    if (!selection || !bufferCtx || !bufferCanvas) return false;
+
+    if (hasFloatingSelection()) {
+        if (historyPending && historyPending.type === 'layer') {
+            historyPending.label = 'delete';
+        }
+        markUnsavedChanges();
+        commitLayerHistory();
+        resetSelectionTransformState();
+        renderScene();
+        renderOverlay();
+        return true;
+    }
+
+    beginLayerHistory('delete');
+    const didClear = clearSelectionContent();
+    if (didClear) {
+        commitLayerHistory();
+    } else {
+        cancelPendingHistory();
+    }
+    return didClear;
 }
 
 function cutSelectionToClipboard() {
@@ -4913,7 +4973,7 @@ function drawOnionFrames(targetCtx, indices, opacityPercent) {
         const entry = onionFrameCache.get(frameIndex);
         const img = entry && entry.image ? entry.image : null;
         if (!img || !img.complete || img.naturalWidth <= 0) return;
-        targetCtx.drawImage(img, 0, 0);
+        drawFrameImageToContext(targetCtx, img, 0, 0, projectFrameWidth, projectFrameHeight);
     });
 
     targetCtx.restore();
@@ -5193,7 +5253,16 @@ async function renderPlaybackFrameByIndex(frameIndex) {
 
     clearPlaybackPreviewCanvas();
     if (image) {
-        playbackPreviewCtx.drawImage(image, 0, 0, canvasEl.width, canvasEl.height);
+        withTransformedContext(playbackPreviewCtx, () => {
+            drawFrameImageToContext(
+                playbackPreviewCtx,
+                image,
+                0,
+                0,
+                projectFrameWidth,
+                projectFrameHeight,
+            );
+        }, { clipToFrame: true });
     }
     setPlaybackMarkerFrame(frameIndex);
     emitPlaybackSignal('anim-playback');
@@ -6014,11 +6083,11 @@ function flattenLayers() {
     if (!flattenCanvas) {
         flattenCanvas = document.createElement('canvas');
     }
-    if (flattenCanvas.width !== canvas.width) {
-        flattenCanvas.width = canvas.width;
+    if (flattenCanvas.width !== projectFrameWidth) {
+        flattenCanvas.width = projectFrameWidth;
     }
-    if (flattenCanvas.height !== canvas.height) {
-        flattenCanvas.height = canvas.height;
+    if (flattenCanvas.height !== projectFrameHeight) {
+        flattenCanvas.height = projectFrameHeight;
     }
     if (!flattenCtx) {
         flattenCtx = flattenCanvas.getContext('2d');
@@ -6043,7 +6112,7 @@ function flattenLayers() {
             : layer.bufferCanvas;
         if (!sourceCanvas) return;
         flattenCtx.globalAlpha = clamp(layer.opacity, 0, 100) / 100;
-        flattenCtx.drawImage(sourceCanvas, 0, 0);
+        flattenCtx.drawImage(sourceCanvas, 0, 0, flattenCanvas.width, flattenCanvas.height);
     });
     flattenCtx.globalAlpha = 1;
     return flattenCanvas.toDataURL('image/png');
@@ -6237,7 +6306,14 @@ function drawImageOnLayer(layer, image, options = {}) {
         layer.bufferCtx.fillStyle = '#ffffff';
         layer.bufferCtx.fillRect(0, 0, layer.bufferCanvas.width, layer.bufferCanvas.height);
     }
-    layer.bufferCtx.drawImage(image, 0, 0, layer.bufferCanvas.width, layer.bufferCanvas.height);
+    drawFrameImageToContext(
+        layer.bufferCtx,
+        image,
+        0,
+        0,
+        layer.bufferCanvas.width,
+        layer.bufferCanvas.height,
+    );
     renderScene();
 }
 
@@ -7039,6 +7115,13 @@ function handleKeyDown(event) {
             if (selection) {
                 clearSelection();
             }
+        }
+        return;
+    }
+    if ((event.code === 'Delete' || event.code === 'Backspace') && !isTextInputElement(event.target)) {
+        if (selection) {
+            event.preventDefault();
+            deleteSelectionContent();
         }
         return;
     }
