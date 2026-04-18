@@ -27,6 +27,7 @@ from .access import (
     get_manageable_project_or_404,
 )
 from .models import AnimationProject, Frame, Layer, ProjectMember
+from .realtime import broadcast_project_event
 
 MAX_PREVIEW_IMAGE_BYTES = 5 * 1024 * 1024
 MAX_EXPORT_GIF_BYTES = 50 * 1024 * 1024
@@ -81,6 +82,12 @@ def serialize_layer(layer):
         'visible': layer.visible,
         'opacity': layer.opacity,
     }
+
+
+def normalize_client_request_id(value):
+    if not isinstance(value, str):
+        return ''
+    return value.strip()[:128]
 
 
 def serialize_frame(frame):
@@ -514,6 +521,7 @@ def frame_create(request, pk):
         return JsonResponse({'ok': False, 'error': 'invalid_json'}, status=400)
 
     duplicate_from_index = payload.get('duplicate_from_index')
+    client_request_id = normalize_client_request_id(payload.get('client_request_id'))
     try:
         duplicate_from_index = int(duplicate_from_index) if duplicate_from_index is not None else None
     except (TypeError, ValueError):
@@ -572,13 +580,23 @@ def frame_create(request, pk):
             ensure_default_layer(new_frame)
 
         project.save(update_fields=['updated_at'])
+        response_frames = [serialize_frame(frame) for frame in project.frames.order_by('index', 'id')]
+        response_frame = serialize_frame(new_frame)
+        transaction.on_commit(
+            lambda project_id=project.pk, payload={
+                'frame': response_frame,
+                'frames': response_frames,
+                'active_index': new_frame.index,
+                'actor_user_id': request.user.pk,
+                'client_request_id': client_request_id,
+            }: broadcast_project_event(project_id, 'frame_created', payload)
+        )
 
-    frames = project.frames.order_by('index', 'id')
     return JsonResponse({
         'ok': True,
         'active_index': new_frame.index,
-        'frame': serialize_frame(new_frame),
-        'frames': [serialize_frame(frame) for frame in frames],
+        'frame': response_frame,
+        'frames': response_frames,
     })
 
 
@@ -587,6 +605,14 @@ def frame_create(request, pk):
 def frame_delete(request, pk, index):
     project = get_editable_project_or_404(request.user, pk)
     frame = get_object_or_404(Frame, project=project, index=index)
+    deleted_frame_id = frame.pk
+    deleted_frame_index = frame.index
+
+    try:
+        payload = json.loads(request.body.decode('utf-8')) if request.body else {}
+    except json.JSONDecodeError:
+        payload = {}
+    client_request_id = normalize_client_request_id(payload.get('client_request_id'))
 
     with transaction.atomic():
         frame.delete()
@@ -599,10 +625,21 @@ def frame_delete(request, pk, index):
         else:
             frames = renumber_frames(project)
         project.save(update_fields=['updated_at'])
+        response_frames = [serialize_frame(item) for item in frames]
 
     # Activate the nearest frame based on position after renumbering.
     next_total = len(frames)
     next_active_index = min(max(1, index), next_total) if next_total else 1
+    transaction.on_commit(
+        lambda project_id=project.pk, event_payload={
+            'frame_id': deleted_frame_id,
+            'deleted_frame_index': deleted_frame_index,
+            'active_index': next_active_index,
+            'frames': response_frames,
+            'actor_user_id': request.user.pk,
+            'client_request_id': client_request_id,
+        }: broadcast_project_event(project_id, 'frame_deleted', event_payload)
+    )
 
     return JsonResponse({
         'ok': True,
@@ -635,10 +672,18 @@ def frame_reorder(request, pk):
     with transaction.atomic():
         frames = reorder_frames(project, normalized_ids)
         project.save(update_fields=['updated_at'])
+        response_frames = [serialize_frame(item) for item in frames]
+        transaction.on_commit(
+            lambda project_id=project.pk, payload={
+                'frames': response_frames,
+                'actor_user_id': request.user.pk,
+                'client_request_id': normalize_client_request_id(payload.get('client_request_id')),
+            }: broadcast_project_event(project_id, 'frame_reordered', payload)
+        )
 
     return JsonResponse({
         'ok': True,
-        'frames': [serialize_frame(item) for item in frames],
+        'frames': response_frames,
     })
 
 
@@ -772,9 +817,19 @@ def frame_layers(request, pk, index):
         visible=True,
         opacity=100,
     )
+    layer_payload = serialize_layer(layer)
+    transaction.on_commit(
+        lambda project_id=project.pk, event_payload={
+            'frame_id': frame.pk,
+            'frame_index': frame.index,
+            'layer': layer_payload,
+            'actor_user_id': request.user.pk,
+            'client_request_id': normalize_client_request_id(payload.get('client_request_id')),
+        }: broadcast_project_event(project_id, 'layer_created', event_payload)
+    )
     return JsonResponse({
         'ok': True,
-        'layer': serialize_layer(layer),
+        'layer': layer_payload,
     })
 
 
@@ -813,6 +868,27 @@ def layer_update(request, pk, index, layer_id):
 
     if update_fields:
         layer.save(update_fields=update_fields)
+        layer_payload = serialize_layer(layer)
+        event_type_map = {
+            'name': 'layer_renamed',
+            'visible': 'layer_visibility_changed',
+            'opacity': 'layer_opacity_changed',
+        }
+        client_request_id = normalize_client_request_id(payload.get('client_request_id'))
+        for field_name in update_fields:
+            event_type = event_type_map.get(field_name)
+            if not event_type:
+                continue
+            transaction.on_commit(
+                lambda project_id=project.pk, current_event_type=event_type, event_payload={
+                    'frame_id': frame.pk,
+                    'frame_index': frame.index,
+                    'layer_id': layer.pk,
+                    'layer': layer_payload,
+                    'actor_user_id': request.user.pk,
+                    'client_request_id': client_request_id,
+                }: broadcast_project_event(project_id, current_event_type, event_payload)
+            )
 
     return JsonResponse({
         'ok': True,
@@ -826,13 +902,29 @@ def layer_delete(request, pk, index, layer_id):
     project = get_editable_project_or_404(request.user, pk)
     frame = get_object_or_404(Frame, project=project, index=index)
     layer = get_object_or_404(Layer, frame=frame, pk=layer_id)
+    deleted_layer_id = layer.pk
+    try:
+        payload = json.loads(request.body.decode('utf-8')) if request.body else {}
+    except json.JSONDecodeError:
+        payload = {}
     layer.delete()
     ensure_default_layer(frame)
     reorder_layers(frame)
     layers = frame.layers.order_by('order', 'id')
+    response_layers = [serialize_layer(item) for item in layers]
+    transaction.on_commit(
+        lambda project_id=project.pk, event_payload={
+            'frame_id': frame.pk,
+            'frame_index': frame.index,
+            'layer_id': deleted_layer_id,
+            'layers': response_layers,
+            'actor_user_id': request.user.pk,
+            'client_request_id': normalize_client_request_id(payload.get('client_request_id')),
+        }: broadcast_project_event(project_id, 'layer_deleted', event_payload)
+    )
     return JsonResponse({
         'ok': True,
-        'layers': [serialize_layer(item) for item in layers],
+        'layers': response_layers,
     })
 
 
@@ -861,9 +953,19 @@ def layer_reorder(request, pk, index):
 
     reorder_layers(frame, normalized_ids)
     layers = frame.layers.order_by('order', 'id')
+    response_layers = [serialize_layer(layer) for layer in layers]
+    transaction.on_commit(
+        lambda project_id=project.pk, event_payload={
+            'frame_id': frame.pk,
+            'frame_index': frame.index,
+            'layers': response_layers,
+            'actor_user_id': request.user.pk,
+            'client_request_id': normalize_client_request_id(payload.get('client_request_id')),
+        }: broadcast_project_event(project_id, 'layer_reordered', event_payload)
+    )
     return JsonResponse({
         'ok': True,
-        'layers': [serialize_layer(layer) for layer in layers],
+        'layers': response_layers,
     })
 
 

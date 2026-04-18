@@ -1,4 +1,5 @@
 from datetime import timedelta
+import logging
 
 from django.db import transaction
 from django.utils import timezone
@@ -7,6 +8,7 @@ from .models import Frame, FrameLock, ProjectMember, ProjectPresenceSession
 from .presence import get_presence_cutoff
 
 FRAME_LOCK_TTL_SECONDS = 35
+logger = logging.getLogger(__name__)
 
 
 def get_frame_lock_expires_at(now=None):
@@ -93,6 +95,10 @@ def cleanup_stale_frame_locks(project_id, now=None):
     unique_stale_locks = {lock.pk: lock for lock in stale_locks if lock.pk is not None}
     if unique_stale_locks:
         FrameLock.objects.filter(pk__in=list(unique_stale_locks.keys())).delete()
+        logger.info(
+            "Stale frame locks cleaned up",
+            extra={"project_id": project_id, "stale_lock_count": len(unique_stale_locks)},
+        )
     return [_serialize_frame_lock(lock) for lock in unique_stale_locks.values()]
 
 

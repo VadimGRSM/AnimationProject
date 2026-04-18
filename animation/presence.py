@@ -1,10 +1,12 @@
 from datetime import timedelta
+import logging
 
 from django.utils import timezone
 
 from .models import Frame, ProjectPresenceSession
 
 PRESENCE_STALE_AFTER_SECONDS = 90
+logger = logging.getLogger(__name__)
 
 
 def get_presence_cutoff(now=None):
@@ -15,7 +17,7 @@ def get_presence_cutoff(now=None):
 def cleanup_stale_project_presence_sessions(project_id, now=None):
     now = now or timezone.now()
     cutoff = get_presence_cutoff(now)
-    return ProjectPresenceSession.objects.filter(
+    updated = ProjectPresenceSession.objects.filter(
         project_id=project_id,
         is_active=True,
         last_seen_at__lt=cutoff,
@@ -23,6 +25,12 @@ def cleanup_stale_project_presence_sessions(project_id, now=None):
         is_active=False,
         last_seen_at=now,
     )
+    if updated:
+        logger.info(
+            "Stale presence sessions cleaned up",
+            extra={"project_id": project_id, "stale_presence_count": updated},
+        )
+    return updated
 
 
 def _active_presence_queryset(project_id, now=None):

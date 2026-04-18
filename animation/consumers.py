@@ -1,3 +1,5 @@
+import logging
+
 from channels.db import database_sync_to_async
 from channels.generic.websocket import AsyncJsonWebsocketConsumer
 
@@ -14,6 +16,8 @@ from .presence import (
     set_project_presence_frame,
     touch_project_presence_session,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class ProjectConsumer(AsyncJsonWebsocketConsumer):
@@ -87,6 +91,10 @@ class ProjectConsumer(AsyncJsonWebsocketConsumer):
                     "user": presence_state["joined_user"],
                 },
             )
+        logger.info(
+            "Project websocket connected",
+            extra={"project_id": self.project_id, "user_id": self.user_id, "role": self.role},
+        )
 
     async def disconnect(self, close_code):
         project_group_name = getattr(self, "project_group_name", None)
@@ -110,6 +118,16 @@ class ProjectConsumer(AsyncJsonWebsocketConsumer):
                     "project_id": project_id,
                     "sender_channel_name": self.channel_name,
                     "user_id": leave_state["left_user_id"],
+                },
+            )
+        if project_id and user_id:
+            logger.info(
+                "Project websocket disconnected",
+                extra={
+                    "project_id": project_id,
+                    "user_id": user_id,
+                    "close_code": close_code,
+                    "released_lock_count": len(released_locks or []),
                 },
             )
 
@@ -147,6 +165,14 @@ class ProjectConsumer(AsyncJsonWebsocketConsumer):
             lock_state = await self.acquire_frame_lock(frame_id)
             await self.broadcast_released_locks(lock_state["released"])
             if lock_state["status"] == "acquired" and lock_state["lock"] is not None:
+                logger.info(
+                    "Frame lock acquired",
+                    extra={
+                        "project_id": self.project_id,
+                        "user_id": self.user_id,
+                        "frame_id": lock_state["lock"]["frame_id"],
+                    },
+                )
                 await self.channel_layer.group_send(
                     self.project_group_name,
                     {
@@ -156,6 +182,15 @@ class ProjectConsumer(AsyncJsonWebsocketConsumer):
                     },
                 )
             else:
+                logger.info(
+                    "Frame lock denied",
+                    extra={
+                        "project_id": self.project_id,
+                        "user_id": self.user_id,
+                        "frame_id": frame_id,
+                        "reason": lock_state["reason"],
+                    },
+                )
                 await self.send_event(
                     "frame_lock_denied",
                     {
@@ -170,6 +205,15 @@ class ProjectConsumer(AsyncJsonWebsocketConsumer):
         if message_type == "frame_lock_release":
             released_locks = await self.release_requested_locks(payload.get("frame_id"))
             await self.broadcast_released_locks(released_locks)
+            if released_locks:
+                logger.info(
+                    "Frame lock released",
+                    extra={
+                        "project_id": self.project_id,
+                        "user_id": self.user_id,
+                        "released_lock_count": len(released_locks),
+                    },
+                )
             return
 
         if message_type == "frame_lock_heartbeat":
@@ -305,6 +349,12 @@ class ProjectConsumer(AsyncJsonWebsocketConsumer):
                 "project_id": event["project_id"],
                 "lock": event["lock"],
             },
+        )
+
+    async def project_metadata_event(self, event):
+        await self.send_event(
+            event["event_type"],
+            event["payload"],
         )
 
     async def presence_user_left(self, event):

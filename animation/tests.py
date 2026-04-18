@@ -4,7 +4,7 @@ import json
 import tempfile
 import zipfile
 
-from asgiref.sync import async_to_sync
+from asgiref.sync import async_to_sync, sync_to_async
 from channels.db import database_sync_to_async
 from channels.testing import WebsocketCommunicator
 from django.conf import settings
@@ -30,7 +30,7 @@ from .access import (
     user_can_access_project,
 )
 from .services.invite_service import PENDING_PROJECT_INVITE_SESSION_KEY
-from .models import AnimationProject, Frame, FrameLock, ProjectInvite, ProjectMember, ProjectPresenceSession
+from .models import AnimationProject, Frame, FrameLock, Layer, ProjectInvite, ProjectMember, ProjectPresenceSession
 
 User = get_user_model()
 
@@ -436,6 +436,13 @@ class ProjectWebsocketRoomTests(TransactionTestCase):
         )
         self.frame_one = Frame.objects.create(project=self.project, index=1, content_json='{}')
         self.frame_two = Frame.objects.create(project=self.project, index=2, content_json='{}')
+        self.layer_one = Layer.objects.create(
+            frame=self.frame_one,
+            order=1,
+            name='Background',
+            visible=True,
+            opacity=100,
+        )
         ProjectMember.objects.create(
             project=self.project,
             user=self.editor,
@@ -454,6 +461,12 @@ class ProjectWebsocketRoomTests(TransactionTestCase):
             self.viewer.pk: self._build_auth_headers(self.viewer),
             self.outsider.pk: self._build_auth_headers(self.outsider),
         }
+        self.owner_client = Client()
+        self.owner_client.force_login(self.owner)
+        self.editor_client = Client()
+        self.editor_client.force_login(self.editor)
+        self.viewer_client = Client()
+        self.viewer_client.force_login(self.viewer)
 
     def _build_auth_headers(self, user):
         client = Client()
@@ -471,7 +484,13 @@ class ProjectWebsocketRoomTests(TransactionTestCase):
         connected, detail = await communicator.connect()
         return communicator, connected, detail
 
-    async def _assert_member_can_connect(self, user, expected_role, expected_user_count=1):
+    async def _assert_member_can_connect(
+        self,
+        user,
+        expected_role,
+        expected_user_count=1,
+        expected_lock_count=0,
+    ):
         communicator, connected, _ = await self._connect(user=user)
         self.assertTrue(connected)
         ready_event = await communicator.receive_json_from()
@@ -496,16 +515,9 @@ class ProjectWebsocketRoomTests(TransactionTestCase):
         self.assertEqual(self_user['current_frame_index'], self.frame_one.index)
 
         lock_snapshot_event = await communicator.receive_json_from()
-        self.assertEqual(
-            lock_snapshot_event,
-            {
-                'type': 'frame_lock_snapshot',
-                'payload': {
-                    'project_id': self.project.pk,
-                    'locks': [],
-                },
-            },
-        )
+        self.assertEqual(lock_snapshot_event['type'], 'frame_lock_snapshot')
+        self.assertEqual(lock_snapshot_event['payload']['project_id'], self.project.pk)
+        self.assertEqual(len(lock_snapshot_event['payload']['locks']), expected_lock_count)
         return communicator, {
             'ready_event': ready_event,
             'presence_snapshot': snapshot_event,
@@ -711,6 +723,99 @@ class ProjectWebsocketRoomTests(TransactionTestCase):
 
             await viewer_communicator.disconnect()
             await owner_communicator.disconnect()
+
+        async_to_sync(scenario)()
+
+    def test_stale_presence_session_is_ignored_on_snapshot(self):
+        stale_time = timezone.now() - timedelta(minutes=5)
+        stale_presence = ProjectPresenceSession.objects.create(
+            project=self.project,
+            user=self.owner,
+            channel_name='stale-owner-channel',
+            current_frame=self.frame_one,
+            role=ProjectMember.Role.OWNER,
+            last_seen_at=stale_time,
+            is_active=True,
+        )
+
+        async def scenario():
+            communicator, connection = await self._assert_member_can_connect(
+                self.viewer,
+                ProjectMember.Role.VIEWER,
+                expected_user_count=1,
+            )
+            self.assertEqual(
+                [user['user_id'] for user in connection['presence_snapshot']['payload']['users']],
+                [self.viewer.pk],
+            )
+            await communicator.disconnect()
+
+        async_to_sync(scenario)()
+
+        stale_presence.refresh_from_db()
+        self.assertFalse(stale_presence.is_active)
+
+    def test_reconnect_receives_fresh_presence_and_lock_snapshots(self):
+        async def scenario():
+            owner_communicator, owner_connection = await self._assert_member_can_connect(
+                self.owner,
+                ProjectMember.Role.OWNER,
+            )
+            editor_communicator, editor_connection = await self._assert_member_can_connect(
+                self.editor,
+                ProjectMember.Role.EDITOR,
+                expected_user_count=2,
+            )
+            await owner_communicator.receive_json_from()
+
+            await editor_communicator.send_json_to({
+                'type': 'frame_lock_acquire',
+                'payload': {
+                    'frame_id': self.frame_one.pk,
+                },
+            })
+            editor_lock_event = await editor_communicator.receive_json_from()
+            owner_lock_event = await owner_communicator.receive_json_from()
+            self.assertEqual(editor_lock_event['type'], 'frame_lock_acquired')
+            self.assertEqual(owner_lock_event['type'], 'frame_lock_acquired')
+
+            viewer_communicator, first_connection = await self._assert_member_can_connect(
+                self.viewer,
+                ProjectMember.Role.VIEWER,
+                expected_user_count=3,
+                expected_lock_count=1,
+            )
+            await owner_communicator.receive_json_from()
+            await editor_communicator.receive_json_from()
+            await viewer_communicator.disconnect()
+
+            await owner_communicator.receive_json_from()
+            await editor_communicator.receive_json_from()
+
+            reconnected_viewer, second_connection = await self._assert_member_can_connect(
+                self.viewer,
+                ProjectMember.Role.VIEWER,
+                expected_user_count=3,
+                expected_lock_count=1,
+            )
+            self.assertNotEqual(
+                first_connection['presence_session_id'],
+                second_connection['presence_session_id'],
+            )
+            self.assertEqual(
+                second_connection['lock_snapshot']['payload']['locks'][0]['frame_id'],
+                self.frame_one.pk,
+            )
+            self.assertEqual(
+                second_connection['lock_snapshot']['payload']['locks'][0]['user_id'],
+                self.editor.pk,
+            )
+
+            await owner_communicator.receive_json_from()
+            await editor_communicator.receive_json_from()
+            await reconnected_viewer.disconnect()
+            await owner_communicator.disconnect()
+            await editor_communicator.disconnect()
 
         async_to_sync(scenario)()
 
@@ -958,6 +1063,157 @@ class ProjectWebsocketRoomTests(TransactionTestCase):
 
             await editor_communicator.disconnect()
             await owner_communicator.disconnect()
+
+        async_to_sync(scenario)()
+
+    def test_frame_create_broadcasts_to_other_client(self):
+        async def scenario():
+            viewer_communicator, _ = await self._assert_member_can_connect(
+                self.viewer,
+                ProjectMember.Role.VIEWER,
+            )
+            client_request_id = 'frame-create-test'
+
+            response = await sync_to_async(self.owner_client.post)(
+                reverse('animation:frame_create', kwargs={'pk': self.project.pk}),
+                data=json.dumps({'client_request_id': client_request_id}),
+                content_type='application/json',
+            )
+            self.assertEqual(response.status_code, 200)
+
+            event = await viewer_communicator.receive_json_from()
+            self.assertEqual(event['type'], 'frame_created')
+            self.assertEqual(event['payload']['project_id'], self.project.pk)
+            self.assertEqual(event['payload']['actor_user_id'], self.owner.pk)
+            self.assertEqual(event['payload']['client_request_id'], client_request_id)
+            self.assertEqual(event['payload']['active_index'], 3)
+            self.assertEqual(len(event['payload']['frames']), 3)
+
+            await viewer_communicator.disconnect()
+
+        async_to_sync(scenario)()
+
+    def test_frame_delete_broadcasts_to_other_client(self):
+        async def scenario():
+            viewer_communicator, _ = await self._assert_member_can_connect(
+                self.viewer,
+                ProjectMember.Role.VIEWER,
+            )
+            client_request_id = 'frame-delete-test'
+
+            response = await sync_to_async(self.owner_client.post)(
+                reverse('animation:frame_delete', kwargs={'pk': self.project.pk, 'index': self.frame_two.index}),
+                data=json.dumps({'client_request_id': client_request_id}),
+                content_type='application/json',
+            )
+            self.assertEqual(response.status_code, 200)
+
+            event = await viewer_communicator.receive_json_from()
+            self.assertEqual(event['type'], 'frame_deleted')
+            self.assertEqual(event['payload']['frame_id'], self.frame_two.pk)
+            self.assertEqual(event['payload']['deleted_frame_index'], self.frame_two.index)
+            self.assertEqual(event['payload']['actor_user_id'], self.owner.pk)
+            self.assertEqual(event['payload']['client_request_id'], client_request_id)
+            self.assertEqual(len(event['payload']['frames']), 1)
+
+            await viewer_communicator.disconnect()
+
+        async_to_sync(scenario)()
+
+    def test_frame_reorder_broadcasts_to_other_client(self):
+        async def scenario():
+            viewer_communicator, _ = await self._assert_member_can_connect(
+                self.viewer,
+                ProjectMember.Role.VIEWER,
+            )
+            client_request_id = 'frame-reorder-test'
+
+            response = await sync_to_async(self.owner_client.post)(
+                reverse('animation:frame_reorder', kwargs={'pk': self.project.pk}),
+                data=json.dumps({
+                    'ordered_ids': [self.frame_two.pk, self.frame_one.pk],
+                    'client_request_id': client_request_id,
+                }),
+                content_type='application/json',
+            )
+            self.assertEqual(response.status_code, 200)
+
+            event = await viewer_communicator.receive_json_from()
+            self.assertEqual(event['type'], 'frame_reordered')
+            self.assertEqual(event['payload']['actor_user_id'], self.owner.pk)
+            self.assertEqual(event['payload']['client_request_id'], client_request_id)
+            self.assertEqual(
+                [frame['id'] for frame in event['payload']['frames']],
+                [self.frame_two.pk, self.frame_one.pk],
+            )
+
+            await viewer_communicator.disconnect()
+
+        async_to_sync(scenario)()
+
+    def test_layer_rename_broadcasts_to_other_client(self):
+        async def scenario():
+            viewer_communicator, _ = await self._assert_member_can_connect(
+                self.viewer,
+                ProjectMember.Role.VIEWER,
+            )
+            client_request_id = 'layer-rename-test'
+
+            response = await sync_to_async(self.owner_client.post)(
+                reverse(
+                    'animation:layer_update',
+                    kwargs={'pk': self.project.pk, 'index': self.frame_one.index, 'layer_id': self.layer_one.pk},
+                ),
+                data=json.dumps({
+                    'name': 'Foreground',
+                    'client_request_id': client_request_id,
+                }),
+                content_type='application/json',
+            )
+            self.assertEqual(response.status_code, 200)
+
+            event = await viewer_communicator.receive_json_from()
+            self.assertEqual(event['type'], 'layer_renamed')
+            self.assertEqual(event['payload']['frame_id'], self.frame_one.pk)
+            self.assertEqual(event['payload']['layer_id'], self.layer_one.pk)
+            self.assertEqual(event['payload']['layer']['name'], 'Foreground')
+            self.assertEqual(event['payload']['actor_user_id'], self.owner.pk)
+            self.assertEqual(event['payload']['client_request_id'], client_request_id)
+
+            await viewer_communicator.disconnect()
+
+        async_to_sync(scenario)()
+
+    def test_layer_visibility_broadcasts_to_other_client(self):
+        async def scenario():
+            viewer_communicator, _ = await self._assert_member_can_connect(
+                self.viewer,
+                ProjectMember.Role.VIEWER,
+            )
+            client_request_id = 'layer-visibility-test'
+
+            response = await sync_to_async(self.owner_client.post)(
+                reverse(
+                    'animation:layer_update',
+                    kwargs={'pk': self.project.pk, 'index': self.frame_one.index, 'layer_id': self.layer_one.pk},
+                ),
+                data=json.dumps({
+                    'visible': False,
+                    'client_request_id': client_request_id,
+                }),
+                content_type='application/json',
+            )
+            self.assertEqual(response.status_code, 200)
+
+            event = await viewer_communicator.receive_json_from()
+            self.assertEqual(event['type'], 'layer_visibility_changed')
+            self.assertEqual(event['payload']['frame_id'], self.frame_one.pk)
+            self.assertEqual(event['payload']['layer_id'], self.layer_one.pk)
+            self.assertFalse(event['payload']['layer']['visible'])
+            self.assertEqual(event['payload']['actor_user_id'], self.owner.pk)
+            self.assertEqual(event['payload']['client_request_id'], client_request_id)
+
+            await viewer_communicator.disconnect()
 
         async_to_sync(scenario)()
 

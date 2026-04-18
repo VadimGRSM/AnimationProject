@@ -341,9 +341,16 @@ let presenceReconnectTimerId = null;
 let presenceIsClosing = false;
 let pendingFrameLockId = null;
 let currentHeldFrameLockId = null;
+const localProjectEventRequestIds = new Set();
+let projectEventRequestCounter = 0;
+let presenceReconnectAttempt = 0;
+let collaborationRecoveryPending = false;
+let collaborationRecoveryInFlight = false;
+let collaborationHasConnected = false;
 const PRESENCE_PING_INTERVAL_MS = 30000;
 const FRAME_LOCK_HEARTBEAT_INTERVAL_MS = 12000;
-const PRESENCE_RECONNECT_DELAY_MS = 2000;
+const PRESENCE_RECONNECT_BASE_DELAY_MS = 2000;
+const PRESENCE_RECONNECT_MAX_DELAY_MS = 15000;
 
 const PLAYBACK_IDLE = 'idle';
 const PLAYBACK_PLAYING = 'playing';
@@ -775,6 +782,33 @@ function sendProjectPresenceMessage(type, payload = {}) {
     return true;
 }
 
+function createProjectEventRequestId() {
+    projectEventRequestCounter += 1;
+    return `${editorProjectId}:${Date.now()}:${projectEventRequestCounter}`;
+}
+
+function rememberLocalProjectEventRequest(requestId) {
+    if (!requestId) return;
+    localProjectEventRequestIds.add(requestId);
+    window.setTimeout(() => {
+        localProjectEventRequestIds.delete(requestId);
+    }, 30000);
+}
+
+function forgetLocalProjectEventRequest(requestId) {
+    if (!requestId) return;
+    localProjectEventRequestIds.delete(requestId);
+}
+
+function shouldIgnoreProjectRealtimeEvent(payload) {
+    const requestId = payload && payload.client_request_id;
+    if (!requestId || !localProjectEventRequestIds.has(requestId)) {
+        return false;
+    }
+    localProjectEventRequestIds.delete(requestId);
+    return true;
+}
+
 function stopProjectPresencePing() {
     if (presencePingTimerId) {
         clearInterval(presencePingTimerId);
@@ -893,12 +927,153 @@ function syncCurrentFrameLock(previousFrameId = null) {
     requestFrameLock(currentFrameId);
 }
 
+async function applyRemoteFrameCreated(payload) {
+    if (Array.isArray(payload.frames)) {
+        timelineFrames = payload.frames;
+    }
+    playbackFrameImageCache.clear();
+    renderTimelineFrames();
+    if (currentFrameId) {
+        const activeFrame = getTimelineFrameById(currentFrameId);
+        if (activeFrame) {
+            currentFrameIndex = activeFrame.index;
+            setActiveTimelineIndex(currentFrameIndex);
+        }
+    }
+}
+
+async function applyRemoteFrameDeleted(payload) {
+    if (Array.isArray(payload.frames)) {
+        timelineFrames = payload.frames;
+    } else {
+        timelineFrames = [];
+    }
+    playbackFrameImageCache.clear();
+    resetOnionFrameCache();
+    removeFrameLock(payload.frame_id);
+
+    const activeFrame = currentFrameId ? getTimelineFrameById(currentFrameId) : null;
+    renderTimelineFrames();
+
+    if (activeFrame) {
+        currentFrameIndex = activeFrame.index;
+        setActiveTimelineIndex(currentFrameIndex);
+        prefetchOnionFramesForCurrent();
+        requestOnionSkinRender();
+        return;
+    }
+
+    currentFrameId = null;
+    const nextIndex = Number(payload.active_index) || 1;
+    await loadFrameByIndex(nextIndex);
+}
+
+async function applyRemoteFrameReordered(payload) {
+    if (Array.isArray(payload.frames)) {
+        timelineFrames = payload.frames;
+    }
+    playbackFrameImageCache.clear();
+    const activeFrame = currentFrameId ? getTimelineFrameById(currentFrameId) : null;
+    if (activeFrame) {
+        currentFrameIndex = activeFrame.index;
+    }
+    resetOnionFrameCache();
+    renderTimelineFrames();
+    setActiveTimelineIndex(currentFrameIndex);
+    prefetchOnionFramesForCurrent();
+    requestOnionSkinRender();
+}
+
+async function applyRemoteLayerStructureChange(payload) {
+    const frameId = Number(payload.frame_id);
+    if (!Number.isFinite(frameId) || frameId !== currentFrameId) {
+        return;
+    }
+    await loadLayers();
+}
+
+async function applyRemoteLayerUpdate(payload) {
+    const frameId = Number(payload.frame_id);
+    if (!Number.isFinite(frameId) || frameId !== currentFrameId) {
+        return;
+    }
+
+    const updatedLayer = payload.layer;
+    if (!updatedLayer || typeof updatedLayer !== 'object') {
+        await loadLayers();
+        return;
+    }
+
+    const layer = getLayerById(updatedLayer.id);
+    if (!layer) {
+        await loadLayers();
+        return;
+    }
+
+    layer.name = updatedLayer.name;
+    layer.order = updatedLayer.order;
+    layer.visible = updatedLayer.visible;
+    layer.opacity = updatedLayer.opacity;
+    sortLayersByOrder();
+    applyLayerStyles(layer);
+    renderLayerList();
+    renderScene();
+}
+
+function getPresenceReconnectDelayMs() {
+    const exponent = Math.max(0, presenceReconnectAttempt - 1);
+    const baseDelay = Math.min(
+        PRESENCE_RECONNECT_MAX_DELAY_MS,
+        PRESENCE_RECONNECT_BASE_DELAY_MS * (2 ** exponent),
+    );
+    const jitter = Math.floor(Math.random() * 350);
+    return baseDelay + jitter;
+}
+
+async function recoverCollaborativeStateAfterReconnect() {
+    if (collaborationRecoveryInFlight) return;
+    collaborationRecoveryInFlight = true;
+    try {
+        await loadTimelineFrames();
+
+        if (!timelineFrames.length) {
+            return;
+        }
+
+        const currentTimelineFrame = currentFrameId ? getTimelineFrameById(currentFrameId) : null;
+        if (currentTimelineFrame) {
+            currentFrameIndex = currentTimelineFrame.index;
+            setActiveTimelineIndex(currentFrameIndex);
+            await loadLayers();
+            prefetchOnionFramesForCurrent();
+            requestOnionSkinRender();
+            syncCurrentFrameLock();
+            syncCollaborativeEditorUi();
+            return;
+        }
+
+        const fallbackFrame = getTimelineFrameByIndex(currentFrameIndex) || timelineFrames[0] || null;
+        if (fallbackFrame && Number.isFinite(Number(fallbackFrame.index))) {
+            await loadFrameByIndex(Number(fallbackFrame.index));
+        }
+    } catch (error) {
+        console.error('Collaborative reconnect recovery error', error);
+    } finally {
+        collaborationRecoveryInFlight = false;
+    }
+}
+
 function scheduleProjectPresenceReconnect() {
     if (presenceIsClosing || presenceReconnectTimerId) return;
+    presenceReconnectAttempt += 1;
+    const reconnectDelayMs = getPresenceReconnectDelayMs();
+    setProjectPresenceEmptyState(
+        `Realtime connection lost. Reconnecting in ${Math.max(1, Math.ceil(reconnectDelayMs / 1000))}s...`,
+    );
     presenceReconnectTimerId = window.setTimeout(() => {
         presenceReconnectTimerId = null;
         connectProjectPresence();
-    }, PRESENCE_RECONNECT_DELAY_MS);
+    }, reconnectDelayMs);
 }
 
 function disconnectProjectPresence() {
@@ -918,7 +1093,7 @@ function disconnectProjectPresence() {
     }
 }
 
-function handleProjectPresenceMessage(message) {
+async function handleProjectPresenceMessage(message) {
     if (!message || typeof message !== 'object') return;
     const payload = message.payload || {};
 
@@ -930,6 +1105,10 @@ function handleProjectPresenceMessage(message) {
         }
         presenceSessionId = Number.isFinite(sessionId) && sessionId > 0 ? sessionId : null;
         collaborationConnectionReady = true;
+        const shouldRecoverState = collaborationHasConnected;
+        collaborationHasConnected = true;
+        collaborationRecoveryPending = shouldRecoverState;
+        presenceReconnectAttempt = 0;
         renderProjectPresence();
         syncCollaborativeEditorUi();
         notifyCurrentFramePresence();
@@ -960,6 +1139,10 @@ function handleProjectPresenceMessage(message) {
     if (message.type === 'frame_lock_snapshot') {
         setFrameLockSnapshot(payload.locks);
         syncCurrentFrameLock();
+        if (collaborationRecoveryPending) {
+            collaborationRecoveryPending = false;
+            void recoverCollaborativeStateAfterReconnect();
+        }
         return;
     }
 
@@ -988,6 +1171,39 @@ function handleProjectPresenceMessage(message) {
             pendingFrameLockId = null;
         }
         syncCollaborativeEditorUi();
+        return;
+    }
+
+    if (shouldIgnoreProjectRealtimeEvent(payload)) {
+        return;
+    }
+
+    if (message.type === 'frame_created') {
+        await applyRemoteFrameCreated(payload);
+        return;
+    }
+
+    if (message.type === 'frame_deleted') {
+        await applyRemoteFrameDeleted(payload);
+        return;
+    }
+
+    if (message.type === 'frame_reordered') {
+        await applyRemoteFrameReordered(payload);
+        return;
+    }
+
+    if (message.type === 'layer_created' || message.type === 'layer_deleted' || message.type === 'layer_reordered') {
+        await applyRemoteLayerStructureChange(payload);
+        return;
+    }
+
+    if (
+        message.type === 'layer_renamed'
+        || message.type === 'layer_visibility_changed'
+        || message.type === 'layer_opacity_changed'
+    ) {
+        await applyRemoteLayerUpdate(payload);
     }
 }
 
@@ -1018,7 +1234,7 @@ function connectProjectPresence() {
     socket.addEventListener('message', (event) => {
         try {
             const message = JSON.parse(event.data);
-            handleProjectPresenceMessage(message);
+            void handleProjectPresenceMessage(message);
         } catch (error) {
             console.error('Presence message parsing error', error);
         }
@@ -1036,8 +1252,8 @@ function connectProjectPresence() {
         currentHeldFrameLockId = null;
         frameLocksById.clear();
         if (!presenceIsClosing) {
+            collaborationRecoveryPending = collaborationHasConnected;
             projectPresence.clear();
-            setProjectPresenceEmptyState('Realtime connection lost. Reconnecting...');
             renderProjectPresence();
             syncCollaborativeEditorUi();
             scheduleProjectPresenceReconnect();
@@ -2402,6 +2618,8 @@ async function createLayer() {
     const listUrl = getLayerListUrl();
     if (!listUrl) return;
     beginFullHistory('layer_add');
+    const clientRequestId = createProjectEventRequestId();
+    rememberLocalProjectEventRequest(clientRequestId);
     try {
         const response = await fetch(listUrl, {
             method: 'POST',
@@ -2410,7 +2628,7 @@ async function createLayer() {
                 'X-CSRFToken': getCsrfToken(),
             },
             credentials: 'same-origin',
-            body: JSON.stringify({}),
+            body: JSON.stringify({ client_request_id: clientRequestId }),
         });
         const data = await response.json();
         if (!response.ok || !data || !data.ok) {
@@ -2422,6 +2640,7 @@ async function createLayer() {
         renderScene();
         commitFullHistory();
     } catch (error) {
+        forgetLocalProjectEventRequest(clientRequestId);
         cancelPendingHistory();
         console.error('Layer creation error', error);
     }
@@ -2431,6 +2650,8 @@ async function updateLayer(layerId, updates) {
     if (isEditingLocked()) return null;
     const url = getLayerUpdateUrl(layerId);
     if (!url) return null;
+    const clientRequestId = createProjectEventRequestId();
+    rememberLocalProjectEventRequest(clientRequestId);
     try {
         const response = await fetch(url, {
             method: 'POST',
@@ -2439,7 +2660,10 @@ async function updateLayer(layerId, updates) {
                 'X-CSRFToken': getCsrfToken(),
             },
             credentials: 'same-origin',
-            body: JSON.stringify(updates || {}),
+            body: JSON.stringify({
+                ...(updates || {}),
+                client_request_id: clientRequestId,
+            }),
         });
         const data = await response.json();
         if (!response.ok || !data || !data.ok) {
@@ -2447,6 +2671,7 @@ async function updateLayer(layerId, updates) {
         }
         return data.layer || null;
     } catch (error) {
+        forgetLocalProjectEventRequest(clientRequestId);
         console.error('Layer update error', error);
         return null;
     }
@@ -2457,6 +2682,8 @@ async function deleteLayer(layerId) {
     const url = getLayerDeleteUrl(layerId);
     if (!url) return;
     beginFullHistory('layer_delete');
+    const clientRequestId = createProjectEventRequestId();
+    rememberLocalProjectEventRequest(clientRequestId);
     try {
         const response = await fetch(url, {
             method: 'POST',
@@ -2465,7 +2692,7 @@ async function deleteLayer(layerId) {
                 'X-CSRFToken': getCsrfToken(),
             },
             credentials: 'same-origin',
-            body: JSON.stringify({}),
+            body: JSON.stringify({ client_request_id: clientRequestId }),
         });
         const data = await response.json();
         if (!response.ok || !data || !data.ok) {
@@ -2474,6 +2701,7 @@ async function deleteLayer(layerId) {
         mergeLayerList(data.layers || []);
         commitFullHistory();
     } catch (error) {
+        forgetLocalProjectEventRequest(clientRequestId);
         cancelPendingHistory();
         console.error('Layer deletion error', error);
     }
@@ -2482,6 +2710,8 @@ async function deleteLayer(layerId) {
 async function saveLayerOrder(orderedIds) {
     const url = getLayerReorderUrl();
     if (!url) return;
+    const clientRequestId = createProjectEventRequestId();
+    rememberLocalProjectEventRequest(clientRequestId);
     try {
         const response = await fetch(url, {
             method: 'POST',
@@ -2490,7 +2720,10 @@ async function saveLayerOrder(orderedIds) {
                 'X-CSRFToken': getCsrfToken(),
             },
             credentials: 'same-origin',
-            body: JSON.stringify({ ordered_ids: orderedIds }),
+            body: JSON.stringify({
+                ordered_ids: orderedIds,
+                client_request_id: clientRequestId,
+            }),
         });
         const data = await response.json();
         if (!response.ok || !data || !data.ok) {
@@ -2499,6 +2732,7 @@ async function saveLayerOrder(orderedIds) {
         mergeLayerList(data.layers || []);
         commitFullHistory();
     } catch (error) {
+        forgetLocalProjectEventRequest(clientRequestId);
         cancelPendingHistory();
         console.error('Layer order save error', error);
     }
@@ -6641,8 +6875,13 @@ async function createFrameOnServer(options = {}) {
         return;
     }
 
+    const clientRequestId = createProjectEventRequestId();
+    rememberLocalProjectEventRequest(clientRequestId);
+
     try {
-        const payload = shouldDuplicate ? { duplicate_from_index: currentFrameIndex } : {};
+        const payload = shouldDuplicate
+            ? { duplicate_from_index: currentFrameIndex, client_request_id: clientRequestId }
+            : { client_request_id: clientRequestId };
         const response = await fetch(frameCreateUrl, {
             method: 'POST',
             headers: {
@@ -6664,6 +6903,7 @@ async function createFrameOnServer(options = {}) {
         renderTimelineFrames();
         await loadFrameByIndex(currentFrameIndex);
     } catch (error) {
+        forgetLocalProjectEventRequest(clientRequestId);
         console.error('Frame creation error', error);
         setSaveStatus('Could not create the frame.', 'error');
         setSaveIndicator('error');
@@ -6689,6 +6929,9 @@ async function deleteCurrentFrameOnServer() {
         return;
     }
 
+    const clientRequestId = createProjectEventRequestId();
+    rememberLocalProjectEventRequest(clientRequestId);
+
     try {
         const response = await fetch(deleteUrl, {
             method: 'POST',
@@ -6697,7 +6940,7 @@ async function deleteCurrentFrameOnServer() {
                 'X-CSRFToken': getCsrfToken(),
             },
             credentials: 'same-origin',
-            body: JSON.stringify({}),
+            body: JSON.stringify({ client_request_id: clientRequestId }),
         });
         const data = await response.json();
         if (!response.ok || !data || !data.ok) {
@@ -6712,6 +6955,7 @@ async function deleteCurrentFrameOnServer() {
         renderTimelineFrames();
         await loadFrameByIndex(nextIndex);
     } catch (error) {
+        forgetLocalProjectEventRequest(clientRequestId);
         console.error('Frame deletion error', error);
         setSaveStatus('Could not delete the frame.', 'error');
         setSaveIndicator('error');
@@ -6725,6 +6969,9 @@ async function saveFrameOrder(orderedIds) {
     if (!frameReorderUrl) return;
     if (!Array.isArray(orderedIds) || orderedIds.length < 2) return;
 
+    const clientRequestId = createProjectEventRequestId();
+    rememberLocalProjectEventRequest(clientRequestId);
+
     try {
         const response = await fetch(frameReorderUrl, {
             method: 'POST',
@@ -6733,7 +6980,10 @@ async function saveFrameOrder(orderedIds) {
                 'X-CSRFToken': getCsrfToken(),
             },
             credentials: 'same-origin',
-            body: JSON.stringify({ ordered_ids: orderedIds }),
+            body: JSON.stringify({
+                ordered_ids: orderedIds,
+                client_request_id: clientRequestId,
+            }),
         });
         const data = await response.json();
         if (!response.ok || !data || !data.ok) {
@@ -6755,6 +7005,7 @@ async function saveFrameOrder(orderedIds) {
         prefetchOnionFramesForCurrent();
         requestOnionSkinRender();
     } catch (error) {
+        forgetLocalProjectEventRequest(clientRequestId);
         console.error('Frame order save error', error);
     }
 }
