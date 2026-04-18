@@ -4,6 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <title>{% block title %}AnimStudio{% endblock %}</title>
+    <link rel="icon" href="{% url 'animation:favicon' %}" sizes="any">
     <link rel="stylesheet" href="{% static 'animation/style.css' %}">
     <script>
         const currentUserIdRaw = document.documentElement.dataset.currentUserId || '';

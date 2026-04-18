@@ -156,22 +156,89 @@
 
 <script>
     document.addEventListener('DOMContentLoaded', () => {
+        const feedbackTimers = new WeakMap();
+
+        function setCopyFeedback(button, text) {
+            const defaultText = button.dataset.defaultLabel || 'Copy invite link';
+            const existingTimer = feedbackTimers.get(button);
+            if (existingTimer) {
+                window.clearTimeout(existingTimer);
+            }
+            button.textContent = text;
+            const timerId = window.setTimeout(() => {
+                button.textContent = defaultText;
+                feedbackTimers.delete(button);
+            }, 1400);
+            feedbackTimers.set(button, timerId);
+        }
+
+        function getInviteUrl(button) {
+            const input = button.parentElement ? button.parentElement.querySelector('input[readonly]') : null;
+            const rawValue = (button.dataset.copyText || (input ? input.value : '') || '').trim();
+            if (!rawValue) return '';
+            if (/^https?:\/\//i.test(rawValue)) {
+                return rawValue;
+            }
+            try {
+                return new URL(rawValue, window.location.origin).toString();
+            } catch (error) {
+                return '';
+            }
+        }
+
+        function fallbackCopyText(text) {
+            const textarea = document.createElement('textarea');
+            textarea.value = text;
+            textarea.setAttribute('readonly', 'readonly');
+            textarea.setAttribute('aria-hidden', 'true');
+            textarea.style.position = 'fixed';
+            textarea.style.top = '-9999px';
+            textarea.style.left = '-9999px';
+            document.body.appendChild(textarea);
+            textarea.focus();
+            textarea.select();
+            textarea.setSelectionRange(0, textarea.value.length);
+
+            let didCopy = false;
+            try {
+                didCopy = document.execCommand('copy');
+            } catch (error) {
+                didCopy = false;
+            }
+
+            document.body.removeChild(textarea);
+            return didCopy;
+        }
+
         document.querySelectorAll('.js-copy-invite-link').forEach((button) => {
+            button.dataset.defaultLabel = button.textContent.trim();
             button.addEventListener('click', async () => {
-                const text = button.dataset.copyText || '';
-                if (!text) return;
+                const text = getInviteUrl(button);
+                if (!text) {
+                    setCopyFeedback(button, 'Copy failed');
+                    return;
+                }
+
+                let didCopy = false;
 
                 try {
-                    await navigator.clipboard.writeText(text);
-                    button.textContent = 'Copied';
-                    window.setTimeout(() => {
-                        button.textContent = 'Copy invite link';
-                    }, 1200);
+                    if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+                        await navigator.clipboard.writeText(text);
+                        didCopy = true;
+                    }
                 } catch (error) {
-                    button.textContent = 'Copy failed';
-                    window.setTimeout(() => {
-                        button.textContent = 'Copy invite link';
-                    }, 1200);
+                    didCopy = false;
+                }
+
+                if (!didCopy) {
+                    didCopy = fallbackCopyText(text);
+                }
+
+                if (didCopy) {
+                    button.dataset.copyText = text;
+                    setCopyFeedback(button, 'Copied');
+                } else {
+                    setCopyFeedback(button, 'Copy failed');
                 }
             });
         });

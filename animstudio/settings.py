@@ -138,3 +138,26 @@ SOCIALACCOUNT_PROVIDERS = {
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "filters": {
+        "ignore_scanner_disallowed_host": {
+            "()": "animstudio.log_filters.IgnoreScannerDisallowedHostFilter",
+        },
+    },
+    "handlers": {
+        "console_disallowed_host": {
+            "class": "logging.StreamHandler",
+            "filters": ["ignore_scanner_disallowed_host"],
+        },
+    },
+    "loggers": {
+        "django.security.DisallowedHost": {
+            "handlers": ["console_disallowed_host"],
+            "level": "ERROR",
+            "propagate": False,
+        },
+    },
+}

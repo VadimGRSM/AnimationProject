@@ -4,6 +4,12 @@ from . import views
 app_name = 'animation'
 
 urlpatterns = [
+    path('favicon.ico', views.favicon, name='favicon'),
+    path('favicon.png', views.favicon, name='favicon_png'),
+    path('robots.txt', views.robots_txt, name='robots_txt'),
+    path('security.txt', views.security_txt, name='security_txt'),
+    path('.well-known/security.txt', views.security_txt, name='security_txt_well_known'),
+    path('sitemap.xml', views.sitemap_xml, name='sitemap_xml'),
     path('', views.project_list, name='project_list'),
     path('project/create/', views.project_create, name='project_create'),
     path('project/<int:pk>/share/', views.project_share, name='project_share'),

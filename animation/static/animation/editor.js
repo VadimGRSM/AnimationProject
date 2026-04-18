@@ -1130,11 +1130,11 @@ function bindHistoryEvents() {
 function fillLayerUrl(template, frameIndex, layerId) {
     if (!template) return '';
     let result = template;
-    if (typeof frameIndex === 'number') {
-        result = result.replace('/0/', `/${frameIndex}/`);
+    if (typeof frameIndex === 'number' && Number.isFinite(frameIndex)) {
+        result = result.replace(/\/frame\/0\//, `/frame/${frameIndex}/`);
     }
-    if (typeof layerId === 'number') {
-        result = result.replace('/0/', `/${layerId}/`);
+    if (typeof layerId === 'number' && Number.isFinite(layerId)) {
+        result = result.replace(/\/layers\/0\//, `/layers/${layerId}/`);
     }
     return result;
 }
@@ -1146,8 +1146,8 @@ function fillLayerUrl(template, frameIndex, layerId) {
 function fillFrameUrl(template, frameIndex) {
     if (!template) return '';
     let result = template;
-    if (typeof frameIndex === 'number') {
-        result = result.replace('/0/', `/${frameIndex}/`);
+    if (typeof frameIndex === 'number' && Number.isFinite(frameIndex)) {
+        result = result.replace(/\/frame\/0\//, `/frame/${frameIndex}/`);
     }
     return result;
 }
@@ -2643,6 +2643,19 @@ function buildRectSelection(fromX, fromY, toX, toY) {
     };
 }
 
+function alignRasterBoundsToPixelGrid(x, y, width, height) {
+    const left = Math.floor(x);
+    const top = Math.floor(y);
+    const right = Math.ceil(x + width);
+    const bottom = Math.ceil(y + height);
+    return {
+        x: left,
+        y: top,
+        width: Math.max(1, right - left),
+        height: Math.max(1, bottom - top),
+    };
+}
+
 function buildEllipseSelection(fromX, fromY, toX, toY) {
     const rect = normalizeRect(fromX, fromY, toX, toY);
     return {
@@ -3077,6 +3090,16 @@ function clampMoveBoundsToCanvas(bounds) {
     };
 }
 
+function snapMoveBoundsToPixels(bounds) {
+    if (!bounds) return bounds;
+    return {
+        x: Math.round(bounds.x),
+        y: Math.round(bounds.y),
+        width: bounds.width,
+        height: bounds.height,
+    };
+}
+
 function getResizedBoundsFromHandle(startBounds, handleId, deltaX, deltaY) {
     if (!startBounds) return startBounds;
     const minSize = SELECTION_MIN_SIZE;
@@ -3311,7 +3334,7 @@ function updateSelectionTransform(event) {
             width: selectionTransform.startBounds.width,
             height: selectionTransform.startBounds.height,
         };
-        nextBounds = clampMoveBoundsToCanvas(moved);
+        nextBounds = snapMoveBoundsToPixels(clampMoveBoundsToCanvas(moved));
         const appliedDx = nextBounds.x - selectionTransform.startBounds.x;
         const appliedDy = nextBounds.y - selectionTransform.startBounds.y;
         nextSelection = translateSelection(selectionTransform.startSelection, appliedDx, appliedDy);
@@ -3434,34 +3457,89 @@ function updateSelectionTransformHover(event, x, y) {
     setCanvasCursorOverride(null);
 }
 
-function copySelectionToClipboard() {
-    if (!selection || !bufferCanvas) return false;
+function buildSelectionClipboardCanvas(selectionShape = selection) {
+    if (!selectionShape || !bufferCanvas) return null;
     const sourceCanvas = hasFloatingSelection() ? (getActiveLayerCompositeCanvas() || bufferCanvas) : bufferCanvas;
-    const bounds = getSelectionBounds(selection);
+    const bounds = getSelectionBounds(selectionShape);
     const clampedBounds = clampSelectionBounds(bounds);
     if (!clampedBounds || clampedBounds.width <= 0 || clampedBounds.height <= 0) {
-        return false;
+        return null;
     }
 
     const clipboardCanvas = document.createElement('canvas');
     clipboardCanvas.width = Math.ceil(clampedBounds.width);
     clipboardCanvas.height = Math.ceil(clampedBounds.height);
     const clipboardCtx = clipboardCanvas.getContext('2d');
-    if (!clipboardCtx) return false;
+    if (!clipboardCtx) return null;
 
-    if (selection.type === SELECT_MAGIC && selection.maskCanvas) {
+    if (selectionShape.type === SELECT_MAGIC && selectionShape.maskCanvas) {
         clipboardCtx.drawImage(bufferCanvas, -clampedBounds.x, -clampedBounds.y);
         clipboardCtx.globalCompositeOperation = 'destination-in';
-        clipboardCtx.drawImage(selection.maskCanvas, -clampedBounds.x, -clampedBounds.y);
+        clipboardCtx.drawImage(selectionShape.maskCanvas, -clampedBounds.x, -clampedBounds.y);
         clipboardCtx.globalCompositeOperation = 'source-over';
     } else {
         clipboardCtx.save();
         clipboardCtx.translate(-clampedBounds.x, -clampedBounds.y);
-        appendSelectionPath(clipboardCtx, selection);
+        appendSelectionPath(clipboardCtx, selectionShape);
         clipboardCtx.clip();
         clipboardCtx.drawImage(sourceCanvas, 0, 0);
         clipboardCtx.restore();
     }
+
+    return {
+        canvas: clipboardCanvas,
+        bounds: clampedBounds,
+    };
+}
+
+function canvasToBlob(canvas, type = 'image/png') {
+    return new Promise((resolve) => {
+        if (!canvas || typeof canvas.toBlob !== 'function') {
+            resolve(null);
+            return;
+        }
+        canvas.toBlob((blob) => resolve(blob), type);
+    });
+}
+
+async function copySelectionImageToSystemClipboard(clipboardEntry = selectionClipboard) {
+    if (!clipboardEntry || !clipboardEntry.canvas) return false;
+    if (!navigator.clipboard || typeof navigator.clipboard.write !== 'function' || typeof ClipboardItem === 'undefined') {
+        return false;
+    }
+
+    try {
+        const blob = await canvasToBlob(clipboardEntry.canvas, 'image/png');
+        if (!blob) return false;
+        await navigator.clipboard.write([
+            new ClipboardItem({
+                'image/png': blob,
+            }),
+        ]);
+        if (selectionClipboard === clipboardEntry) {
+            clipboardEntry.systemImage = {
+                type: blob.type || 'image/png',
+                size: blob.size,
+                width: clipboardEntry.width,
+                height: clipboardEntry.height,
+            };
+        }
+        return true;
+    } catch (error) {
+        if (selectionClipboard === clipboardEntry) {
+            clipboardEntry.systemImage = null;
+        }
+        console.warn('Could not copy the selection image to the system clipboard.', error);
+        return false;
+    }
+}
+
+function copySelectionToClipboard() {
+    if (!selection || !bufferCanvas) return false;
+    const clipboardCapture = buildSelectionClipboardCanvas(selection);
+    if (!clipboardCapture || !clipboardCapture.canvas) return false;
+    const clipboardCanvas = clipboardCapture.canvas;
+    const clampedBounds = clipboardCapture.bounds;
 
     selectionClipboard = {
         canvas: clipboardCanvas,
@@ -3470,6 +3548,7 @@ function copySelectionToClipboard() {
         originX: clampedBounds.x,
         originY: clampedBounds.y,
         selection: selection.type === SELECT_MAGIC ? null : cloneSelectionShape(selection),
+        systemImage: null,
     };
     return true;
 }
@@ -3496,6 +3575,7 @@ function clearSelectionContent() {
 function cutSelectionToClipboard() {
     const didCopy = copySelectionToClipboard();
     if (!didCopy) return false;
+    void copySelectionImageToSystemClipboard(selectionClipboard);
     if (hasFloatingSelection()) {
         resetSelectionTransformState();
         renderScene();
@@ -3525,6 +3605,8 @@ function pasteSelectionFromClipboard() {
     let pasteY = Number.isFinite(lastPointerY) ? lastPointerY : selectionClipboard.originY;
     pasteX -= selectionClipboard.width / 2;
     pasteY -= selectionClipboard.height / 2;
+    pasteX = Math.round(pasteX);
+    pasteY = Math.round(pasteY);
 
     const deltaX = pasteX - selectionClipboard.originX;
     const deltaY = pasteY - selectionClipboard.originY;
@@ -4814,9 +4896,17 @@ function drawOnionFrames(targetCtx, indices, opacityPercent) {
     if (!targetCtx) return;
     const alpha = clamp(Number(opacityPercent) || 0, 0, 100) / 100;
     if (!alpha) return;
+    const frameOrigin = getFrameOrigin();
 
     targetCtx.save();
-    targetCtx.setTransform(scale, 0, 0, scale, offsetX, offsetY);
+    targetCtx.setTransform(
+        scale,
+        0,
+        0,
+        scale,
+        offsetX + frameOrigin.x * scale,
+        offsetY + frameOrigin.y * scale,
+    );
     targetCtx.globalAlpha = alpha;
 
     indices.forEach((frameIndex) => {
@@ -6736,11 +6826,15 @@ function pasteExternalImage(image, options = {}) {
         bufferCanvas.width / naturalWidth,
         bufferCanvas.height / naturalHeight,
     );
-    const drawWidth = naturalWidth * fitScale;
-    const drawHeight = naturalHeight * fitScale;
-
-    const pasteX = centerX - drawWidth / 2;
-    const pasteY = centerY - drawHeight / 2;
+    const rawDrawWidth = naturalWidth * fitScale;
+    const rawDrawHeight = naturalHeight * fitScale;
+    const rawPasteX = centerX - rawDrawWidth / 2;
+    const rawPasteY = centerY - rawDrawHeight / 2;
+    const alignedBounds = alignRasterBoundsToPixelGrid(rawPasteX, rawPasteY, rawDrawWidth, rawDrawHeight);
+    const pasteX = alignedBounds.x;
+    const pasteY = alignedBounds.y;
+    const drawWidth = alignedBounds.width;
+    const drawHeight = alignedBounds.height;
 
     if (selection && selection.type === SELECT_MAGIC && selection.maskCanvas) {
         if (!ensureSelectionScratchCanvas()) {
@@ -6792,7 +6886,54 @@ function pasteImageFile(file) {
     image.src = url;
 }
 
-function handlePaste(event) {
+async function getClipboardImageDimensions(file) {
+    if (!file) return null;
+
+    if (typeof createImageBitmap === 'function') {
+        try {
+            const bitmap = await createImageBitmap(file);
+            const dimensions = {
+                width: bitmap.width,
+                height: bitmap.height,
+            };
+            if (typeof bitmap.close === 'function') {
+                bitmap.close();
+            }
+            return dimensions;
+        } catch (error) {
+            // Fall back to Image below.
+        }
+    }
+
+    return new Promise((resolve) => {
+        const url = URL.createObjectURL(file);
+        const image = new Image();
+        image.onload = () => {
+            URL.revokeObjectURL(url);
+            resolve({
+                width: image.naturalWidth || image.width || 0,
+                height: image.naturalHeight || image.height || 0,
+            });
+        };
+        image.onerror = () => {
+            URL.revokeObjectURL(url);
+            resolve(null);
+        };
+        image.src = url;
+    });
+}
+
+async function doesClipboardImageMatchSelection(file) {
+    const clipboardMeta = selectionClipboard ? selectionClipboard.systemImage : null;
+    if (!clipboardMeta || !file) return false;
+    if (clipboardMeta.type && file.type && clipboardMeta.type !== file.type) return false;
+    if (clipboardMeta.size && file.size && clipboardMeta.size !== file.size) return false;
+    const dimensions = await getClipboardImageDimensions(file);
+    if (!dimensions) return false;
+    return dimensions.width === clipboardMeta.width && dimensions.height === clipboardMeta.height;
+}
+
+async function handlePaste(event) {
     if (isEditingLocked()) return;
     if (!event) return;
     if (isTextInputElement(event.target)) return;
@@ -6806,7 +6947,11 @@ function handlePaste(event) {
         const file = imageItem.getAsFile();
         if (file) {
             event.preventDefault();
-            pasteImageFile(file);
+            if (await doesClipboardImageMatchSelection(file) && selectionClipboard) {
+                pasteSelectionFromClipboard();
+            } else {
+                pasteImageFile(file);
+            }
         }
         return;
     }
@@ -6874,7 +7019,10 @@ function handleKeyDown(event) {
     if (isCtrl && event.code === 'KeyC') {
         if (!isTextInputElement(event.target)) {
             event.preventDefault();
-            copySelectionToClipboard();
+            const didCopy = copySelectionToClipboard();
+            if (didCopy) {
+                void copySelectionImageToSystemClipboard(selectionClipboard);
+            }
         }
         return;
     }

@@ -5,6 +5,7 @@ import mimetypes
 import os
 import zipfile
 from binascii import Error as BinasciiError
+from email.utils import parseaddr
 
 from django.contrib import messages
 from django.conf import settings
@@ -13,7 +14,7 @@ from django.core import signing
 from django.core.exceptions import RequestDataTooBig
 from django.db import transaction
 from django.db.models import Max, Prefetch
-from django.http import JsonResponse, FileResponse, Http404
+from django.http import JsonResponse, FileResponse, Http404, HttpResponse
 from django.shortcuts import render, redirect, get_object_or_404
 from django.urls import reverse
 from django.contrib.auth.decorators import login_required
@@ -35,6 +36,41 @@ MAX_EXPORT_PNG_ZIP_FRAMES = 2000
 EXPORT_TOKEN_MAX_AGE_SECONDS = 60 * 60  # 1 hour
 EXPORT_SIGNING_SALT = 'animstudio.export'
 EXPORT_BASE_DIR = 'exports'
+FAVICON_SVG = (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">'
+    '<rect width="64" height="64" rx="14" fill="#111827"/>'
+    '<path d="M18 46V18h10l8 15 8-15h10v28h-8V30l-7 13h-6l-7-13v16Z" fill="#f9fafb"/>'
+    '</svg>'
+)
+ROBOTS_TXT = 'User-agent: *\nDisallow:\n'
+EMPTY_SITEMAP_XML = (
+    '<?xml version="1.0" encoding="UTF-8"?>\n'
+    '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"></urlset>\n'
+)
+
+
+def favicon(request):
+    return HttpResponse(FAVICON_SVG, content_type='image/svg+xml')
+
+
+def robots_txt(request):
+    return HttpResponse(ROBOTS_TXT, content_type='text/plain; charset=utf-8')
+
+
+def security_txt(request):
+    _, contact_email = parseaddr(getattr(settings, 'DEFAULT_FROM_EMAIL', ''))
+    if not contact_email:
+        contact_email = 'security@animstudio.local'
+    body = '\n'.join([
+        f'Contact: mailto:{contact_email}',
+        f'Canonical: {request.build_absolute_uri("/.well-known/security.txt")}',
+        '',
+    ])
+    return HttpResponse(body, content_type='text/plain; charset=utf-8')
+
+
+def sitemap_xml(request):
+    return HttpResponse(EMPTY_SITEMAP_XML, content_type='application/xml; charset=utf-8')
 
 
 def serialize_layer(layer):
