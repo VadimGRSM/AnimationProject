@@ -1123,6 +1123,11 @@ body.modal-open {
     height: 18px;
 }
 
+.anim-page--editor .tool-icon,
+.anim-page--editor .layer-icon {
+    filter: brightness(0) invert(1);
+}
+
 .save-indicator {
     width: 10px;
     height: 10px;
@@ -1456,8 +1461,13 @@ body.modal-open {
     display: grid;
     grid-template-rows: auto minmax(0, 1fr) minmax(220px, 0.9fr);
     gap: 16px;
-    min-width: 0;
+    width: 320px;
+    min-width: 320px;
+    max-width: 320px;
     min-height: 0;
+    justify-self: stretch;
+    align-self: stretch;
+    box-sizing: border-box;
 }
 
 .editor-sidebar__section,
@@ -1473,6 +1483,10 @@ body.modal-open {
     padding: 16px;
     display: grid;
     gap: 14px;
+    width: 100%;
+    min-width: 0;
+    align-self: stretch;
+    box-sizing: border-box;
 }
 
 .history-panel {
@@ -1481,13 +1495,16 @@ body.modal-open {
     top: auto !important;
     right: auto !important;
     bottom: auto !important;
-    width: auto;
+    width: 100%;
     padding: 16px;
     display: grid;
     gap: 14px;
     line-height: normal;
     overflow: hidden;
     min-height: 0;
+    min-width: 0;
+    align-self: stretch;
+    box-sizing: border-box;
 }
 
 .layers-panel {
@@ -1496,12 +1513,15 @@ body.modal-open {
     top: auto !important;
     right: auto !important;
     bottom: auto !important;
-    width: auto;
+    width: 100%;
     padding: 16px;
     display: grid;
     gap: 14px;
     overflow: hidden;
     min-height: 0;
+    min-width: 0;
+    align-self: stretch;
+    box-sizing: border-box;
     --layer-preview-size: 36px;
 }
 
@@ -1686,9 +1706,16 @@ body.modal-open {
     margin: 0;
     padding: 0;
     display: grid;
+    grid-template-columns: minmax(0, 1fr);
     gap: 8px;
     overflow-y: auto;
+    overflow-x: hidden;
     min-height: 0;
+    width: 100%;
+    min-width: 0;
+    align-self: stretch;
+    scrollbar-gutter: stable both-edges;
+    box-sizing: border-box;
 }
 
 .history-empty,
@@ -1706,6 +1733,10 @@ body.modal-open {
     color: #dbeafe;
     font-size: 13px;
     cursor: pointer;
+    width: 100%;
+    min-width: 0;
+    justify-self: stretch;
+    box-sizing: border-box;
 }
 
 .history-item--current {
@@ -1727,6 +1758,11 @@ body.modal-open {
     gap: 8px;
     background: rgba(15, 23, 42, 0.9);
     cursor: grab;
+    width: 100%;
+    min-width: 0;
+    justify-self: stretch;
+    align-self: stretch;
+    box-sizing: border-box;
 }
 
 .layer-item--locked {
@@ -2288,6 +2324,9 @@ body.modal-open {
         grid-column: 1 / -1;
         grid-template-columns: repeat(3, minmax(0, 1fr));
         grid-template-rows: none;
+        width: 100%;
+        min-width: 0;
+        max-width: none;
     }
 
     .canvas-stage {
@@ -2310,6 +2349,9 @@ body.modal-open {
 
     .editor-sidebar {
         grid-template-columns: 1fr;
+        width: 100%;
+        min-width: 0;
+        max-width: none;
     }
 }
 
@@ -2320,6 +2362,12 @@ body.modal-open {
 
     .editor-main {
         grid-template-columns: 1fr;
+    }
+
+    .editor-sidebar {
+        width: 100%;
+        min-width: 0;
+        max-width: none;
     }
 
     .editor-toolbar-panel {
