@@ -38,6 +38,10 @@ def _serialize_frame_lock(lock):
     }
 
 
+def _get_frame_lock_for_serialization(lock_pk):
+    return FrameLock.objects.select_related('frame', 'user', 'presence_session').get(pk=lock_pk)
+
+
 def _active_lock_queryset(project_id, now=None):
     now = now or timezone.now()
     presence_cutoff = get_presence_cutoff(now)
@@ -161,16 +165,12 @@ def acquire_frame_lock(project_id, frame_id, user_id, role, presence_session_id)
             'released': stale_releases,
         }
 
-    existing_lock = FrameLock.objects.select_for_update().select_related(
-        'frame',
-        'user',
-        'presence_session',
-    ).filter(frame_id=frame.pk).first()
+    existing_lock = FrameLock.objects.select_for_update().filter(frame_id=frame.pk).first()
     if existing_lock and existing_lock.presence_session_id != presence_session.pk:
         return {
             'status': 'denied',
             'reason': 'locked_by_other',
-            'lock': _serialize_frame_lock(existing_lock),
+            'lock': _serialize_frame_lock(_get_frame_lock_for_serialization(existing_lock.pk)),
             'released': stale_releases,
         }
 
@@ -205,7 +205,7 @@ def acquire_frame_lock(project_id, frame_id, user_id, role, presence_session_id)
     return {
         'status': 'acquired',
         'reason': 'ok',
-        'lock': _serialize_frame_lock(lock),
+        'lock': _serialize_frame_lock(_get_frame_lock_for_serialization(lock.pk)),
         'released': released,
     }
 
