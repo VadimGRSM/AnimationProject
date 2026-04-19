@@ -14,6 +14,7 @@ from .locks import (
     release_frame_locks,
     release_layer_locks,
 )
+from .models import Frame, ProjectPresenceSession
 from .presence import (
     activate_project_presence_session,
     deactivate_project_presence_session,
@@ -168,12 +169,14 @@ class ProjectConsumer(AsyncJsonWebsocketConsumer):
 
         if message_type == "presence_set_frame":
             frame_id = payload.get("frame_id")
-            frame_state = await self.update_presence_frame(frame_id)
-            released_layer_locks = []
-            if frame_state["changed"]:
+            requested_frame_state = await self.get_requested_presence_frame_state(frame_id)
+            if not requested_frame_state["is_valid"]:
+                return
+            if requested_frame_state["changed"]:
                 released_layer_locks = await self.release_all_layer_locks()
                 self.remove_owned_layer_locks(released_layer_locks)
                 await self.broadcast_released_layer_locks(released_layer_locks)
+            frame_state = await self.update_presence_frame(requested_frame_state["frame_id"])
             if frame_state["changed"] and frame_state["user"] is not None:
                 await self.channel_layer.group_send(
                     self.project_group_name,
@@ -359,6 +362,40 @@ class ProjectConsumer(AsyncJsonWebsocketConsumer):
             channel_name=self.channel_name,
             frame_id=frame_id,
         )
+
+    @database_sync_to_async
+    def get_requested_presence_frame_state(self, frame_id):
+        session = ProjectPresenceSession.objects.filter(
+            project_id=self.project_id,
+            user_id=self.user_id,
+            channel_name=self.channel_name,
+            is_active=True,
+        ).first()
+        if session is None:
+            return {
+                "is_valid": False,
+                "frame_id": None,
+                "changed": False,
+            }
+
+        next_frame_id = None
+        if frame_id is not None:
+            next_frame_id = Frame.objects.filter(
+                project_id=self.project_id,
+                pk=frame_id,
+            ).values_list("id", flat=True).first()
+            if next_frame_id is None:
+                return {
+                    "is_valid": False,
+                    "frame_id": None,
+                    "changed": False,
+                }
+
+        return {
+            "is_valid": True,
+            "frame_id": next_frame_id,
+            "changed": session.current_frame_id != next_frame_id,
+        }
 
     @database_sync_to_async
     def get_frame_lock_snapshot(self):
