@@ -717,6 +717,13 @@ class ProjectWebsocketRoomTests(TransactionTestCase):
         self.editor = User.objects.create_user(email='editor-ws@example.com', password='test')
         self.viewer = User.objects.create_user(email='viewer-ws@example.com', password='test')
         self.outsider = User.objects.create_user(email='outsider-ws@example.com', password='test')
+        for user, avatar_name in (
+            (self.owner, 'avatars/owner-ws.png'),
+            (self.editor, 'avatars/editor-ws.png'),
+            (self.viewer, 'avatars/viewer-ws.png'),
+        ):
+            user.avatar = avatar_name
+            user.save(update_fields=['avatar'])
 
         self.project = AnimationProject.objects.create(
             owner=self.owner,
@@ -812,6 +819,10 @@ class ProjectWebsocketRoomTests(TransactionTestCase):
         self.assertEqual(self_user['role'], expected_role)
         self.assertEqual(self_user['current_frame_id'], self.frame_one.pk)
         self.assertEqual(self_user['current_frame_index'], self.frame_one.index)
+        self.assertEqual(self_user['display_name'], user.display_name)
+        self.assertEqual(self_user['email'], user.email)
+        self.assertEqual(self_user['avatar_url'], user.avatar_url)
+        self.assertEqual(self_user['avatar_initial'], (user.display_name or user.email)[:1].upper())
 
         lock_snapshot_event = await communicator.receive_json_from()
         self.assertEqual(lock_snapshot_event['type'], 'frame_lock_snapshot')
@@ -935,6 +946,8 @@ class ProjectWebsocketRoomTests(TransactionTestCase):
                             'user_id': self.viewer.pk,
                             'display_name': self.viewer.display_name,
                             'email': self.viewer.email,
+                            'avatar_url': self.viewer.avatar_url,
+                            'avatar_initial': (self.viewer.display_name or self.viewer.email)[:1].upper(),
                             'role': ProjectMember.Role.VIEWER,
                             'current_frame_id': self.frame_one.pk,
                             'current_frame_index': self.frame_one.index,
@@ -1018,6 +1031,8 @@ class ProjectWebsocketRoomTests(TransactionTestCase):
                         'user_id': self.viewer.pk,
                         'display_name': self.viewer.display_name,
                         'email': self.viewer.email,
+                        'avatar_url': self.viewer.avatar_url,
+                        'avatar_initial': (self.viewer.display_name or self.viewer.email)[:1].upper(),
                         'role': ProjectMember.Role.VIEWER,
                         'current_frame_id': self.frame_two.pk,
                         'current_frame_index': self.frame_two.index,
@@ -1890,6 +1905,8 @@ class ProjectWebsocketRoomTests(TransactionTestCase):
             self.assertEqual(begin_event['payload']['layer_id'], self.layer_one.pk)
             self.assertEqual(begin_event['payload']['presence_session_id'], owner_connection['presence_session_id'])
             self.assertEqual(begin_event['payload']['stroke_id'], 'stroke-1')
+            self.assertEqual(begin_event['payload']['avatar_url'], self.owner.avatar_url)
+            self.assertEqual(begin_event['payload']['avatar_initial'], (self.owner.display_name or self.owner.email)[:1].upper())
 
             await owner_communicator.send_json_to({
                 'type': 'layer_stroke_segment',

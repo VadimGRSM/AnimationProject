@@ -5,10 +5,12 @@
 
 {% block content %}
 <section class="auth-shell">
-    <div class="auth-card auth-card--wide">
-        <p class="auth-card__eyebrow">AnimStudio</p>
-        <h1 class="auth-card__title">User profile</h1>
-        <p class="auth-card__subtitle">This page shows your account details and personal settings.</p>
+    <div class="auth-card auth-card--wide profile-page">
+        <div class="profile-page__intro">
+            <p class="auth-card__eyebrow">AnimStudio</p>
+            <h1 class="auth-card__title">User profile</h1>
+            <p class="auth-card__subtitle">This page shows your account details and recent account activity.</p>
+        </div>
 
         {% if messages %}
             <ul class="messages">
@@ -18,45 +20,49 @@
             </ul>
         {% endif %}
 
-        <div class="profile-summary">
-            <div class="profile-summary__avatar">
-                {% if user.avatar_url %}
-                    <img src="{{ user.avatar_url }}" alt="{{ user.display_name }}">
-                {% else %}
-                    <span>{{ user.display_name|slice:":1"|upper }}</span>
-                {% endif %}
+        <section class="profile-hero">
+            <div class="profile-hero__identity">
+                <div class="profile-summary__avatar profile-summary__avatar--hero">
+                    {% if user.avatar_url %}
+                        <img src="{{ user.avatar_url }}" alt="{{ user.display_name|default:user.email }}">
+                    {% else %}
+                        <span>{{ user.display_name|default:user.email|slice:":1"|upper }}</span>
+                    {% endif %}
+                </div>
+                <div class="profile-hero__copy">
+                    <p class="profile-hero__eyebrow">Account overview</p>
+                    <h2 class="profile-hero__name">{{ user.display_name|default:user.email }}</h2>
+                    <p class="profile-hero__email">{{ user.email }}</p>
+                </div>
             </div>
-            <dl class="profile-summary__meta">
-                <div>
-                    <dt>Display name</dt>
-                    <dd>{{ user.display_name }}</dd>
-                </div>
-                <div>
-                    <dt>Email</dt>
-                    <dd>{{ user.email }}</dd>
-                </div>
-                <div>
-                    <dt>Created</dt>
-                    <dd>{{ user.created_at|date:"d.m.Y H:i" }}</dd>
-                </div>
-                <div>
-                    <dt>Last login</dt>
-                    <dd>
-                        {% if user.last_login %}
-                            {{ user.last_login|date:"d.m.Y H:i" }}
-                        {% else %}
-                            Never
-                        {% endif %}
-                    </dd>
-                </div>
-                <div>
-                    <dt>Theme</dt>
-                    <dd>{{ profile.get_theme_preference_display }}</dd>
-                </div>
-            </dl>
-        </div>
+        </section>
 
-        <div class="auth-links">
+        <dl class="profile-grid">
+            <div class="profile-info-card">
+                <dt>Display name</dt>
+                <dd>{{ user.display_name|default:user.email }}</dd>
+            </div>
+            <div class="profile-info-card">
+                <dt>Email</dt>
+                <dd>{{ user.email }}</dd>
+            </div>
+            <div class="profile-info-card">
+                <dt>Created</dt>
+                <dd>{{ user.created_at|date:"d.m.Y H:i" }}</dd>
+            </div>
+            <div class="profile-info-card">
+                <dt>Last login</dt>
+                <dd>
+                    {% if user.last_login %}
+                        {{ user.last_login|date:"d.m.Y H:i" }}
+                    {% else %}
+                        Never
+                    {% endif %}
+                </dd>
+            </div>
+        </dl>
+
+        <div class="auth-links profile-actions">
             <a class="tool-button auth-submit auth-submit--inline" href="{% url 'account_profile_edit' %}">Edit profile</a>
         </div>
     </div>

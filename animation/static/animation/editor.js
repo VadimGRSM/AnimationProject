@@ -335,6 +335,7 @@ const frameLocksById = new Map();
 const layerLocksById = new Map();
 const remoteCursorStates = new Map();
 const remoteLayerPreviewStates = new Map();
+const remoteAvatarImageCache = new Map();
 let presenceSocket = null;
 let presenceCurrentUserId = null;
 let presenceSessionId = null;
@@ -488,6 +489,68 @@ function capitalizePresenceLabel(value) {
     return value.charAt(0).toUpperCase() + value.slice(1);
 }
 
+function truncatePresenceLabel(value, maxLength = 24) {
+    const normalized = String(value || '').trim();
+    if (!normalized) return '';
+    if (normalized.length <= maxLength) return normalized;
+    return `${normalized.slice(0, Math.max(1, maxLength - 1)).trimEnd()}…`;
+}
+
+function getPresenceAvatarInitial(value) {
+    const normalized = String(value || '').trim();
+    return normalized ? normalized.charAt(0).toUpperCase() : 'U';
+}
+
+function normalizeAvatarUrl(value) {
+    return typeof value === 'string' ? value.trim() : '';
+}
+
+function getPresenceAvatarColors(seedValue) {
+    const palettes = [
+        ['#38bdf8', '#6366f1'],
+        ['#60a5fa', '#2563eb'],
+        ['#818cf8', '#4f46e5'],
+        ['#22d3ee', '#2563eb'],
+        ['#a78bfa', '#7c3aed'],
+    ];
+    const numericSeed = Number(seedValue);
+    const index = Math.abs(Number.isFinite(numericSeed) ? numericSeed : 0) % palettes.length;
+    return palettes[index];
+}
+
+function buildPresenceAvatarGradient(targetCtx, x, y, radius, seedValue) {
+    const [startColor, endColor] = getPresenceAvatarColors(seedValue);
+    const gradient = targetCtx.createLinearGradient(x - radius, y - radius, x + radius, y + radius);
+    gradient.addColorStop(0, startColor);
+    gradient.addColorStop(1, endColor);
+    return gradient;
+}
+
+function primeRemoteAvatarImage(url) {
+    const normalizedUrl = normalizeAvatarUrl(url);
+    if (!normalizedUrl) return null;
+    const existingEntry = remoteAvatarImageCache.get(normalizedUrl);
+    if (existingEntry) return existingEntry;
+
+    const image = new Image();
+    const cacheEntry = {
+        image,
+        loaded: false,
+        failed: false,
+    };
+    image.decoding = 'async';
+    image.onload = () => {
+        cacheEntry.loaded = true;
+        renderOverlay();
+    };
+    image.onerror = () => {
+        cacheEntry.failed = true;
+    };
+    image.src = normalizedUrl;
+    remoteAvatarImageCache.set(normalizedUrl, cacheEntry);
+    return cacheEntry;
+}
+
 function normalizePresenceUser(rawUser) {
     if (!rawUser || typeof rawUser !== 'object') return null;
     const userId = Number(rawUser.user_id);
@@ -498,10 +561,13 @@ function normalizePresenceUser(rawUser) {
     const currentFrameIndex = rawUser.current_frame_index === null || rawUser.current_frame_index === undefined
         ? null
         : Number(rawUser.current_frame_index);
+    const displayName = rawUser.display_name || rawUser.email || `User ${userId}`;
     return {
         user_id: userId,
-        display_name: rawUser.display_name || rawUser.email || `User ${userId}`,
+        display_name: displayName,
         email: rawUser.email || '',
+        avatar_url: normalizeAvatarUrl(rawUser.avatar_url),
+        avatar_initial: rawUser.avatar_initial || getPresenceAvatarInitial(displayName),
         role: rawUser.role || '',
         current_frame_id: Number.isFinite(currentFrameId) ? currentFrameId : null,
         current_frame_index: Number.isFinite(currentFrameIndex) ? currentFrameIndex : null,
@@ -845,6 +911,7 @@ function setProjectPresenceSnapshot(users) {
     (Array.isArray(users) ? users : []).forEach((rawUser) => {
         const user = normalizePresenceUser(rawUser);
         if (!user) return;
+        primeRemoteAvatarImage(user.avatar_url);
         projectPresence.set(user.user_id, user);
     });
     setProjectPresenceEmptyState('No one online right now.');
@@ -854,6 +921,7 @@ function setProjectPresenceSnapshot(users) {
 function upsertProjectPresenceUser(rawUser) {
     const user = normalizePresenceUser(rawUser);
     if (!user) return;
+    primeRemoteAvatarImage(user.avatar_url);
     projectPresence.set(user.user_id, user);
     renderProjectPresence();
 }
@@ -1370,15 +1438,19 @@ function normalizeRemoteCursorPayload(payload) {
     if (!Number.isFinite(presenceSession) || presenceSession <= 0 || presenceSession === presenceSessionId) {
         return null;
     }
+    const presenceUser = projectPresence.get(Number(payload.user_id)) || {};
+    const displayName = payload.display_name
+        || presenceUser.display_name
+        || 'Remote user';
     return {
         ...payload,
         frame_id: frameId,
         layer_id: layerId,
         presence_session_id: presenceSession,
         user_id: Number(payload.user_id) || null,
-        display_name: payload.display_name
-            || (projectPresence.get(Number(payload.user_id)) || {}).display_name
-            || 'Remote user',
+        display_name: displayName,
+        avatar_url: normalizeAvatarUrl(payload.avatar_url || presenceUser.avatar_url || ''),
+        avatar_initial: payload.avatar_initial || presenceUser.avatar_initial || getPresenceAvatarInitial(displayName),
         x: Number(payload.x),
         y: Number(payload.y),
     };
@@ -1391,6 +1463,7 @@ function handleRemoteCursorMoved(payload) {
         removeRemoteCursorByPresenceSession(cursor.presence_session_id);
         return;
     }
+    primeRemoteAvatarImage(cursor.avatar_url);
     remoteCursorStates.set(cursor.presence_session_id, {
         ...cursor,
         last_seen_at: Date.now(),
@@ -3608,6 +3681,53 @@ function clearOverlay() {
     clearCanvas(overlayCtx, overlayCanvas);
 }
 
+function drawRoundedRectPath(targetCtx, x, y, width, height, radius) {
+    const clampedRadius = Math.max(0, Math.min(radius, width / 2, height / 2));
+    targetCtx.beginPath();
+    targetCtx.moveTo(x + clampedRadius, y);
+    targetCtx.lineTo(x + width - clampedRadius, y);
+    targetCtx.quadraticCurveTo(x + width, y, x + width, y + clampedRadius);
+    targetCtx.lineTo(x + width, y + height - clampedRadius);
+    targetCtx.quadraticCurveTo(x + width, y + height, x + width - clampedRadius, y + height);
+    targetCtx.lineTo(x + clampedRadius, y + height);
+    targetCtx.quadraticCurveTo(x, y + height, x, y + height - clampedRadius);
+    targetCtx.lineTo(x, y + clampedRadius);
+    targetCtx.quadraticCurveTo(x, y, x + clampedRadius, y);
+    targetCtx.closePath();
+}
+
+function drawRemoteCursorAvatar(targetCtx, cursor, centerX, centerY, radius, uiScale) {
+    const cacheEntry = cursor.avatar_url ? primeRemoteAvatarImage(cursor.avatar_url) : null;
+    const initial = getPresenceAvatarInitial(cursor.avatar_initial || cursor.display_name);
+
+    targetCtx.save();
+    targetCtx.beginPath();
+    targetCtx.arc(centerX, centerY, radius, 0, Math.PI * 2);
+    targetCtx.closePath();
+    targetCtx.clip();
+
+    if (cacheEntry && cacheEntry.loaded && !cacheEntry.failed) {
+        targetCtx.drawImage(cacheEntry.image, centerX - radius, centerY - radius, radius * 2, radius * 2);
+    } else {
+        targetCtx.fillStyle = buildPresenceAvatarGradient(targetCtx, centerX, centerY, radius, cursor.user_id || cursor.display_name);
+        targetCtx.fillRect(centerX - radius, centerY - radius, radius * 2, radius * 2);
+        targetCtx.fillStyle = '#ffffff';
+        targetCtx.font = `600 ${Math.max(10, 10 / uiScale)}px Inter, system-ui, sans-serif`;
+        targetCtx.textAlign = 'center';
+        targetCtx.textBaseline = 'middle';
+        targetCtx.fillText(initial, centerX, centerY + (0.5 / uiScale));
+    }
+
+    targetCtx.restore();
+    targetCtx.save();
+    targetCtx.strokeStyle = 'rgba(15, 23, 42, 0.95)';
+    targetCtx.lineWidth = Math.max(1.2, 2 / uiScale);
+    targetCtx.beginPath();
+    targetCtx.arc(centerX, centerY, radius, 0, Math.PI * 2);
+    targetCtx.stroke();
+    targetCtx.restore();
+}
+
 function renderRemoteCursors() {
     if (!overlayCtx || !overlayCanvas) return;
     const now = Date.now();
@@ -3622,28 +3742,67 @@ function renderRemoteCursors() {
     if (!cursors.length) return;
 
     withTransformedContext(overlayCtx, () => {
+        const uiScale = Math.max(scale || 1, 0.01);
         cursors.forEach((cursor) => {
             overlayCtx.save();
-            overlayCtx.fillStyle = 'rgba(56, 189, 248, 0.95)';
-            overlayCtx.strokeStyle = 'rgba(2, 132, 199, 0.95)';
-            overlayCtx.lineWidth = Math.max(0.8, 1 / (scale || 1));
+            const label = truncatePresenceLabel(cursor.display_name || 'Remote user');
+            const avatarRadius = 10 / uiScale;
+            const pillHeight = 30 / uiScale;
+            const pillRadius = 15 / uiScale;
+            const textGap = 8 / uiScale;
+            const paddingX = 10 / uiScale;
+            const offsetX = 18 / uiScale;
+            const offsetY = 18 / uiScale;
+            const framePadding = 12 / uiScale;
+            const cursorDotRadius = 3.5 / uiScale;
+
+            overlayCtx.font = `600 ${Math.max(10, 12 / uiScale)}px Inter, system-ui, sans-serif`;
+            overlayCtx.textAlign = 'left';
+            overlayCtx.textBaseline = 'middle';
+            const textWidth = overlayCtx.measureText(label).width;
+            const pillWidth = (avatarRadius * 2) + textGap + textWidth + (paddingX * 2);
+
+            let pillX = cursor.x + offsetX;
+            let pillY = cursor.y - offsetY - pillHeight;
+            if (bufferCanvas) {
+                const maxPillX = Math.max(framePadding, bufferCanvas.width - pillWidth - framePadding);
+                const maxPillY = Math.max(framePadding, bufferCanvas.height - pillHeight - framePadding);
+                pillX = Math.min(Math.max(framePadding, pillX), maxPillX);
+                pillY = Math.min(Math.max(framePadding, pillY), maxPillY);
+            }
+
+            const avatarCenterX = pillX + paddingX + avatarRadius;
+            const avatarCenterY = pillY + (pillHeight / 2);
+            const pointerTargetX = pillX + Math.min((avatarRadius * 0.9), pillWidth / 2);
+            const pointerTargetY = pillY + pillHeight;
+
+            overlayCtx.strokeStyle = 'rgba(96, 165, 250, 0.62)';
+            overlayCtx.lineWidth = Math.max(1, 1.6 / uiScale);
             overlayCtx.beginPath();
-            overlayCtx.arc(cursor.x, cursor.y, Math.max(3, 6 / (scale || 1)), 0, Math.PI * 2);
-            overlayCtx.fill();
+            overlayCtx.moveTo(cursor.x, cursor.y);
+            overlayCtx.lineTo(pointerTargetX, pointerTargetY);
             overlayCtx.stroke();
 
-            overlayCtx.font = `${Math.max(10, 12 / Math.max(scale || 1, 0.01))}px sans-serif`;
-            overlayCtx.textBaseline = 'bottom';
-            const label = cursor.display_name || 'Remote user';
-            const paddingX = 6 / Math.max(scale || 1, 0.01);
-            const labelWidth = overlayCtx.measureText(label).width + paddingX * 2;
-            const labelHeight = 18 / Math.max(scale || 1, 0.01);
-            const labelX = cursor.x + (10 / Math.max(scale || 1, 0.01));
-            const labelY = cursor.y - (10 / Math.max(scale || 1, 0.01));
-            overlayCtx.fillStyle = 'rgba(15, 23, 42, 0.9)';
-            overlayCtx.fillRect(labelX, labelY - labelHeight, labelWidth, labelHeight);
-            overlayCtx.fillStyle = '#e2e8f0';
-            overlayCtx.fillText(label, labelX + paddingX, labelY - (4 / Math.max(scale || 1, 0.01)));
+            overlayCtx.fillStyle = 'rgba(191, 219, 254, 0.98)';
+            overlayCtx.beginPath();
+            overlayCtx.arc(cursor.x, cursor.y, cursorDotRadius, 0, Math.PI * 2);
+            overlayCtx.fill();
+
+            overlayCtx.shadowColor = 'rgba(2, 6, 23, 0.44)';
+            overlayCtx.shadowBlur = 18 / uiScale;
+            overlayCtx.shadowOffsetY = 4 / uiScale;
+            overlayCtx.fillStyle = 'rgba(15, 23, 42, 0.94)';
+            overlayCtx.strokeStyle = 'rgba(148, 163, 184, 0.18)';
+            overlayCtx.lineWidth = Math.max(1, 1.25 / uiScale);
+            drawRoundedRectPath(overlayCtx, pillX, pillY, pillWidth, pillHeight, pillRadius);
+            overlayCtx.fill();
+            overlayCtx.stroke();
+            overlayCtx.shadowColor = 'transparent';
+
+            drawRemoteCursorAvatar(overlayCtx, cursor, avatarCenterX, avatarCenterY, avatarRadius, uiScale);
+
+            overlayCtx.fillStyle = '#f8fafc';
+            overlayCtx.fillText(label, avatarCenterX + avatarRadius + textGap, avatarCenterY + (0.5 / uiScale));
             overlayCtx.restore();
         });
     });

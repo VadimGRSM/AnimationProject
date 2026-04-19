@@ -84,20 +84,20 @@
                                 <div class="share-card__actions">
                                     <form method="post"
                                           action="{% url 'animation:project_member_role_update' project.pk member.pk %}"
-                                          class="share-inline-form">
+                                          class="share-inline-form share-inline-form--role">
                                         {% csrf_token %}
                                         <select name="role">
                                             {% for value, label in member_roles %}
                                                 <option value="{{ value }}"{% if member.role == value %} selected{% endif %}>{{ label }}</option>
                                             {% endfor %}
                                         </select>
-                                        <button type="submit" class="tool-button">Change role</button>
+                                        <button type="submit" class="tool-button tool-button--secondary">Change role</button>
                                     </form>
                                     <form method="post"
                                           action="{% url 'animation:project_member_remove' project.pk member.pk %}"
-                                          class="share-inline-form">
+                                          class="share-inline-form share-inline-form--danger">
                                         {% csrf_token %}
-                                        <button type="submit" class="tool-button share-button--danger">Remove</button>
+                                        <button type="submit" class="tool-button tool-button--danger share-button--danger">Remove</button>
                                     </form>
                                 </div>
                             {% endif %}
@@ -130,7 +130,7 @@
                             <div class="share-card__copy">
                                 <input type="text" value="{{ row.invite_url }}" readonly>
                                 <button type="button"
-                                        class="tool-button js-copy-invite-link"
+                                        class="tool-button tool-button--secondary js-copy-invite-link"
                                         data-copy-text="{{ row.invite_url }}">
                                     Copy invite link
                                 </button>
@@ -138,9 +138,10 @@
                             {% if row.can_revoke %}
                                 <div class="share-card__actions">
                                     <form method="post"
+                                          class="share-inline-form share-inline-form--danger"
                                           action="{% url 'animation:project_invite_revoke' project.pk row.invite.pk %}">
                                         {% csrf_token %}
-                                        <button type="submit" class="tool-button share-button--danger">Revoke</button>
+                                        <button type="submit" class="tool-button tool-button--danger share-button--danger">Revoke</button>
                                     </form>
                                 </div>
                             {% endif %}

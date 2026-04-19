@@ -81,16 +81,6 @@
                                     <span class="project-card__date" data-updated-at="{{ project.updated_at }}"></span>
                                     <span class="project-card__badge">{{ project.fps }} FPS</span>
                                 </div>
-                                <div class="project-card__details">
-                                    <div class="project-card__detail">
-                                        <span class="project-card__detail-label">Owner</span>
-                                        <span class="project-card__detail-value">{{ project.owner_display }}</span>
-                                    </div>
-                                    <div class="project-card__detail">
-                                        <span class="project-card__detail-label">Your role</span>
-                                        <span class="project-card__detail-value">{{ project.current_user_role|title }}</span>
-                                    </div>
-                                </div>
                                 <div class="project-card__footer">
                                     <span class="project-card__resolution">{{ project.width }}x{{ project.height }}</span>
                                     <div class="project-card__actions">
@@ -476,19 +466,6 @@
             fpsBadge.textContent = `${project.fps} FPS`;
             meta.append(date, fpsBadge);
 
-            const details = document.createElement('div');
-            details.className = 'project-card__details';
-
-            const ownerDetail = document.createElement('div');
-            ownerDetail.className = 'project-card__detail';
-            ownerDetail.innerHTML = `<span class="project-card__detail-label">Owner</span><span class="project-card__detail-value">${project.owner_display || ''}</span>`;
-
-            const roleDetail = document.createElement('div');
-            roleDetail.className = 'project-card__detail';
-            roleDetail.innerHTML = `<span class="project-card__detail-label">Your role</span><span class="project-card__detail-value">${project.current_user_role ? project.current_user_role.charAt(0).toUpperCase() + project.current_user_role.slice(1) : ''}</span>`;
-
-            details.append(ownerDetail, roleDetail);
-
             const footer = document.createElement('div');
             footer.className = 'project-card__footer';
 
@@ -521,7 +498,7 @@
                 actions.appendChild(deleteButton);
             }
             footer.append(resolution, actions);
-            body.append(head, meta, details, footer);
+            body.append(head, meta, footer);
             item.append(coverLink, body);
 
             return item;

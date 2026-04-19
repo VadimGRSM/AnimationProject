@@ -50,14 +50,30 @@ def _active_presence_queryset(project_id, now=None):
     )
 
 
-def _serialize_presence_session(session):
-    user = session.user
-    display_name = getattr(user, 'display_name', '') or getattr(user, 'email', '') or f'User {user.pk}'
+def _presence_display_name(user):
+    return getattr(user, 'display_name', '') or getattr(user, 'email', '') or f'User {user.pk}'
+
+
+def _presence_avatar_initial(value):
+    text = str(value or '').strip()
+    return text[:1].upper() if text else 'U'
+
+
+def build_presence_identity_payload(user, role):
+    display_name = _presence_display_name(user)
     return {
-        'user_id': session.user_id,
+        'user_id': user.pk,
         'display_name': display_name,
         'email': getattr(user, 'email', ''),
-        'role': session.role,
+        'avatar_url': getattr(user, 'avatar_url', '') or '',
+        'avatar_initial': _presence_avatar_initial(display_name),
+        'role': role,
+    }
+
+
+def _serialize_presence_session(session):
+    return {
+        **build_presence_identity_payload(session.user, session.role),
         'current_frame_id': session.current_frame_id,
         'current_frame_index': session.current_frame.index if session.current_frame_id else None,
     }

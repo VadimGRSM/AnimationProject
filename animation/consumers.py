@@ -17,6 +17,7 @@ from .locks import (
 from .models import Frame, ProjectPresenceSession
 from .presence import (
     activate_project_presence_session,
+    build_presence_identity_payload,
     deactivate_project_presence_session,
     set_project_presence_frame,
     touch_project_presence_session,
@@ -294,6 +295,7 @@ class ProjectConsumer(AsyncJsonWebsocketConsumer):
         if message_type in {"remote_cursor_moved", "layer_stroke_begin", "layer_stroke_segment", "layer_stroke_end"}:
             if not self.can_stream_layer_preview(payload):
                 return
+            user_payload = build_presence_identity_payload(self.scope.get("user"), self.role)
             await self.channel_layer.group_send(
                 self.project_group_name,
                 {
@@ -303,10 +305,7 @@ class ProjectConsumer(AsyncJsonWebsocketConsumer):
                     "payload": {
                         **payload,
                         "project_id": self.project_id,
-                        "user_id": self.user_id,
-                        "display_name": getattr(self.scope.get("user"), "display_name", "") or getattr(self.scope.get("user"), "email", "") or f"User {self.user_id}",
-                        "email": getattr(self.scope.get("user"), "email", ""),
-                        "role": self.role,
+                        **user_payload,
                         "presence_session_id": self.presence_session_id,
                     },
                 },
