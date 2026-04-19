@@ -102,7 +102,19 @@ def serialize_frame(frame):
         'index': frame.index,
         'preview_url': preview_url,
         'updated_at': frame.updated_at.isoformat() if frame.updated_at else '',
+        'content_revision': frame.content_revision,
         'has_preview': bool(preview_url),
+    }
+
+
+def build_frame_content_updated_payload(frame, actor_user_id, client_request_id=''):
+    frame_payload = serialize_frame(frame)
+    return {
+        **frame_payload,
+        'frame_id': frame.pk,
+        'frame_index': frame.index,
+        'actor_user_id': actor_user_id,
+        'client_request_id': client_request_id,
     }
 
 
@@ -412,40 +424,66 @@ def project_save(request, pk):
     except json.JSONDecodeError:
         return JsonResponse({'ok': False, 'error': 'invalid_json'}, status=400)
 
+    if not isinstance(payload, dict):
+        return JsonResponse({'ok': False, 'error': 'invalid_payload'}, status=400)
+
     frames = payload.get('frames')
+    client_request_id = normalize_client_request_id(payload.get('client_request_id'))
     if not isinstance(frames, list) or not frames:
         return JsonResponse({'ok': False, 'error': 'no_frames'}, status=400)
 
     saved_indices = []
-    for frame_data in frames:
-        if not isinstance(frame_data, dict):
-            continue
+    saved_frames = []
+    with transaction.atomic():
+        for frame_data in frames:
+            if not isinstance(frame_data, dict):
+                continue
 
-        try:
-            index = int(frame_data.get('index'))
-        except (TypeError, ValueError):
-            continue
+            try:
+                index = int(frame_data.get('index'))
+            except (TypeError, ValueError):
+                continue
 
-        content = frame_data.get('content')
-        if content is None:
-            continue
+            content = frame_data.get('content')
+            if content is None:
+                continue
 
-        if isinstance(content, str):
-            content_json = content
-        else:
-            content_json = json.dumps(content, ensure_ascii=False)
+            if isinstance(content, str):
+                content_json = content
+            else:
+                content_json = json.dumps(content, ensure_ascii=False)
 
-        Frame.objects.update_or_create(
-            project=project,
-            index=index,
-            defaults={'content_json': content_json},
-        )
-        saved_indices.append(index)
+            frame, created = Frame.objects.get_or_create(
+                project=project,
+                index=index,
+                defaults={
+                    'content_json': content_json,
+                    'content_revision': 1,
+                },
+            )
+            if not created:
+                frame.content_json = content_json
+                frame.content_revision += 1
+                frame.save(update_fields=['content_json', 'content_revision', 'updated_at'])
 
-    if not saved_indices:
-        return JsonResponse({'ok': False, 'error': 'no_valid_frames'}, status=400)
+            saved_indices.append(index)
+            saved_frames.append(frame)
 
-    project.save(update_fields=['updated_at'])
+        if not saved_indices:
+            return JsonResponse({'ok': False, 'error': 'no_valid_frames'}, status=400)
+
+        project.save(update_fields=['updated_at'])
+        event_payloads = [
+            build_frame_content_updated_payload(frame, request.user.pk, client_request_id)
+            for frame in saved_frames
+        ]
+
+        def broadcast_saved_frame_updates(project_id=project.pk, payloads=event_payloads):
+            for event_payload in payloads:
+                broadcast_project_event(project_id, 'frame_content_updated', event_payload)
+
+        transaction.on_commit(broadcast_saved_frame_updates)
+
     return JsonResponse({'ok': True, 'saved_frames': saved_indices})
 
 
@@ -707,6 +745,7 @@ def frame_save(request, pk, index):
     if not isinstance(payload, dict):
         return JsonResponse({'ok': False, 'error': 'Invalid payload format.'}, status=400)
 
+    client_request_id = normalize_client_request_id(payload.get('client_request_id'))
     image_data = payload.get('image_data')
     content_json = payload.get('content_json')
 
@@ -768,17 +807,23 @@ def frame_save(request, pk, index):
             except (TypeError, ValueError):
                 return JsonResponse({'ok': False, 'error': 'Invalid JSON data.'}, status=400)
 
-    frame.save()
-    project.save(update_fields=['updated_at'])
+    with transaction.atomic():
+        frame.content_revision += 1
+        frame.save()
+        project.save(update_fields=['updated_at'])
+        response_frame = serialize_frame(frame)
+        event_payload = build_frame_content_updated_payload(frame, request.user.pk, client_request_id)
+        transaction.on_commit(
+            lambda project_id=project.pk, payload=event_payload: broadcast_project_event(
+                project_id,
+                'frame_content_updated',
+                payload,
+            )
+        )
 
     return JsonResponse({
         'ok': True,
-        'frame': {
-            'id': frame.pk,
-            'index': frame.index,
-            'preview_url': frame.preview_image.url if frame.preview_image else '',
-            'updated_at': frame.updated_at.isoformat() if frame.updated_at else '',
-        },
+        'frame': response_frame,
     })
 
 

@@ -166,6 +166,7 @@ class Frame(models.Model):
     project = models.ForeignKey(AnimationProject, on_delete=models.CASCADE, related_name='frames')
     index = models.PositiveIntegerField(verbose_name='Frame number')
     content_json = models.TextField(blank=True, verbose_name='Frame content JSON')
+    content_revision = models.PositiveIntegerField(default=0, verbose_name='Frame content revision')
     preview_image = models.ImageField(upload_to='frames/', blank=True, null=True, verbose_name='Frame preview')
     created_at = models.DateTimeField(auto_now_add=True, verbose_name='Created at')
     updated_at = models.DateTimeField(auto_now=True, verbose_name='Updated at')

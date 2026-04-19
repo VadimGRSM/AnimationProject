@@ -3,6 +3,7 @@ import io
 import json
 import tempfile
 import zipfile
+from unittest import mock
 
 from asgiref.sync import async_to_sync, sync_to_async
 from channels.db import database_sync_to_async
@@ -1410,3 +1411,120 @@ class FrameSaveLimitsTests(TestCase):
         self.assertEqual(response.status_code, 413)
         self.assertFalse(response.json()['ok'])
         self.assertIn('Maximum request size', response.json()['error'])
+
+
+class FrameRealtimeSyncTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(email='realtime-sync@example.com', password='test')
+        self.project = AnimationProject.objects.create(
+            owner=self.user,
+            title='Realtime sync project',
+            width=512,
+            height=512,
+            fps=12,
+        )
+        self.frame = Frame.objects.create(project=self.project, index=1, content_json='{"layers":[]}')
+        self.client = Client()
+        self.client.force_login(self.user)
+
+    def test_frame_save_broadcasts_frame_content_updated_after_commit(self):
+        payload = {
+            'content_json': {'layers': [{'id': 'layer-1'}]},
+            'client_request_id': 'frame-save-request',
+        }
+
+        with mock.patch('animation.views.broadcast_project_event') as broadcast_mock:
+            with self.captureOnCommitCallbacks(execute=True):
+                response = self.client.post(
+                    reverse('animation:frame_save', kwargs={'pk': self.project.pk, 'index': self.frame.index}),
+                    data=json.dumps(payload),
+                    content_type='application/json',
+                )
+
+        self.assertEqual(response.status_code, 200)
+        response_payload = response.json()
+        self.assertTrue(response_payload['ok'])
+        self.assertEqual(response_payload['frame']['content_revision'], 1)
+
+        self.frame.refresh_from_db()
+        self.assertEqual(self.frame.content_revision, 1)
+
+        broadcast_mock.assert_called_once_with(
+            self.project.pk,
+            'frame_content_updated',
+            {
+                'id': self.frame.pk,
+                'index': self.frame.index,
+                'preview_url': '',
+                'updated_at': self.frame.updated_at.isoformat(),
+                'content_revision': 1,
+                'has_preview': False,
+                'frame_id': self.frame.pk,
+                'frame_index': self.frame.index,
+                'actor_user_id': self.user.pk,
+                'client_request_id': 'frame-save-request',
+            },
+        )
+
+    def test_project_save_broadcasts_frame_content_updates_for_each_saved_frame(self):
+        second_frame = Frame.objects.create(project=self.project, index=2, content_json='{"layers":[]}')
+        payload = {
+            'frames': [
+                {'index': 1, 'content': {'layers': [{'id': 'layer-1'}]}},
+                {'index': 2, 'content': {'layers': [{'id': 'layer-2'}]}},
+            ],
+            'client_request_id': 'project-save-request',
+        }
+
+        with mock.patch('animation.views.broadcast_project_event') as broadcast_mock:
+            with self.captureOnCommitCallbacks(execute=True):
+                response = self.client.post(
+                    reverse('animation:project_save', kwargs={'pk': self.project.pk}),
+                    data=json.dumps(payload),
+                    content_type='application/json',
+                )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {'ok': True, 'saved_frames': [1, 2]})
+
+        self.frame.refresh_from_db()
+        second_frame.refresh_from_db()
+        self.assertEqual(self.frame.content_revision, 1)
+        self.assertEqual(second_frame.content_revision, 1)
+
+        self.assertEqual(broadcast_mock.call_count, 2)
+        expected_calls = [
+            mock.call(
+                self.project.pk,
+                'frame_content_updated',
+                {
+                    'id': self.frame.pk,
+                    'index': self.frame.index,
+                    'preview_url': '',
+                    'updated_at': self.frame.updated_at.isoformat(),
+                    'content_revision': 1,
+                    'has_preview': False,
+                    'frame_id': self.frame.pk,
+                    'frame_index': self.frame.index,
+                    'actor_user_id': self.user.pk,
+                    'client_request_id': 'project-save-request',
+                },
+            ),
+            mock.call(
+                self.project.pk,
+                'frame_content_updated',
+                {
+                    'id': second_frame.pk,
+                    'index': second_frame.index,
+                    'preview_url': '',
+                    'updated_at': second_frame.updated_at.isoformat(),
+                    'content_revision': 1,
+                    'has_preview': False,
+                    'frame_id': second_frame.pk,
+                    'frame_index': second_frame.index,
+                    'actor_user_id': self.user.pk,
+                    'client_request_id': 'project-save-request',
+                },
+            ),
+        ]
+        broadcast_mock.assert_has_calls(expected_calls, any_order=False)

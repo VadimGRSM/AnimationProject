@@ -181,6 +181,7 @@ let currentFrameUpdatedAt = (editorRoot && editorRoot.dataset.currentFrameUpdate
     || window.ANIM_CURRENT_FRAME_UPDATED_AT
     || '';
 let currentFrameContentJson = '';
+let currentFrameContentRevision = 0;
 const projectFrameWidth = (() => {
     const raw = editorRoot ? editorRoot.dataset.projectWidth : null;
     const parsed = parseInt(raw, 10);
@@ -810,6 +811,11 @@ function shouldIgnoreProjectRealtimeEvent(payload) {
     return true;
 }
 
+function normalizeFrameContentRevision(value) {
+    const revision = Number(value);
+    return Number.isFinite(revision) && revision >= 0 ? revision : 0;
+}
+
 function stopProjectPresencePing() {
     if (presencePingTimerId) {
         clearInterval(presencePingTimerId);
@@ -1176,6 +1182,11 @@ async function handleProjectPresenceMessage(message) {
     }
 
     if (shouldIgnoreProjectRealtimeEvent(payload)) {
+        return;
+    }
+
+    if (message.type === 'frame_content_updated') {
+        await handleRemoteFrameContentUpdated(payload);
         return;
     }
 
@@ -5762,6 +5773,11 @@ function getOnionCacheEntry(frameIndex) {
 }
 
 async function fetchOnionFrameDetail(frameIndex) {
+    const data = await fetchFrameDetailPayload(frameIndex);
+    return data && data.frame ? data.frame : null;
+}
+
+async function fetchFrameDetailPayload(frameIndex) {
     const url = getFrameDetailUrl(frameIndex);
     if (!url) return null;
     try {
@@ -5770,7 +5786,7 @@ async function fetchOnionFrameDetail(frameIndex) {
         if (!response.ok || !data || !data.ok) {
             return null;
         }
-        return data.frame || null;
+        return data;
     } catch (error) {
         return null;
     }
@@ -6692,12 +6708,14 @@ function updateTimelineFramePreview(framePayload) {
     const frameIndex = Number(framePayload.index);
     const previewUrl = framePayload.preview_url || '';
     const updatedAt = framePayload.updated_at || '';
+    const contentRevision = normalizeFrameContentRevision(framePayload.content_revision);
 
     const stored = Number.isFinite(frameId) ? getTimelineFrameById(frameId) : null;
     const storedByIndex = stored || (Number.isFinite(frameIndex) ? getTimelineFrameByIndex(frameIndex) : null);
     if (storedByIndex) {
         storedByIndex.preview_url = previewUrl || storedByIndex.preview_url || '';
         storedByIndex.updated_at = updatedAt || storedByIndex.updated_at || '';
+        storedByIndex.content_revision = contentRevision || storedByIndex.content_revision || 0;
         if (Number.isFinite(frameIndex) && frameIndex > 0) {
             storedByIndex.index = frameIndex;
         }
@@ -6798,6 +6816,7 @@ async function loadFrameByIndex(targetIndex) {
         currentFramePreviewUrl = (data.frame && data.frame.preview_url) ? data.frame.preview_url : '';
         currentFrameContentJson = (data.frame && data.frame.content_json) ? data.frame.content_json : '';
         currentFrameUpdatedAt = hasPersistedData && data.frame && data.frame.updated_at ? data.frame.updated_at : '';
+        currentFrameContentRevision = data.frame ? normalizeFrameContentRevision(data.frame.content_revision) : 0;
 
         didInitBackground = false;
         clearSelection();
@@ -6837,6 +6856,114 @@ async function loadFrameByIndex(targetIndex) {
         setTimelineControlsDisabled(false);
         renderTimelineFrames();
     }
+}
+
+function getRealtimeFrameReference(payload) {
+    const payloadFrameId = Number(payload && (payload.frame_id ?? payload.id));
+    const payloadFrameIndex = Number(payload && (payload.frame_index ?? payload.index));
+    let frameId = Number.isFinite(payloadFrameId) && payloadFrameId > 0 ? payloadFrameId : null;
+    let frameIndex = Number.isFinite(payloadFrameIndex) && payloadFrameIndex > 0 ? payloadFrameIndex : null;
+
+    if (!frameId && frameIndex === currentFrameIndex && Number.isFinite(currentFrameId) && currentFrameId > 0) {
+        frameId = currentFrameId;
+    }
+    if (!frameIndex && frameId === currentFrameId && Number.isFinite(currentFrameIndex) && currentFrameIndex > 0) {
+        frameIndex = currentFrameIndex;
+    }
+
+    if (!frameIndex && frameId) {
+        const knownFrame = getTimelineFrameById(frameId);
+        if (knownFrame) {
+            const knownIndex = Number(knownFrame.index);
+            frameIndex = Number.isFinite(knownIndex) && knownIndex > 0 ? knownIndex : null;
+        }
+    }
+    if (!frameId && frameIndex) {
+        const knownFrame = getTimelineFrameByIndex(frameIndex);
+        if (knownFrame) {
+            const knownId = Number(knownFrame.id);
+            frameId = Number.isFinite(knownId) && knownId > 0 ? knownId : null;
+        }
+    }
+
+    return { frameId, frameIndex };
+}
+
+function applyFrameDetailToCurrentFrame(detailData) {
+    const framePayload = detailData && detailData.frame ? detailData.frame : null;
+    if (!framePayload) return;
+
+    const nextFrameId = Number(framePayload.id);
+    currentFrameId = Number.isFinite(nextFrameId) && nextFrameId > 0 ? nextFrameId : currentFrameId;
+    currentFramePreviewUrl = framePayload.preview_url || '';
+    currentFrameContentJson = framePayload.content_json || '';
+    currentFrameUpdatedAt = framePayload.updated_at || '';
+    currentFrameContentRevision = normalizeFrameContentRevision(framePayload.content_revision);
+    lastSavedAt = null;
+    hasUnsavedChanges = false;
+
+    if (Array.isArray(detailData.layers)) {
+        mergeLayerList(detailData.layers);
+    }
+}
+
+async function handleRemoteFrameContentUpdated(payload) {
+    const actorUserId = Number(payload && payload.actor_user_id);
+    if (
+        Number.isFinite(actorUserId)
+        && actorUserId > 0
+        && Number.isFinite(presenceCurrentUserId)
+        && actorUserId === presenceCurrentUserId
+    ) {
+        return;
+    }
+
+    const { frameId, frameIndex } = getRealtimeFrameReference(payload);
+    if (!Number.isFinite(frameIndex) || frameIndex <= 0) {
+        return;
+    }
+
+    const isCurrentFrameTarget = (
+        (Number.isFinite(frameId) && frameId > 0 && frameId === currentFrameId)
+        || frameIndex === currentFrameIndex
+    );
+    if (!isCurrentFrameTarget) {
+        updateTimelineFramePreview(payload);
+        return;
+    }
+
+    const currentLock = getCurrentFrameLock();
+    if (isLockOwnedByCurrentSession(currentLock)) {
+        return;
+    }
+
+    const detailData = await fetchFrameDetailPayload(frameIndex);
+    if (!detailData || !detailData.frame) {
+        updateTimelineFramePreview(payload);
+        return;
+    }
+
+    updateTimelineFramePreview(detailData.frame);
+
+    const latestFrameId = Number(detailData.frame.id);
+    const stillCurrentFrame = (
+        (Number.isFinite(latestFrameId) && latestFrameId > 0 && latestFrameId === currentFrameId)
+        || frameIndex === currentFrameIndex
+    );
+    if (!stillCurrentFrame) {
+        return;
+    }
+
+    if (isLockOwnedByCurrentSession(getCurrentFrameLock())) {
+        return;
+    }
+
+    applyFrameDetailToCurrentFrame(detailData);
+    initSaveState();
+    await hydrateSavedFrame();
+    fillBackgroundLayerIfNeeded();
+    prefetchOnionFramesForCurrent();
+    requestOnionSkinRender();
 }
 
 async function switchToFrameIndex(targetIndex) {
@@ -7419,6 +7546,10 @@ async function saveCurrentFrame(options = {}) {
         return false;
     }
 
+    const clientRequestId = createProjectEventRequestId();
+    rememberLocalProjectEventRequest(clientRequestId);
+    payload.client_request_id = clientRequestId;
+
     const isAuto = Boolean(options.isAuto);
     if (isAuto) {
         isAutosaving = true;
@@ -7461,6 +7592,7 @@ async function saveCurrentFrame(options = {}) {
         if (data.frame) {
             currentFramePreviewUrl = data.frame.preview_url || currentFramePreviewUrl || '';
             currentFrameUpdatedAt = data.frame.updated_at || currentFrameUpdatedAt || '';
+            currentFrameContentRevision = normalizeFrameContentRevision(data.frame.content_revision);
             updateTimelineFramePreview(data.frame);
         }
         setSaveStatus('Saved', 'saved');
@@ -7468,6 +7600,7 @@ async function saveCurrentFrame(options = {}) {
         updateLastSavedLabel();
         return true;
     } catch (error) {
+        forgetLocalProjectEventRequest(clientRequestId);
         console.error('Frame save error', error);
         let errorText = 'Could not save the frame.';
         if (error instanceof Error && error.message) {
