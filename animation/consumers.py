@@ -486,12 +486,31 @@ class ProjectConsumer(AsyncJsonWebsocketConsumer):
         frame_id = payload.get("frame_id")
         layer_id = payload.get("layer_id")
         tool = payload.get("tool")
+        seq = payload.get("seq")
+        base_revision = payload.get("base_revision")
+        stroke_id = payload.get("stroke_id")
         if tool not in {"brush", "eraser"}:
             return False
         try:
             numeric_frame_id = int(frame_id)
             numeric_layer_id = int(layer_id)
         except (TypeError, ValueError):
+            return False
+        if seq is not None:
+            try:
+                numeric_seq = int(seq)
+            except (TypeError, ValueError):
+                return False
+            if numeric_seq <= 0:
+                return False
+        if base_revision is not None:
+            try:
+                numeric_base_revision = int(base_revision)
+            except (TypeError, ValueError):
+                return False
+            if numeric_base_revision < 0:
+                return False
+        if stroke_id is not None and not isinstance(stroke_id, str):
             return False
         return numeric_frame_id > 0 and numeric_layer_id in getattr(self, "owned_layer_lock_ids", set())
 

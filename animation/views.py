@@ -115,6 +115,7 @@ def build_frame_content_updated_payload(frame, actor_user_id, client_request_id=
         **frame_payload,
         'frame_id': frame.pk,
         'frame_index': frame.index,
+        'frame_content_revision': frame.content_revision,
         'actor_user_id': actor_user_id,
         'client_request_id': client_request_id,
     }
@@ -125,6 +126,7 @@ def build_layer_content_committed_payload(frame, layer, actor_user_id, client_re
         **serialize_frame(frame),
         'frame_id': frame.pk,
         'frame_index': frame.index,
+        'frame_content_revision': frame.content_revision,
         'layer_id': layer.pk,
         'layer_name': layer.name,
         'layer_content_revision': layer.content_revision,

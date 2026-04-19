@@ -455,6 +455,36 @@ class ProjectConsumerLayerLockCacheTests(TestCase):
                 })
             )
 
+    def test_live_preview_authorization_rejects_invalid_sequence_payloads(self):
+        consumer = ProjectConsumer()
+        consumer.presence_session_id = 101
+        consumer.owned_layer_lock_ids = {21}
+
+        self.assertFalse(
+            consumer.can_stream_layer_preview({
+                'frame_id': 1,
+                'layer_id': 21,
+                'tool': 'brush',
+                'seq': 0,
+            })
+        )
+        self.assertFalse(
+            consumer.can_stream_layer_preview({
+                'frame_id': 1,
+                'layer_id': 21,
+                'tool': 'brush',
+                'base_revision': -1,
+            })
+        )
+        self.assertFalse(
+            consumer.can_stream_layer_preview({
+                'frame_id': 1,
+                'layer_id': 21,
+                'tool': 'brush',
+                'stroke_id': 123,
+            })
+        )
+
 
 class ProjectAccessTests(TestCase):
     def setUp(self):
@@ -1849,6 +1879,7 @@ class ProjectWebsocketRoomTests(TransactionTestCase):
                     'opacity': 0.8,
                     'blur': 0,
                     'seq': 1,
+                    'stroke_id': 'stroke-1',
                     'base_revision': 0,
                     'x': 10,
                     'y': 12,
@@ -1858,6 +1889,7 @@ class ProjectWebsocketRoomTests(TransactionTestCase):
             self.assertEqual(begin_event['type'], 'layer_stroke_begin')
             self.assertEqual(begin_event['payload']['layer_id'], self.layer_one.pk)
             self.assertEqual(begin_event['payload']['presence_session_id'], owner_connection['presence_session_id'])
+            self.assertEqual(begin_event['payload']['stroke_id'], 'stroke-1')
 
             await owner_communicator.send_json_to({
                 'type': 'layer_stroke_segment',
@@ -1870,6 +1902,7 @@ class ProjectWebsocketRoomTests(TransactionTestCase):
                     'opacity': 0.8,
                     'blur': 0,
                     'seq': 2,
+                    'stroke_id': 'stroke-1',
                     'base_revision': 0,
                     'x1': 10,
                     'y1': 12,
@@ -1881,6 +1914,7 @@ class ProjectWebsocketRoomTests(TransactionTestCase):
             self.assertEqual(segment_event['type'], 'layer_stroke_segment')
             self.assertEqual(segment_event['payload']['user_id'], self.owner.pk)
             self.assertEqual(segment_event['payload']['presence_session_id'], owner_connection['presence_session_id'])
+            self.assertEqual(segment_event['payload']['stroke_id'], 'stroke-1')
 
             await owner_communicator.send_json_to({
                 'type': 'layer_stroke_end',
@@ -1889,6 +1923,7 @@ class ProjectWebsocketRoomTests(TransactionTestCase):
                     'layer_id': self.layer_one.pk,
                     'tool': 'brush',
                     'seq': 3,
+                    'stroke_id': 'stroke-1',
                     'base_revision': 0,
                     'x': 32,
                     'y': 40,
@@ -1897,6 +1932,121 @@ class ProjectWebsocketRoomTests(TransactionTestCase):
             end_event = await editor_communicator.receive_json_from()
             self.assertEqual(end_event['type'], 'layer_stroke_end')
             self.assertEqual(end_event['payload']['layer_id'], self.layer_one.pk)
+            self.assertEqual(end_event['payload']['stroke_id'], 'stroke-1')
+
+            await editor_communicator.disconnect()
+            await owner_communicator.disconnect()
+
+        async_to_sync(scenario)()
+
+    def test_live_stroke_sequence_can_restart_for_new_stroke_id_without_save(self):
+        async def scenario():
+            owner_communicator, owner_connection = await self._assert_member_can_connect(
+                self.owner,
+                ProjectMember.Role.OWNER,
+            )
+            editor_communicator, _ = await self._assert_member_can_connect(
+                self.editor,
+                ProjectMember.Role.EDITOR,
+                expected_user_count=2,
+            )
+            await owner_communicator.receive_json_from()
+
+            await owner_communicator.send_json_to({
+                'type': 'layer_lock_acquire',
+                'payload': {
+                    'frame_id': self.frame_one.pk,
+                    'layer_id': self.layer_one.pk,
+                },
+            })
+            await owner_communicator.receive_json_from()
+            await editor_communicator.receive_json_from()
+
+            await owner_communicator.send_json_to({
+                'type': 'layer_stroke_begin',
+                'payload': {
+                    'frame_id': self.frame_one.pk,
+                    'layer_id': self.layer_one.pk,
+                    'tool': 'brush',
+                    'color': '#112233',
+                    'size': 6,
+                    'opacity': 0.8,
+                    'blur': 0,
+                    'seq': 1,
+                    'stroke_id': 'stroke-1',
+                    'base_revision': 0,
+                    'x': 10,
+                    'y': 12,
+                },
+            })
+            first_begin = await editor_communicator.receive_json_from()
+            self.assertEqual(first_begin['payload']['seq'], 1)
+            self.assertEqual(first_begin['payload']['stroke_id'], 'stroke-1')
+            self.assertEqual(first_begin['payload']['presence_session_id'], owner_connection['presence_session_id'])
+
+            await owner_communicator.send_json_to({
+                'type': 'layer_stroke_end',
+                'payload': {
+                    'frame_id': self.frame_one.pk,
+                    'layer_id': self.layer_one.pk,
+                    'tool': 'brush',
+                    'seq': 2,
+                    'stroke_id': 'stroke-1',
+                    'base_revision': 0,
+                    'x': 12,
+                    'y': 14,
+                },
+            })
+            first_end = await editor_communicator.receive_json_from()
+            self.assertEqual(first_end['payload']['seq'], 2)
+            self.assertEqual(first_end['payload']['stroke_id'], 'stroke-1')
+
+            await owner_communicator.send_json_to({
+                'type': 'layer_stroke_begin',
+                'payload': {
+                    'frame_id': self.frame_one.pk,
+                    'layer_id': self.layer_one.pk,
+                    'tool': 'brush',
+                    'color': '#112233',
+                    'size': 6,
+                    'opacity': 0.8,
+                    'blur': 0,
+                    'seq': 1,
+                    'stroke_id': 'stroke-2',
+                    'base_revision': 0,
+                    'x': 20,
+                    'y': 24,
+                },
+            })
+            second_begin = await editor_communicator.receive_json_from()
+            self.assertEqual(second_begin['type'], 'layer_stroke_begin')
+            self.assertEqual(second_begin['payload']['seq'], 1)
+            self.assertEqual(second_begin['payload']['stroke_id'], 'stroke-2')
+            self.assertEqual(second_begin['payload']['presence_session_id'], owner_connection['presence_session_id'])
+
+            await owner_communicator.send_json_to({
+                'type': 'layer_stroke_segment',
+                'payload': {
+                    'frame_id': self.frame_one.pk,
+                    'layer_id': self.layer_one.pk,
+                    'tool': 'brush',
+                    'color': '#112233',
+                    'size': 6,
+                    'opacity': 0.8,
+                    'blur': 0,
+                    'seq': 2,
+                    'stroke_id': 'stroke-2',
+                    'base_revision': 0,
+                    'x1': 20,
+                    'y1': 24,
+                    'x2': 30,
+                    'y2': 36,
+                },
+            })
+            second_segment = await editor_communicator.receive_json_from()
+            self.assertEqual(second_segment['type'], 'layer_stroke_segment')
+            self.assertEqual(second_segment['payload']['seq'], 2)
+            self.assertEqual(second_segment['payload']['stroke_id'], 'stroke-2')
 
             await editor_communicator.disconnect()
             await owner_communicator.disconnect()
@@ -2037,9 +2187,12 @@ class ProjectWebsocketRoomTests(TransactionTestCase):
             self.assertEqual(frame_event['type'], 'frame_content_updated')
             self.assertEqual(frame_event['payload']['frame_id'], self.frame_one.pk)
             self.assertEqual(frame_event['payload']['client_request_id'], 'ws-frame-save')
+            self.assertEqual(frame_event['payload']['frame_content_revision'], 1)
             self.assertEqual(layer_event['type'], 'layer_content_committed')
             self.assertEqual(layer_event['payload']['layer_id'], self.layer_one.pk)
             self.assertEqual(layer_event['payload']['presence_session_id'], owner_connection['presence_session_id'])
+            self.assertEqual(layer_event['payload']['frame_content_revision'], 1)
+            self.assertEqual(layer_event['payload']['layer_content_revision'], 1)
 
             await viewer_communicator.disconnect()
             await owner_communicator.disconnect()
@@ -2473,10 +2626,15 @@ class FrameRealtimeSyncTests(TestCase):
         self.assertEqual(editor_response.status_code, 200)
 
         self.frame.refresh_from_db()
+        self.layer.refresh_from_db()
+        second_layer.refresh_from_db()
         final_payload = json.loads(self.frame.content_json)
         final_layers = {entry['id']: entry['image_data'] for entry in final_payload['layers']}
         self.assertEqual(final_layers[self.layer.pk], 'ink-after')
         self.assertEqual(final_layers[second_layer.pk], 'paint-after')
+        self.assertEqual(self.frame.content_revision, 2)
+        self.assertEqual(self.layer.content_revision, 1)
+        self.assertEqual(second_layer.content_revision, 1)
 
         returned_payload = json.loads(editor_response.json()['frame']['content_json'])
         returned_layers = {entry['id']: entry['image_data'] for entry in returned_payload['layers']}

@@ -356,12 +356,17 @@ let liveStrokeLastSentAt = 0;
 let liveStrokeLastPoint = null;
 let liveStrokeLayerId = null;
 let liveStrokeBaseRevision = 0;
+let liveStrokeId = '';
+let liveStrokeCounter = 0;
 const localProjectEventRequestIds = new Set();
 let projectEventRequestCounter = 0;
 let presenceReconnectAttempt = 0;
 let collaborationRecoveryPending = false;
 let collaborationRecoveryInFlight = false;
 let collaborationHasConnected = false;
+let pendingAuthoritativeFrameRefresh = null;
+let authoritativeFrameRefreshInFlight = false;
+let authoritativeFrameRefreshTimerId = null;
 const PRESENCE_PING_INTERVAL_MS = 30000;
 const FRAME_LOCK_HEARTBEAT_INTERVAL_MS = 12000;
 const PRESENCE_RECONNECT_BASE_DELAY_MS = 2000;
@@ -882,6 +887,15 @@ function sendProjectPresenceMessage(type, payload = {}) {
 function createProjectEventRequestId() {
     projectEventRequestCounter += 1;
     return `${editorProjectId}:${Date.now()}:${projectEventRequestCounter}`;
+}
+
+function createLiveStrokeId() {
+    liveStrokeCounter += 1;
+    const numericPresenceSessionId = Number(presenceSessionId);
+    const sessionPart = Number.isFinite(numericPresenceSessionId) && numericPresenceSessionId > 0
+        ? numericPresenceSessionId
+        : 'session';
+    return `${sessionPart}:${Date.now()}:${liveStrokeCounter}`;
 }
 
 function rememberLocalProjectEventRequest(requestId) {
@@ -1410,7 +1424,7 @@ function ensureRemoteLayerPreviewState(payload) {
     );
     if (!canReuseExistingState && baseRevision !== knownRevision) {
         if (!isLayerLockOwnedByCurrentSession(layerId)) {
-            void handleRemoteFrameContentUpdated(payload);
+            queueAuthoritativeFrameRefresh(payload, { delayMs: 0 });
         }
         return null;
     }
@@ -1432,12 +1446,26 @@ function ensureRemoteLayerPreviewState(payload) {
         if (!ensureRemotePreviewCanvas(state, layer.bufferCanvas)) {
             return null;
         }
-        state.last_seq = 0;
-        state.stampCarryDistance = 0;
+        resetRemoteLayerStrokeState(state);
     }
 
     remoteLayerPreviewStates.set(layerId, state);
     return state;
+}
+
+function resetRemoteLayerStrokeState(state, options = {}) {
+    if (!state) return;
+    state.stroke_id = typeof options.strokeId === 'string' ? options.strokeId : '';
+    state.last_seq = 0;
+    state.stampCarryDistance = 0;
+    state.stroke_desynced = false;
+    state.stroke_needs_refresh = false;
+}
+
+function markRemoteLayerStrokeDesynced(state) {
+    if (!state) return;
+    state.stroke_desynced = true;
+    state.stroke_needs_refresh = true;
 }
 
 function applyRemoteStrokePayloadToPreview(payload, options = {}) {
@@ -1445,16 +1473,24 @@ function applyRemoteStrokePayloadToPreview(payload, options = {}) {
     if (!state || !state.ctx) return false;
 
     const seq = Number(payload.seq);
+    const strokeId = typeof payload.stroke_id === 'string' ? payload.stroke_id : '';
+    if (strokeId) {
+        if (state.stroke_id !== strokeId) {
+            resetRemoteLayerStrokeState(state, { strokeId });
+        }
+    } else if (options.kind === 'begin') {
+        resetRemoteLayerStrokeState(state);
+    }
+
     if (Number.isFinite(seq)) {
-        if (seq <= state.last_seq) {
+        const isFirstObservedEventForStroke = state.last_seq <= 0;
+        if (!isFirstObservedEventForStroke && seq <= state.last_seq) {
             return true;
         }
-        if (state.last_seq > 0 && seq > state.last_seq + 1) {
-            clearRemoteLayerPreview(state.layer_id, { render: false });
-            if (!isLayerLockOwnedByCurrentSession(state.layer_id)) {
-                void handleRemoteFrameContentUpdated(payload);
-            }
-            return false;
+        if (isFirstObservedEventForStroke && options.kind !== 'begin' && seq > 1) {
+            markRemoteLayerStrokeDesynced(state);
+        } else if (!isFirstObservedEventForStroke && seq > state.last_seq + 1) {
+            markRemoteLayerStrokeDesynced(state);
         }
         state.last_seq = seq;
     }
@@ -1498,6 +1534,17 @@ function handleRemoteLayerStrokeEnd(payload) {
 function handleRemoteLayerContentCommitted(payload) {
     const layerId = Number(payload.layer_id);
     if (!Number.isFinite(layerId) || layerId <= 0) return;
+    const { frameId, frameIndex } = getRealtimeFrameReference(payload);
+    const frameContentRevision = normalizeFrameContentRevision(
+        payload.frame_content_revision ?? payload.content_revision,
+    );
+    if (
+        isRealtimePayloadForCurrentFrame(frameId, frameIndex)
+        && Number.isFinite(frameContentRevision)
+        && frameContentRevision > 0
+    ) {
+        currentFrameContentRevision = Math.max(currentFrameContentRevision, frameContentRevision);
+    }
     updateLayerContentRevision(layerId, payload.layer_content_revision);
     updateTimelineFramePreview(payload);
     clearRemoteLayerPreview(layerId, { render: false });
@@ -1507,6 +1554,7 @@ function handleRemoteLayerContentCommitted(payload) {
     }
     renderScene();
     renderOverlay();
+    queueAuthoritativeFrameRefresh(payload);
 }
 
 async function applyRemoteFrameCreated(payload) {
@@ -1868,6 +1916,12 @@ function connectProjectPresence() {
         layerLocksById.clear();
         remoteCursorStates.clear();
         remoteLayerPreviewStates.clear();
+        pendingAuthoritativeFrameRefresh = null;
+        authoritativeFrameRefreshInFlight = false;
+        if (authoritativeFrameRefreshTimerId) {
+            window.clearTimeout(authoritativeFrameRefreshTimerId);
+            authoritativeFrameRefreshTimerId = null;
+        }
         if (!presenceIsClosing) {
             collaborationRecoveryPending = collaborationHasConnected;
             projectPresence.clear();
@@ -4006,6 +4060,7 @@ function beginLiveStrokeBroadcast(x, y, toolName) {
     if (!canStreamLiveStroke(toolName)) {
         liveStrokeLayerId = null;
         liveStrokeLastPoint = null;
+        liveStrokeId = '';
         return;
     }
     liveStrokeSequence = 1;
@@ -4013,10 +4068,12 @@ function beginLiveStrokeBroadcast(x, y, toolName) {
     liveStrokeLastPoint = { x, y };
     liveStrokeLayerId = activeLayerId;
     liveStrokeBaseRevision = getLayerContentRevision(activeLayerId);
+    liveStrokeId = createLiveStrokeId();
     sendProjectPresenceMessage('layer_stroke_begin', buildLiveStrokePayload(toolName, {
         x,
         y,
         seq: liveStrokeSequence,
+        stroke_id: liveStrokeId,
         base_revision: liveStrokeBaseRevision,
     }));
     broadcastRemoteCursorPosition(x, y, { force: true, toolName });
@@ -4040,6 +4097,7 @@ function maybeBroadcastLiveStrokeSegment(x, y) {
         x2: x,
         y2: y,
         seq: liveStrokeSequence,
+        stroke_id: liveStrokeId,
         base_revision: liveStrokeBaseRevision,
     }));
     liveStrokeLastPoint = { x, y };
@@ -4052,6 +4110,7 @@ function endLiveStrokeBroadcast(x, y) {
         liveStrokeLastPoint = null;
         liveStrokeLayerId = null;
         liveStrokeSequence = 0;
+        liveStrokeId = '';
         return;
     }
     if (liveStrokeLastPoint && Number.isFinite(x) && Number.isFinite(y)) {
@@ -4064,6 +4123,7 @@ function endLiveStrokeBroadcast(x, y) {
                 x2: x,
                 y2: y,
                 seq: liveStrokeSequence,
+                stroke_id: liveStrokeId,
                 base_revision: liveStrokeBaseRevision,
             }));
         }
@@ -4073,12 +4133,14 @@ function endLiveStrokeBroadcast(x, y) {
         x,
         y,
         seq: liveStrokeSequence,
+        stroke_id: liveStrokeId,
         base_revision: liveStrokeBaseRevision,
     }));
     broadcastRemoteCursorPosition(x, y, { force: true, toolName: activeTool });
     liveStrokeLastPoint = null;
     liveStrokeLayerId = null;
     liveStrokeSequence = 0;
+    liveStrokeId = '';
 }
 
 /**
@@ -4176,6 +4238,14 @@ function stopDrawing() {
     lastDrawTool = null;
     endLiveStrokeBroadcast(finalX, finalY);
     activeTool = null;
+}
+
+function finalizeActiveDrawingOperation() {
+    if (!isDrawing) return;
+    if (isShapeTool(activeTool)) {
+        commitShape();
+    }
+    stopDrawing();
 }
 
 function toRgbaCss(hex, alpha = 1) {
@@ -7321,10 +7391,7 @@ function cancelLiveCanvasInteractionsForPlayback() {
     pendingCanvasStartFromOutside = null;
 
     if (isDrawing) {
-        if (isShapeTool(activeTool)) {
-            commitShape();
-        }
-        stopDrawing();
+        finalizeActiveDrawingOperation();
     }
 
     if (isSelecting) {
@@ -7744,6 +7811,13 @@ function getRealtimeFrameReference(payload) {
     return { frameId, frameIndex };
 }
 
+function isRealtimePayloadForCurrentFrame(frameId, frameIndex) {
+    return (
+        (Number.isFinite(frameId) && frameId > 0 && frameId === currentFrameId)
+        || (Number.isFinite(frameIndex) && frameIndex > 0 && frameIndex === currentFrameIndex)
+    );
+}
+
 function applyFrameDetailToCurrentFrame(detailData, options = {}) {
     const framePayload = detailData && detailData.frame ? detailData.frame : null;
     if (!framePayload) return;
@@ -7764,46 +7838,27 @@ function applyFrameDetailToCurrentFrame(detailData, options = {}) {
     }
 }
 
-async function handleRemoteFrameContentUpdated(payload) {
-    const actorUserId = Number(payload && payload.actor_user_id);
-    if (
-        Number.isFinite(actorUserId)
-        && actorUserId > 0
-        && Number.isFinite(presenceCurrentUserId)
-        && actorUserId === presenceCurrentUserId
-    ) {
-        return;
-    }
-
+async function refreshCurrentFrameFromAuthoritativeState(payload) {
     const { frameId, frameIndex } = getRealtimeFrameReference(payload);
     if (!Number.isFinite(frameIndex) || frameIndex <= 0) {
-        return;
+        return false;
     }
-
-    const isCurrentFrameTarget = (
-        (Number.isFinite(frameId) && frameId > 0 && frameId === currentFrameId)
-        || frameIndex === currentFrameIndex
-    );
-    if (!isCurrentFrameTarget) {
+    if (!isRealtimePayloadForCurrentFrame(frameId, frameIndex)) {
         updateTimelineFramePreview(payload);
-        return;
+        return false;
     }
 
     const detailData = await fetchFrameDetailPayload(frameIndex);
     if (!detailData || !detailData.frame) {
         updateTimelineFramePreview(payload);
-        return;
+        return false;
     }
 
     updateTimelineFramePreview(detailData.frame);
 
     const latestFrameId = Number(detailData.frame.id);
-    const stillCurrentFrame = (
-        (Number.isFinite(latestFrameId) && latestFrameId > 0 && latestFrameId === currentFrameId)
-        || frameIndex === currentFrameIndex
-    );
-    if (!stillCurrentFrame) {
-        return;
+    if (!isRealtimePayloadForCurrentFrame(latestFrameId, frameIndex)) {
+        return true;
     }
 
     const currentLock = getCurrentLayerLock();
@@ -7821,6 +7876,69 @@ async function handleRemoteFrameContentUpdated(payload) {
     fillBackgroundLayerIfNeeded();
     prefetchOnionFramesForCurrent();
     requestOnionSkinRender();
+    return true;
+}
+
+async function drainQueuedAuthoritativeFrameRefresh() {
+    if (authoritativeFrameRefreshInFlight) return;
+    const queuedRefresh = pendingAuthoritativeFrameRefresh;
+    if (!queuedRefresh) return;
+    pendingAuthoritativeFrameRefresh = null;
+    authoritativeFrameRefreshInFlight = true;
+    try {
+        await refreshCurrentFrameFromAuthoritativeState(queuedRefresh.payload);
+    } finally {
+        authoritativeFrameRefreshInFlight = false;
+        if (pendingAuthoritativeFrameRefresh) {
+            void drainQueuedAuthoritativeFrameRefresh();
+        }
+    }
+}
+
+function queueAuthoritativeFrameRefresh(payload, options = {}) {
+    const { frameId, frameIndex } = getRealtimeFrameReference(payload);
+    if (!Number.isFinite(frameIndex) || frameIndex <= 0) {
+        return;
+    }
+    if (!isRealtimePayloadForCurrentFrame(frameId, frameIndex)) {
+        updateTimelineFramePreview(payload);
+        return;
+    }
+
+    pendingAuthoritativeFrameRefresh = { payload };
+    const delayMs = Math.max(0, Number.isFinite(Number(options.delayMs)) ? Number(options.delayMs) : 40);
+
+    if (authoritativeFrameRefreshTimerId) {
+        window.clearTimeout(authoritativeFrameRefreshTimerId);
+        authoritativeFrameRefreshTimerId = null;
+    }
+
+    if (authoritativeFrameRefreshInFlight) {
+        return;
+    }
+
+    if (delayMs <= 0) {
+        void drainQueuedAuthoritativeFrameRefresh();
+        return;
+    }
+
+    authoritativeFrameRefreshTimerId = window.setTimeout(() => {
+        authoritativeFrameRefreshTimerId = null;
+        void drainQueuedAuthoritativeFrameRefresh();
+    }, delayMs);
+}
+
+async function handleRemoteFrameContentUpdated(payload) {
+    const actorUserId = Number(payload && payload.actor_user_id);
+    if (
+        Number.isFinite(actorUserId)
+        && actorUserId > 0
+        && Number.isFinite(presenceCurrentUserId)
+        && actorUserId === presenceCurrentUserId
+    ) {
+        return;
+    }
+    queueAuthoritativeFrameRefresh(payload);
 }
 
 async function switchToFrameIndex(targetIndex) {
@@ -8435,11 +8553,7 @@ async function saveCurrentFrame(options = {}) {
     if (!hasUnsavedChanges) return true;
     currentFrameSavePromise = (async () => {
         if (isDrawing) {
-            if (isShapeTool(activeTool)) {
-                commitShape();
-            } else {
-                stopDrawing();
-            }
+            finalizeActiveDrawingOperation();
         }
 
         const saveUrl = getFrameSaveUrl(currentFrameIndex);
@@ -8816,10 +8930,7 @@ function handlePointerUp(event) {
         return;
     }
     if (!isDrawing) return;
-    if (isShapeTool(activeTool)) {
-        commitShape();
-    }
-    stopDrawing();
+    finalizeActiveDrawingOperation();
 }
 
 function handlePointerLeave() {
