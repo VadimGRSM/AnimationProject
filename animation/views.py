@@ -109,13 +109,32 @@ def serialize_frame(frame):
     }
 
 
-def build_frame_content_updated_payload(frame, actor_user_id, client_request_id=''):
+def build_frame_preview_payload(frame):
     frame_payload = serialize_frame(frame)
     return {
-        **frame_payload,
         'frame_id': frame.pk,
         'frame_index': frame.index,
         'frame_content_revision': frame.content_revision,
+        'preview_url': frame_payload['preview_url'],
+        'updated_at': frame_payload['updated_at'],
+        'has_preview': frame_payload['has_preview'],
+    }
+
+
+def build_frame_save_response_payload(frame, active_layer=None, needs_authoritative_refresh=False):
+    return {
+        'ok': True,
+        **build_frame_preview_payload(frame),
+        'frame_revision': frame.content_revision,
+        'active_layer_id': active_layer.pk if active_layer is not None else None,
+        'active_layer_revision': active_layer.content_revision if active_layer is not None else None,
+        'needs_authoritative_refresh': bool(needs_authoritative_refresh),
+    }
+
+
+def build_frame_content_updated_payload(frame, actor_user_id, client_request_id=''):
+    return {
+        **build_frame_preview_payload(frame),
         'actor_user_id': actor_user_id,
         'client_request_id': client_request_id,
     }
@@ -123,10 +142,7 @@ def build_frame_content_updated_payload(frame, actor_user_id, client_request_id=
 
 def build_layer_content_committed_payload(frame, layer, actor_user_id, client_request_id='', presence_session_id=None):
     return {
-        **serialize_frame(frame),
-        'frame_id': frame.pk,
-        'frame_index': frame.index,
-        'frame_content_revision': frame.content_revision,
+        **build_frame_preview_payload(frame),
         'layer_id': layer.pk,
         'layer_name': layer.name,
         'layer_content_revision': layer.content_revision,
@@ -153,6 +169,15 @@ def _parse_frame_content_payload(raw_content):
 
 def _serialize_frame_content_payload(payload):
     return json.dumps(payload, ensure_ascii=False)
+
+
+def _normalize_frame_content_payload(raw_content):
+    parsed_payload = _parse_frame_content_payload(raw_content)
+    if parsed_payload is not None:
+        return _serialize_frame_content_payload(parsed_payload)
+    if isinstance(raw_content, str):
+        return raw_content
+    return _serialize_frame_content_payload(raw_content)
 
 
 def _merge_active_layer_content(existing_raw, incoming_raw, active_layer_id):
@@ -849,6 +874,7 @@ def frame_save(request, pk, index):
     content_json = payload.get('content_json')
     preview_bytes = None
     preview_filename = ''
+    needs_authoritative_refresh = False
 
     if isinstance(image_data, str):
         image_data = image_data.strip()
@@ -929,13 +955,13 @@ def frame_save(request, pk, index):
                     }, status=409)
 
         if content_json is not None:
-            if isinstance(content_json, str):
-                frame.content_json = _merge_active_layer_content(frame.content_json, content_json, active_layer_id)
-            else:
-                try:
-                    frame.content_json = _merge_active_layer_content(frame.content_json, content_json, active_layer_id)
-                except (TypeError, ValueError):
-                    return JsonResponse({'ok': False, 'error': 'Invalid JSON data.'}, status=400)
+            try:
+                normalized_incoming_content_json = _normalize_frame_content_payload(content_json)
+                merged_content_json = _merge_active_layer_content(frame.content_json, content_json, active_layer_id)
+            except (TypeError, ValueError):
+                return JsonResponse({'ok': False, 'error': 'Invalid JSON data.'}, status=400)
+            frame.content_json = merged_content_json
+            needs_authoritative_refresh = merged_content_json != normalized_incoming_content_json
 
         if preview_bytes is not None:
             frame.preview_image.save(preview_filename, ContentFile(preview_bytes), save=False)
@@ -946,11 +972,6 @@ def frame_save(request, pk, index):
         frame.content_revision += 1
         frame.save()
         project.save(update_fields=['updated_at'])
-        response_frame = {
-            **serialize_frame(frame),
-            'content_json': frame.content_json or '',
-        }
-        event_payload = build_frame_content_updated_payload(frame, request.user.pk, client_request_id)
         layer_commit_payload = (
             build_layer_content_committed_payload(
                 frame,
@@ -961,13 +982,6 @@ def frame_save(request, pk, index):
             )
             if active_layer is not None else None
         )
-        transaction.on_commit(
-            lambda project_id=project.pk, payload=event_payload: broadcast_project_event(
-                project_id,
-                'frame_content_updated',
-                payload,
-            )
-        )
         if layer_commit_payload is not None:
             transaction.on_commit(
                 lambda project_id=project.pk, payload=layer_commit_payload: broadcast_project_event(
@@ -976,12 +990,23 @@ def frame_save(request, pk, index):
                     payload,
                 )
             )
+        else:
+            event_payload = build_frame_content_updated_payload(frame, request.user.pk, client_request_id)
+            transaction.on_commit(
+                lambda project_id=project.pk, payload=event_payload: broadcast_project_event(
+                    project_id,
+                    'frame_content_updated',
+                    payload,
+                )
+            )
 
-    return JsonResponse({
-        'ok': True,
-        'frame': response_frame,
-        'layer': serialize_layer(active_layer) if active_layer is not None else None,
-    })
+    return JsonResponse(
+        build_frame_save_response_payload(
+            frame,
+            active_layer,
+            needs_authoritative_refresh=needs_authoritative_refresh,
+        )
+    )
 
 
 @login_required

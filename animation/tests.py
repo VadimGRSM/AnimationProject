@@ -2199,13 +2199,10 @@ class ProjectWebsocketRoomTests(TransactionTestCase):
             )
             self.assertEqual(response.status_code, 200)
 
-            frame_event = await viewer_communicator.receive_json_from()
             layer_event = await viewer_communicator.receive_json_from()
-            self.assertEqual(frame_event['type'], 'frame_content_updated')
-            self.assertEqual(frame_event['payload']['frame_id'], self.frame_one.pk)
-            self.assertEqual(frame_event['payload']['client_request_id'], 'ws-frame-save')
-            self.assertEqual(frame_event['payload']['frame_content_revision'], 1)
             self.assertEqual(layer_event['type'], 'layer_content_committed')
+            self.assertEqual(layer_event['payload']['frame_id'], self.frame_one.pk)
+            self.assertEqual(layer_event['payload']['client_request_id'], 'ws-frame-save')
             self.assertEqual(layer_event['payload']['layer_id'], self.layer_one.pk)
             self.assertEqual(layer_event['payload']['presence_session_id'], owner_connection['presence_session_id'])
             self.assertEqual(layer_event['payload']['frame_content_revision'], 1)
@@ -2473,8 +2470,14 @@ class FrameRealtimeSyncTests(TestCase):
         self.assertEqual(response.status_code, 200)
         response_payload = response.json()
         self.assertTrue(response_payload['ok'])
-        self.assertEqual(response_payload['frame']['content_revision'], 1)
-        self.assertEqual(response_payload['layer']['content_revision'], 1)
+        self.assertEqual(response_payload['frame_id'], self.frame.pk)
+        self.assertEqual(response_payload['frame_index'], self.frame.index)
+        self.assertEqual(response_payload['frame_revision'], 1)
+        self.assertEqual(response_payload['active_layer_id'], self.layer.pk)
+        self.assertEqual(response_payload['active_layer_revision'], 1)
+        self.assertFalse(response_payload['needs_authoritative_refresh'])
+        self.assertNotIn('frame', response_payload)
+        self.assertNotIn('layer', response_payload)
 
         self.frame.refresh_from_db()
         self.layer.refresh_from_db()
@@ -2564,11 +2567,11 @@ class FrameRealtimeSyncTests(TestCase):
         saved_layers = {entry['id']: entry['image_data'] for entry in saved_payload['layers']}
         self.assertEqual(saved_layers[self.layer.pk], 'ink-after')
         self.assertEqual(saved_layers[second_layer.pk], 'paint-stays')
-
-        returned_payload = json.loads(response_payload['frame']['content_json'])
-        returned_layers = {entry['id']: entry['image_data'] for entry in returned_payload['layers']}
-        self.assertEqual(returned_layers[self.layer.pk], 'ink-after')
-        self.assertEqual(returned_layers[second_layer.pk], 'paint-stays')
+        self.assertEqual(response_payload['frame_revision'], 1)
+        self.assertEqual(response_payload['active_layer_revision'], 1)
+        self.assertTrue(response_payload['needs_authoritative_refresh'])
+        self.assertNotIn('frame', response_payload)
+        self.assertNotIn('content_json', response_payload)
 
     def test_sequential_frame_saves_preserve_other_users_layers(self):
         second_user = User.objects.create_user(email='realtime-collaborator@example.com', password='test')
@@ -2652,11 +2655,14 @@ class FrameRealtimeSyncTests(TestCase):
         self.assertEqual(self.frame.content_revision, 2)
         self.assertEqual(self.layer.content_revision, 1)
         self.assertEqual(second_layer.content_revision, 1)
-
-        returned_payload = json.loads(editor_response.json()['frame']['content_json'])
-        returned_layers = {entry['id']: entry['image_data'] for entry in returned_payload['layers']}
-        self.assertEqual(returned_layers[self.layer.pk], 'ink-after')
-        self.assertEqual(returned_layers[second_layer.pk], 'paint-after')
+        self.assertTrue(owner_response.json()['needs_authoritative_refresh'])
+        editor_response_payload = editor_response.json()
+        self.assertEqual(editor_response_payload['frame_revision'], 2)
+        self.assertEqual(editor_response_payload['active_layer_id'], second_layer.pk)
+        self.assertEqual(editor_response_payload['active_layer_revision'], 1)
+        self.assertTrue(editor_response_payload['needs_authoritative_refresh'])
+        self.assertNotIn('frame', editor_response_payload)
+        self.assertNotIn('content_json', editor_response_payload)
 
     def test_project_save_updates_frame_revisions(self):
         second_frame = Frame.objects.create(project=self.project, index=2, content_json='{"layers":[]}')

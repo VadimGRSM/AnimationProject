@@ -1,4 +1,5 @@
 import logging
+import time
 
 from channels.db import database_sync_to_async
 from channels.generic.websocket import AsyncJsonWebsocketConsumer
@@ -31,6 +32,7 @@ class ProjectConsumer(AsyncJsonWebsocketConsumer):
     UNAUTHORIZED_CLOSE_CODE = 4401
     FORBIDDEN_CLOSE_CODE = 4403
     NOT_FOUND_CLOSE_CODE = 4404
+    REMOTE_CURSOR_BROADCAST_INTERVAL_SECONDS = 0.14
 
     async def connect(self):
         raw_project_id = self.scope["url_route"]["kwargs"].get("project_id")
@@ -295,6 +297,8 @@ class ProjectConsumer(AsyncJsonWebsocketConsumer):
         if message_type in {"remote_cursor_moved", "layer_stroke_begin", "layer_stroke_segment", "layer_stroke_end"}:
             if not self.can_stream_layer_preview(payload):
                 return
+            if message_type == "remote_cursor_moved" and self.should_drop_remote_cursor_message():
+                return
             user_payload = build_presence_identity_payload(self.scope.get("user"), self.role)
             await self.channel_layer.group_send(
                 self.project_group_name,
@@ -319,6 +323,14 @@ class ProjectConsumer(AsyncJsonWebsocketConsumer):
                 "payload": payload,
             }
         )
+
+    def should_drop_remote_cursor_message(self):
+        now = time.monotonic()
+        last_sent_at = getattr(self, "_last_remote_cursor_broadcast_at", 0.0)
+        if now - last_sent_at < self.REMOTE_CURSOR_BROADCAST_INTERVAL_SECONDS:
+            return True
+        self._last_remote_cursor_broadcast_at = now
+        return False
 
     @staticmethod
     def build_project_group_name(project_id):
