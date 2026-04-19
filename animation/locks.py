@@ -416,21 +416,11 @@ def acquire_layer_lock(project_id, frame_id, layer_id, user_id, role, presence_s
         existing_lock.save(update_fields=['frame', 'user', 'presence_session', 'last_heartbeat_at', 'expires_at'])
         lock = existing_lock
 
-    other_locks = list(
-        LayerLock.objects.select_related('frame', 'layer', 'user', 'presence_session').filter(
-            project_id=project_id,
-            presence_session_id=presence_session.pk,
-        ).exclude(layer_id=layer.pk)
-    )
-    released = stale_releases + [_serialize_layer_lock(other_lock) for other_lock in other_locks]
-    if other_locks:
-        LayerLock.objects.filter(pk__in=[other_lock.pk for other_lock in other_locks]).delete()
-
     return {
         'status': 'acquired',
         'reason': 'ok',
         'lock': _serialize_layer_lock(_get_layer_lock_for_serialization(lock.pk)),
-        'released': released,
+        'released': stale_releases,
     }
 
 

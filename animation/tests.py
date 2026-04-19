@@ -30,6 +30,8 @@ from .access import (
     get_project_role,
     user_can_access_project,
 )
+from .consumers import ProjectConsumer
+from .locks import acquire_layer_lock, cleanup_stale_layer_locks, heartbeat_layer_lock, release_layer_locks
 from .services.invite_service import PENDING_PROJECT_INVITE_SESSION_KEY
 from .models import AnimationProject, Frame, FrameLock, Layer, LayerLock, ProjectInvite, ProjectMember, ProjectPresenceSession
 
@@ -204,6 +206,256 @@ class CollaborationModelsTests(TestCase):
         self.assertTrue(invite.is_expired())
         self.assertFalse(invite.is_pending())
         self.assertFalse(invite.can_be_accepted_by(self.other_user))
+
+
+class LayerLockSemanticsTests(TestCase):
+    def setUp(self):
+        self.owner = User.objects.create_user(email='lock-owner@example.com', password='test')
+        self.editor = User.objects.create_user(email='lock-editor@example.com', password='test')
+        self.project = AnimationProject.objects.create(
+            owner=self.owner,
+            title='Layer lock semantics',
+            width=1280,
+            height=720,
+            fps=12,
+        )
+        self.frame = Frame.objects.create(project=self.project, index=1, content_json='{}')
+        self.layer_one = Layer.objects.create(
+            frame=self.frame,
+            order=1,
+            name='Background',
+            visible=True,
+            opacity=100,
+        )
+        self.layer_two = Layer.objects.create(
+            frame=self.frame,
+            order=2,
+            name='Ink',
+            visible=True,
+            opacity=100,
+        )
+        ProjectMember.objects.create(
+            project=self.project,
+            user=self.editor,
+            role=ProjectMember.Role.EDITOR,
+            invited_by=self.owner,
+        )
+
+    def _create_presence_session(self, user, role, *, is_active=True, last_seen_at=None):
+        now = last_seen_at or timezone.now()
+        return ProjectPresenceSession.objects.create(
+            project=self.project,
+            user=user,
+            channel_name=f'layer-lock-{user.pk}-{ProjectPresenceSession.objects.count() + 1}',
+            current_frame=self.frame,
+            role=role,
+            last_seen_at=now,
+            is_active=is_active,
+        )
+
+    def test_same_session_can_hold_multiple_layer_locks(self):
+        presence_session = self._create_presence_session(self.owner, ProjectMember.Role.OWNER)
+
+        first_lock_state = acquire_layer_lock(
+            project_id=self.project.pk,
+            frame_id=self.frame.pk,
+            layer_id=self.layer_one.pk,
+            user_id=self.owner.pk,
+            role=ProjectMember.Role.OWNER,
+            presence_session_id=presence_session.pk,
+        )
+        second_lock_state = acquire_layer_lock(
+            project_id=self.project.pk,
+            frame_id=self.frame.pk,
+            layer_id=self.layer_two.pk,
+            user_id=self.owner.pk,
+            role=ProjectMember.Role.OWNER,
+            presence_session_id=presence_session.pk,
+        )
+
+        self.assertEqual(first_lock_state['status'], 'acquired')
+        self.assertEqual(second_lock_state['status'], 'acquired')
+        self.assertEqual(second_lock_state['released'], [])
+        self.assertEqual(
+            LayerLock.objects.filter(project=self.project, presence_session=presence_session).count(),
+            2,
+        )
+        self.assertSetEqual(
+            set(
+                LayerLock.objects.filter(project=self.project, presence_session=presence_session)
+                .values_list('layer_id', flat=True)
+            ),
+            {self.layer_one.pk, self.layer_two.pk},
+        )
+
+    def test_different_session_cannot_take_locked_layer(self):
+        owner_presence = self._create_presence_session(self.owner, ProjectMember.Role.OWNER)
+        editor_presence = self._create_presence_session(self.editor, ProjectMember.Role.EDITOR)
+        acquire_layer_lock(
+            project_id=self.project.pk,
+            frame_id=self.frame.pk,
+            layer_id=self.layer_one.pk,
+            user_id=self.owner.pk,
+            role=ProjectMember.Role.OWNER,
+            presence_session_id=owner_presence.pk,
+        )
+
+        denied_lock_state = acquire_layer_lock(
+            project_id=self.project.pk,
+            frame_id=self.frame.pk,
+            layer_id=self.layer_one.pk,
+            user_id=self.editor.pk,
+            role=ProjectMember.Role.EDITOR,
+            presence_session_id=editor_presence.pk,
+        )
+
+        self.assertEqual(denied_lock_state['status'], 'denied')
+        self.assertEqual(denied_lock_state['reason'], 'locked_by_other')
+        self.assertEqual(denied_lock_state['lock']['presence_session_id'], owner_presence.pk)
+        self.assertEqual(LayerLock.objects.filter(project=self.project, layer=self.layer_one).count(), 1)
+
+    def test_repeated_acquire_for_owned_layer_is_idempotent(self):
+        presence_session = self._create_presence_session(self.owner, ProjectMember.Role.OWNER)
+
+        acquire_layer_lock(
+            project_id=self.project.pk,
+            frame_id=self.frame.pk,
+            layer_id=self.layer_one.pk,
+            user_id=self.owner.pk,
+            role=ProjectMember.Role.OWNER,
+            presence_session_id=presence_session.pk,
+        )
+        original_lock = LayerLock.objects.get(project=self.project, layer=self.layer_one)
+        reacquired_lock_state = acquire_layer_lock(
+            project_id=self.project.pk,
+            frame_id=self.frame.pk,
+            layer_id=self.layer_one.pk,
+            user_id=self.owner.pk,
+            role=ProjectMember.Role.OWNER,
+            presence_session_id=presence_session.pk,
+        )
+        refreshed_lock = LayerLock.objects.get(project=self.project, layer=self.layer_one)
+
+        self.assertEqual(reacquired_lock_state['status'], 'acquired')
+        self.assertEqual(reacquired_lock_state['released'], [])
+        self.assertEqual(LayerLock.objects.filter(project=self.project, layer=self.layer_one).count(), 1)
+        self.assertEqual(refreshed_lock.presence_session_id, presence_session.pk)
+        self.assertGreaterEqual(refreshed_lock.expires_at, original_lock.expires_at)
+
+    def test_layer_lock_release_and_heartbeat_flow(self):
+        presence_session = self._create_presence_session(self.owner, ProjectMember.Role.OWNER)
+        acquire_layer_lock(
+            project_id=self.project.pk,
+            frame_id=self.frame.pk,
+            layer_id=self.layer_one.pk,
+            user_id=self.owner.pk,
+            role=ProjectMember.Role.OWNER,
+            presence_session_id=presence_session.pk,
+        )
+        original_lock = LayerLock.objects.get(project=self.project, layer=self.layer_one)
+
+        heartbeat_state = heartbeat_layer_lock(
+            project_id=self.project.pk,
+            layer_id=self.layer_one.pk,
+            user_id=self.owner.pk,
+            presence_session_id=presence_session.pk,
+        )
+        refreshed_lock = LayerLock.objects.get(project=self.project, layer=self.layer_one)
+        released = release_layer_locks(
+            project_id=self.project.pk,
+            user_id=self.owner.pk,
+            presence_session_id=presence_session.pk,
+            layer_id=self.layer_one.pk,
+        )
+
+        self.assertTrue(heartbeat_state['updated'])
+        self.assertEqual(heartbeat_state['released'], [])
+        self.assertGreaterEqual(refreshed_lock.expires_at, original_lock.expires_at)
+        self.assertEqual([lock['layer_id'] for lock in released], [self.layer_one.pk])
+        self.assertFalse(LayerLock.objects.filter(project=self.project, layer=self.layer_one).exists())
+
+    def test_stale_layer_locks_are_cleaned_up(self):
+        now = timezone.now()
+        stale_presence = self._create_presence_session(
+            self.owner,
+            ProjectMember.Role.OWNER,
+            last_seen_at=now,
+        )
+        fresh_presence = self._create_presence_session(
+            self.editor,
+            ProjectMember.Role.EDITOR,
+            last_seen_at=now,
+        )
+        LayerLock.objects.create(
+            project=self.project,
+            frame=self.frame,
+            layer=self.layer_one,
+            user=self.owner,
+            presence_session=stale_presence,
+            last_heartbeat_at=now - timedelta(minutes=2),
+            expires_at=now - timedelta(seconds=1),
+        )
+        LayerLock.objects.create(
+            project=self.project,
+            frame=self.frame,
+            layer=self.layer_two,
+            user=self.editor,
+            presence_session=fresh_presence,
+            last_heartbeat_at=now,
+            expires_at=now + timedelta(seconds=30),
+        )
+
+        released = cleanup_stale_layer_locks(project_id=self.project.pk, now=now)
+
+        self.assertEqual([lock['layer_id'] for lock in released], [self.layer_one.pk])
+        self.assertFalse(LayerLock.objects.filter(project=self.project, layer=self.layer_one).exists())
+        self.assertTrue(LayerLock.objects.filter(project=self.project, layer=self.layer_two).exists())
+
+
+class ProjectConsumerLayerLockCacheTests(TestCase):
+    def test_reconnect_snapshot_restores_owned_layer_lock_cache(self):
+        consumer = ProjectConsumer()
+        consumer.presence_session_id = 77
+        consumer.owned_layer_lock_ids = {999}
+
+        consumer.replace_owned_layer_locks([
+            {'layer_id': 11, 'presence_session_id': 77},
+            {'layer_id': 12, 'presence_session_id': 55},
+            {'layer_id': 13, 'presence_session_id': 77},
+        ])
+
+        self.assertEqual(consumer.owned_layer_lock_ids, {11, 13})
+
+    def test_live_preview_authorization_uses_owned_layer_lock_cache(self):
+        consumer = ProjectConsumer()
+        consumer.presence_session_id = 101
+        consumer.owned_layer_lock_ids = {21}
+
+        with mock.patch(
+            'animation.locks.LayerLock.objects.filter',
+            side_effect=AssertionError('Live preview auth should not query layer locks'),
+        ):
+            self.assertTrue(
+                consumer.can_stream_layer_preview({
+                    'frame_id': 1,
+                    'layer_id': 21,
+                    'tool': 'brush',
+                })
+            )
+            self.assertFalse(
+                consumer.can_stream_layer_preview({
+                    'frame_id': 1,
+                    'layer_id': 22,
+                    'tool': 'brush',
+                })
+            )
+            self.assertFalse(
+                consumer.can_stream_layer_preview({
+                    'frame_id': 1,
+                    'layer_id': 21,
+                    'tool': 'fill',
+                })
+            )
 
 
 class ProjectAccessTests(TestCase):

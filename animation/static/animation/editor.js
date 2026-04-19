@@ -350,6 +350,7 @@ let pendingLayerLockId = null;
 let currentHeldLayerLockId = null;
 let pendingLayerLockRequestedAt = 0;
 let pendingLayerLockRequestKey = '';
+let layerLockRequestInFlight = false;
 let remoteCursorLastSentAt = 0;
 let liveStrokeSequence = 0;
 let liveStrokeLastSentAt = 0;
@@ -599,6 +600,7 @@ function clearPendingLayerLockRequest(layerId = null) {
         pendingLayerLockId = null;
         pendingLayerLockRequestedAt = 0;
         pendingLayerLockRequestKey = '';
+        layerLockRequestInFlight = false;
     }
 }
 
@@ -608,15 +610,31 @@ function getCurrentLayerLockOwnerName() {
 }
 
 function refreshHeldLayerLockId() {
-    currentHeldLayerLockId = null;
+    const ownedLayerIds = [];
     for (const lock of layerLocksById.values()) {
         if (isLockOwnedByCurrentSession(lock)) {
-            currentHeldLayerLockId = lock.layer_id;
-            if (lock.layer_id === activeLayerId) {
-                break;
-            }
+            ownedLayerIds.push(lock.layer_id);
         }
     }
+    if (
+        Number.isFinite(activeLayerId)
+        && activeLayerId > 0
+        && ownedLayerIds.includes(activeLayerId)
+    ) {
+        currentHeldLayerLockId = activeLayerId;
+        return;
+    }
+    currentHeldLayerLockId = ownedLayerIds[0] || null;
+}
+
+function getOwnedLayerLockIds() {
+    const ownedLayerIds = [];
+    for (const lock of layerLocksById.values()) {
+        if (isLockOwnedByCurrentSession(lock)) {
+            ownedLayerIds.push(lock.layer_id);
+        }
+    }
+    return ownedLayerIds;
 }
 
 function isCurrentFrameReadOnlyByLock() {
@@ -629,11 +647,14 @@ function isCurrentFrameReadOnlyByLock() {
     if (!Number.isFinite(currentFrameId) || currentFrameId <= 0 || !Number.isFinite(activeLayerId) || activeLayerId <= 0) {
         return true;
     }
+    const lock = getCurrentLayerLock();
+    if (isLockOwnedByCurrentSession(lock)) {
+        return false;
+    }
     if (pendingLayerLockId === activeLayerId) {
         return true;
     }
-    const lock = getCurrentLayerLock();
-    return !isLockOwnedByCurrentSession(lock);
+    return true;
 }
 
 function getCurrentFrameEditingState() {
@@ -663,18 +684,19 @@ function getCurrentFrameEditingState() {
             text: 'Loading layer lock...',
         };
     }
-    if (pendingLayerLockId === activeLayerId) {
-        return {
-            mode: 'pending',
-            text: `Requesting lock for ${getLayerById(activeLayerId)?.name || 'selected layer'}...`,
-        };
-    }
 
     const currentLock = getCurrentLayerLock();
     if (isLockOwnedByCurrentSession(currentLock)) {
         return {
             mode: 'editable',
             text: `Editing ${currentLock.layer_name || 'selected layer'} on frame ${currentLock.frame_index || currentFrameIndex}.`,
+        };
+    }
+
+    if (pendingLayerLockId === activeLayerId) {
+        return {
+            mode: 'pending',
+            text: `Requesting lock for ${getLayerById(activeLayerId)?.name || 'selected layer'}...`,
         };
     }
     if (currentLock) {
@@ -711,17 +733,17 @@ function stopFrameLockHeartbeat() {
 function startFrameLockHeartbeat() {
     stopFrameLockHeartbeat();
     if (!isProjectPresenceSocketOpen()) return;
-    if (!Number.isFinite(currentHeldLayerLockId) || currentHeldLayerLockId <= 0) return;
+    if (!getOwnedLayerLockIds().length) return;
     frameLockHeartbeatTimerId = window.setInterval(() => {
         if (!isProjectPresenceSocketOpen()) return;
-        if (!Number.isFinite(currentHeldLayerLockId) || currentHeldLayerLockId <= 0) return;
-        sendProjectPresenceMessage('layer_lock_heartbeat', { layer_id: currentHeldLayerLockId });
+        getOwnedLayerLockIds().forEach((layerId) => {
+            sendProjectPresenceMessage('layer_lock_heartbeat', { layer_id: layerId });
+        });
     }, FRAME_LOCK_HEARTBEAT_INTERVAL_MS);
 }
 
 function syncFrameLockHeartbeat() {
-    const currentLock = getCurrentLayerLock();
-    if (isLockOwnedByCurrentSession(currentLock) && currentLock.layer_id === currentHeldLayerLockId) {
+    if (getOwnedLayerLockIds().length) {
         startFrameLockHeartbeat();
         return;
     }
@@ -916,6 +938,13 @@ function setLayerLockSnapshot(locks) {
         if (!lock) return;
         layerLocksById.set(lock.layer_id, lock);
     });
+    if (
+        Number.isFinite(pendingLayerLockId)
+        && pendingLayerLockId > 0
+        && layerLocksById.has(pendingLayerLockId)
+    ) {
+        clearPendingLayerLockRequest(pendingLayerLockId);
+    }
     syncCollaborativeEditorUi();
 }
 
@@ -975,6 +1004,14 @@ function requestLayerLock(frameId, layerId) {
     const requestKey = getLayerLockRequestKey(numericFrameId, numericLayerId);
     const now = Date.now();
     if (
+        layerLockRequestInFlight
+        && pendingLayerLockId === numericLayerId
+        && pendingLayerLockRequestKey === requestKey
+        && now - pendingLayerLockRequestedAt < LAYER_LOCK_REQUEST_RETRY_MS
+    ) {
+        return false;
+    }
+    if (
         pendingLayerLockId === numericLayerId
         && pendingLayerLockRequestKey === requestKey
         && now - pendingLayerLockRequestedAt < LAYER_LOCK_REQUEST_RETRY_MS
@@ -984,6 +1021,7 @@ function requestLayerLock(frameId, layerId) {
     pendingLayerLockId = numericLayerId;
     pendingLayerLockRequestedAt = now;
     pendingLayerLockRequestKey = requestKey;
+    layerLockRequestInFlight = true;
     syncCollaborativeEditorUi();
     const didSend = sendProjectPresenceMessage('layer_lock_acquire', {
         frame_id: numericFrameId,
@@ -1012,11 +1050,6 @@ function releaseLayerLock(layerId) {
 }
 
 function syncCurrentLayerLock(previousLayerId = null) {
-    const previousId = Number(previousLayerId);
-    if (Number.isFinite(previousId) && previousId > 0 && previousId !== activeLayerId) {
-        releaseLayerLock(previousId);
-    }
-
     if (!canCurrentUserUseLayerLocks()) {
         clearPendingLayerLockRequest();
         syncCollaborativeEditorUi();
@@ -1630,9 +1663,9 @@ function disconnectProjectPresence() {
     presenceIsClosing = true;
     stopProjectPresencePing();
     stopFrameLockHeartbeat();
-    if (Number.isFinite(currentHeldLayerLockId) && currentHeldLayerLockId > 0) {
-        sendProjectPresenceMessage('layer_lock_release', { layer_id: currentHeldLayerLockId });
-    }
+    getOwnedLayerLockIds().forEach((layerId) => {
+        sendProjectPresenceMessage('layer_lock_release', { layer_id: layerId });
+    });
     if (presenceReconnectTimerId) {
         clearTimeout(presenceReconnectTimerId);
         presenceReconnectTimerId = null;

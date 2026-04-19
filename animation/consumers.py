@@ -11,7 +11,6 @@ from .locks import (
     get_project_layer_lock_snapshot,
     heartbeat_frame_lock,
     heartbeat_layer_lock,
-    presence_session_holds_layer_lock,
     release_frame_locks,
     release_layer_locks,
 )
@@ -56,10 +55,12 @@ class ProjectConsumer(AsyncJsonWebsocketConsumer):
         self.project_group_name = self.build_project_group_name(self.project_id)
         self.user_id = connection_context["user_id"]
         self.role = connection_context["role"]
+        self.owned_layer_lock_ids = set()
         presence_state = await self.activate_presence_session()
         self.presence_session_id = presence_state["presence_session_id"]
         lock_state = await self.get_frame_lock_snapshot()
         layer_lock_state = await self.get_layer_lock_snapshot()
+        self.replace_owned_layer_locks(layer_lock_state["locks"])
 
         await self.channel_layer.group_add(self.project_group_name, self.channel_name)
         await self.accept()
@@ -121,6 +122,7 @@ class ProjectConsumer(AsyncJsonWebsocketConsumer):
         if project_id and user_id and presence_session_id:
             released_locks = await self.release_all_locks()
             released_layer_locks = await self.release_all_layer_locks()
+        self.owned_layer_lock_ids = set()
         if project_id and user_id:
             leave_state = await self.deactivate_presence_session()
         if project_group_name:
@@ -243,6 +245,9 @@ class ProjectConsumer(AsyncJsonWebsocketConsumer):
             frame_id = payload.get("frame_id")
             layer_id = payload.get("layer_id")
             lock_state = await self.acquire_layer_lock(frame_id, layer_id)
+            self.remove_owned_layer_locks(lock_state["released"])
+            if lock_state["status"] == "acquired" and lock_state["lock"] is not None:
+                self.add_owned_layer_lock(lock_state["lock"])
             await self.broadcast_released_layer_locks(lock_state["released"])
             if lock_state["status"] == "acquired" and lock_state["lock"] is not None:
                 await self.channel_layer.group_send(
@@ -268,16 +273,18 @@ class ProjectConsumer(AsyncJsonWebsocketConsumer):
 
         if message_type == "layer_lock_release":
             released_layer_locks = await self.release_requested_layer_locks(payload.get("layer_id"))
+            self.remove_owned_layer_locks(released_layer_locks)
             await self.broadcast_released_layer_locks(released_layer_locks)
             return
 
         if message_type == "layer_lock_heartbeat":
             heartbeat_state = await self.heartbeat_layer_lock(payload.get("layer_id"))
+            self.remove_owned_layer_locks(heartbeat_state["released"])
             await self.broadcast_released_layer_locks(heartbeat_state["released"])
             return
 
         if message_type in {"remote_cursor_moved", "layer_stroke_begin", "layer_stroke_segment", "layer_stroke_end"}:
-            if not await self.can_stream_layer_preview(payload):
+            if not self.can_stream_layer_preview(payload):
                 return
             await self.channel_layer.group_send(
                 self.project_group_name,
@@ -431,7 +438,6 @@ class ProjectConsumer(AsyncJsonWebsocketConsumer):
             presence_session_id=self.presence_session_id,
         )
 
-    @database_sync_to_async
     def can_stream_layer_preview(self, payload):
         if not isinstance(payload, dict):
             return False
@@ -445,12 +451,51 @@ class ProjectConsumer(AsyncJsonWebsocketConsumer):
             numeric_layer_id = int(layer_id)
         except (TypeError, ValueError):
             return False
-        return numeric_frame_id > 0 and presence_session_holds_layer_lock(
-            project_id=self.project_id,
-            layer_id=numeric_layer_id,
-            user_id=self.user_id,
-            presence_session_id=self.presence_session_id,
-        )
+        return numeric_frame_id > 0 and numeric_layer_id in getattr(self, "owned_layer_lock_ids", set())
+
+    @staticmethod
+    def get_lock_layer_id(lock):
+        if not isinstance(lock, dict):
+            return None
+        try:
+            layer_id = int(lock.get("layer_id"))
+        except (TypeError, ValueError):
+            return None
+        return layer_id if layer_id > 0 else None
+
+    def replace_owned_layer_locks(self, locks):
+        owned_layer_lock_ids = set()
+        for lock in locks or []:
+            if not isinstance(lock, dict):
+                continue
+            if lock.get("presence_session_id") != getattr(self, "presence_session_id", None):
+                continue
+            layer_id = self.get_lock_layer_id(lock)
+            if layer_id is not None:
+                owned_layer_lock_ids.add(layer_id)
+        self.owned_layer_lock_ids = owned_layer_lock_ids
+
+    def add_owned_layer_lock(self, lock):
+        if not isinstance(lock, dict):
+            return
+        if lock.get("presence_session_id") != getattr(self, "presence_session_id", None):
+            return
+        layer_id = self.get_lock_layer_id(lock)
+        if layer_id is None:
+            return
+        if not hasattr(self, "owned_layer_lock_ids"):
+            self.owned_layer_lock_ids = set()
+        self.owned_layer_lock_ids.add(layer_id)
+
+    def remove_owned_layer_locks(self, locks):
+        if not hasattr(self, "owned_layer_lock_ids"):
+            self.owned_layer_lock_ids = set()
+        for lock in locks or []:
+            layer_id = self.get_lock_layer_id(lock)
+            if layer_id is None:
+                continue
+            if lock.get("presence_session_id") == getattr(self, "presence_session_id", None) or layer_id in self.owned_layer_lock_ids:
+                self.owned_layer_lock_ids.discard(layer_id)
 
     async def broadcast_released_locks(self, released_locks):
         for lock in released_locks or []:
@@ -504,6 +549,7 @@ class ProjectConsumer(AsyncJsonWebsocketConsumer):
         )
 
     async def layer_lock_acquired(self, event):
+        self.add_owned_layer_lock(event["lock"])
         await self.send_event(
             "layer_lock_acquired",
             {
@@ -513,6 +559,7 @@ class ProjectConsumer(AsyncJsonWebsocketConsumer):
         )
 
     async def layer_lock_released(self, event):
+        self.remove_owned_layer_locks([event["lock"]])
         await self.send_event(
             "layer_lock_released",
             {
