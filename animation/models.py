@@ -260,9 +260,53 @@ class Layer(models.Model):
     name = models.CharField(max_length=200, verbose_name='Layer name')
     visible = models.BooleanField(default=True, verbose_name='Visible')
     opacity = models.PositiveSmallIntegerField(default=100, verbose_name='Opacity (0-100)')
+    content_revision = models.PositiveIntegerField(default=0, verbose_name='Layer content revision')
 
     class Meta:
         ordering = ['frame', 'order', 'id']
 
     def __str__(self):
         return f'{self.frame} — {self.name}'
+
+
+class LayerLock(models.Model):
+    project = models.ForeignKey(
+        AnimationProject,
+        on_delete=models.CASCADE,
+        related_name='layer_locks',
+    )
+    frame = models.ForeignKey(
+        Frame,
+        on_delete=models.CASCADE,
+        related_name='layer_locks',
+    )
+    layer = models.OneToOneField(
+        Layer,
+        on_delete=models.CASCADE,
+        related_name='layer_lock',
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='layer_locks',
+    )
+    presence_session = models.ForeignKey(
+        ProjectPresenceSession,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='layer_locks',
+    )
+    acquired_at = models.DateTimeField(auto_now_add=True)
+    last_heartbeat_at = models.DateTimeField(default=timezone.now)
+    expires_at = models.DateTimeField()
+
+    class Meta:
+        indexes = [
+            models.Index(fields=['project', 'frame', 'expires_at']),
+            models.Index(fields=['project', 'user']),
+            models.Index(fields=['presence_session', 'expires_at']),
+        ]
+
+    def __str__(self):
+        return f'{self.layer} locked by {self.user}'

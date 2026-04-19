@@ -333,6 +333,9 @@ let timelineControlsTemporarilyDisabled = false;
 let isUpdatingProjectFps = false;
 const projectPresence = new Map();
 const frameLocksById = new Map();
+const layerLocksById = new Map();
+const remoteCursorStates = new Map();
+const remoteLayerPreviewStates = new Map();
 let presenceSocket = null;
 let presenceCurrentUserId = null;
 let presenceSessionId = null;
@@ -343,6 +346,14 @@ let presenceReconnectTimerId = null;
 let presenceIsClosing = false;
 let pendingFrameLockId = null;
 let currentHeldFrameLockId = null;
+let pendingLayerLockId = null;
+let currentHeldLayerLockId = null;
+let remoteCursorLastSentAt = 0;
+let liveStrokeSequence = 0;
+let liveStrokeLastSentAt = 0;
+let liveStrokeLastPoint = null;
+let liveStrokeLayerId = null;
+let liveStrokeBaseRevision = 0;
 const localProjectEventRequestIds = new Set();
 let projectEventRequestCounter = 0;
 let presenceReconnectAttempt = 0;
@@ -353,6 +364,9 @@ const PRESENCE_PING_INTERVAL_MS = 30000;
 const FRAME_LOCK_HEARTBEAT_INTERVAL_MS = 12000;
 const PRESENCE_RECONNECT_BASE_DELAY_MS = 2000;
 const PRESENCE_RECONNECT_MAX_DELAY_MS = 15000;
+const REMOTE_CURSOR_INTERVAL_MS = 60;
+const REMOTE_CURSOR_STALE_MS = 2500;
+const LIVE_STROKE_SEGMENT_INTERVAL_MS = 45;
 
 const PLAYBACK_IDLE = 'idle';
 const PLAYBACK_PLAYING = 'playing';
@@ -504,7 +518,35 @@ function normalizeFrameLock(rawLock) {
     };
 }
 
+function normalizeLayerLock(rawLock) {
+    if (!rawLock || typeof rawLock !== 'object') return null;
+    const frameId = Number(rawLock.frame_id);
+    const frameIndex = Number(rawLock.frame_index);
+    const layerId = Number(rawLock.layer_id);
+    const userId = Number(rawLock.user_id);
+    const presenceSession = Number(rawLock.presence_session_id);
+    if (!Number.isFinite(frameId) || frameId <= 0 || !Number.isFinite(layerId) || layerId <= 0) {
+        return null;
+    }
+    return {
+        frame_id: frameId,
+        frame_index: Number.isFinite(frameIndex) ? frameIndex : null,
+        layer_id: layerId,
+        layer_name: rawLock.layer_name || 'Layer',
+        user_id: Number.isFinite(userId) ? userId : null,
+        display_name: rawLock.display_name || rawLock.email || 'Unknown user',
+        email: rawLock.email || '',
+        role: rawLock.role || '',
+        presence_session_id: Number.isFinite(presenceSession) ? presenceSession : null,
+        expires_at: rawLock.expires_at || '',
+    };
+}
+
 function canCurrentUserUseFrameLocks() {
+    return Boolean(projectCanEdit);
+}
+
+function canCurrentUserUseLayerLocks() {
     return Boolean(projectCanEdit);
 }
 
@@ -512,14 +554,14 @@ function isCollaborationReady() {
     return collaborationConnectionReady && Number.isFinite(presenceSessionId) && presenceSessionId > 0;
 }
 
-function getFrameLock(frameId) {
-    const numericFrameId = Number(frameId);
-    if (!Number.isFinite(numericFrameId) || numericFrameId <= 0) return null;
-    return frameLocksById.get(numericFrameId) || null;
+function getLayerLock(layerId) {
+    const numericLayerId = Number(layerId);
+    if (!Number.isFinite(numericLayerId) || numericLayerId <= 0) return null;
+    return layerLocksById.get(numericLayerId) || null;
 }
 
-function getCurrentFrameLock() {
-    return getFrameLock(currentFrameId);
+function getCurrentLayerLock() {
+    return getLayerLock(activeLayerId);
 }
 
 function isLockOwnedByCurrentSession(lock) {
@@ -531,17 +573,17 @@ function isLockOwnedByCurrentSession(lock) {
     );
 }
 
-function getCurrentFrameLockOwnerName() {
-    const lock = getCurrentFrameLock();
+function getCurrentLayerLockOwnerName() {
+    const lock = getCurrentLayerLock();
     return lock ? lock.display_name : '';
 }
 
-function refreshHeldFrameLockId() {
-    currentHeldFrameLockId = null;
-    for (const lock of frameLocksById.values()) {
+function refreshHeldLayerLockId() {
+    currentHeldLayerLockId = null;
+    for (const lock of layerLocksById.values()) {
         if (isLockOwnedByCurrentSession(lock)) {
-            currentHeldFrameLockId = lock.frame_id;
-            if (lock.frame_id === currentFrameId) {
+            currentHeldLayerLockId = lock.layer_id;
+            if (lock.layer_id === activeLayerId) {
                 break;
             }
         }
@@ -549,24 +591,24 @@ function refreshHeldFrameLockId() {
 }
 
 function isCurrentFrameReadOnlyByLock() {
-    if (!canCurrentUserUseFrameLocks()) {
+    if (!canCurrentUserUseLayerLocks()) {
         return false;
     }
     if (!isCollaborationReady()) {
         return true;
     }
-    if (!Number.isFinite(currentFrameId) || currentFrameId <= 0) {
+    if (!Number.isFinite(currentFrameId) || currentFrameId <= 0 || !Number.isFinite(activeLayerId) || activeLayerId <= 0) {
         return true;
     }
-    if (pendingFrameLockId === currentFrameId) {
+    if (pendingLayerLockId === activeLayerId) {
         return true;
     }
-    const lock = getCurrentFrameLock();
+    const lock = getCurrentLayerLock();
     return !isLockOwnedByCurrentSession(lock);
 }
 
 function getCurrentFrameEditingState() {
-    if (!canCurrentUserUseFrameLocks()) {
+    if (!canCurrentUserUseLayerLocks()) {
         return {
             mode: 'readonly',
             text: Number.isFinite(currentFrameIndex) && currentFrameIndex > 0
@@ -586,35 +628,35 @@ function getCurrentFrameEditingState() {
             text: 'Connecting collaborative lock...',
         };
     }
-    if (!Number.isFinite(currentFrameIndex) || currentFrameIndex <= 0) {
+    if (!Number.isFinite(currentFrameIndex) || currentFrameIndex <= 0 || !Number.isFinite(activeLayerId) || activeLayerId <= 0) {
         return {
             mode: 'pending',
-            text: 'Loading frame lock...',
+            text: 'Loading layer lock...',
         };
     }
-    if (pendingFrameLockId === currentFrameId) {
+    if (pendingLayerLockId === activeLayerId) {
         return {
             mode: 'pending',
-            text: `Requesting frame ${currentFrameIndex} lock...`,
+            text: `Requesting lock for ${getLayerById(activeLayerId)?.name || 'selected layer'}...`,
         };
     }
 
-    const currentLock = getCurrentFrameLock();
+    const currentLock = getCurrentLayerLock();
     if (isLockOwnedByCurrentSession(currentLock)) {
         return {
             mode: 'editable',
-            text: `Editing frame ${currentLock.frame_index || currentFrameIndex}.`,
+            text: `Editing ${currentLock.layer_name || 'selected layer'} on frame ${currentLock.frame_index || currentFrameIndex}.`,
         };
     }
     if (currentLock) {
         return {
             mode: 'readonly',
-            text: `Frame ${currentLock.frame_index || currentFrameIndex} locked by ${currentLock.display_name}. Read-only.`,
+            text: `${currentLock.layer_name || 'Selected layer'} locked by ${currentLock.display_name}. Read-only.`,
         };
     }
     return {
         mode: 'readonly',
-        text: `Frame ${currentFrameIndex} is not locked yet. Read-only.`,
+        text: `${getLayerById(activeLayerId)?.name || 'Selected layer'} is not locked yet. Read-only.`,
     };
 }
 
@@ -640,17 +682,17 @@ function stopFrameLockHeartbeat() {
 function startFrameLockHeartbeat() {
     stopFrameLockHeartbeat();
     if (!isProjectPresenceSocketOpen()) return;
-    if (!Number.isFinite(currentHeldFrameLockId) || currentHeldFrameLockId <= 0) return;
+    if (!Number.isFinite(currentHeldLayerLockId) || currentHeldLayerLockId <= 0) return;
     frameLockHeartbeatTimerId = window.setInterval(() => {
         if (!isProjectPresenceSocketOpen()) return;
-        if (!Number.isFinite(currentHeldFrameLockId) || currentHeldFrameLockId <= 0) return;
-        sendProjectPresenceMessage('frame_lock_heartbeat', { frame_id: currentHeldFrameLockId });
+        if (!Number.isFinite(currentHeldLayerLockId) || currentHeldLayerLockId <= 0) return;
+        sendProjectPresenceMessage('layer_lock_heartbeat', { layer_id: currentHeldLayerLockId });
     }, FRAME_LOCK_HEARTBEAT_INTERVAL_MS);
 }
 
 function syncFrameLockHeartbeat() {
-    const currentLock = getCurrentFrameLock();
-    if (isLockOwnedByCurrentSession(currentLock) && currentLock.frame_id === currentHeldFrameLockId) {
+    const currentLock = getCurrentLayerLock();
+    if (isLockOwnedByCurrentSession(currentLock) && currentLock.layer_id === currentHeldLayerLockId) {
         startFrameLockHeartbeat();
         return;
     }
@@ -658,12 +700,15 @@ function syncFrameLockHeartbeat() {
 }
 
 function syncCollaborativeEditorUi() {
-    refreshHeldFrameLockId();
+    refreshHeldLayerLockId();
     syncFrameLockStatusUi();
     syncEditorInteractionLockUi();
     updateSaveButtonState();
     renderTimelineFrames();
+    renderLayerList();
     syncFrameLockHeartbeat();
+    renderScene();
+    renderOverlay();
 }
 
 function setProjectPresenceEmptyState(text) {
@@ -835,103 +880,401 @@ function notifyCurrentFramePresence() {
     sendProjectPresenceMessage('presence_set_frame', { frame_id: frameId });
 }
 
-function setFrameLockSnapshot(locks) {
-    frameLocksById.clear();
+function setLayerLockSnapshot(locks) {
+    layerLocksById.clear();
     (Array.isArray(locks) ? locks : []).forEach((rawLock) => {
-        const lock = normalizeFrameLock(rawLock);
+        const lock = normalizeLayerLock(rawLock);
         if (!lock) return;
-        frameLocksById.set(lock.frame_id, lock);
+        layerLocksById.set(lock.layer_id, lock);
     });
     syncCollaborativeEditorUi();
 }
 
-function upsertFrameLock(rawLock) {
-    const lock = normalizeFrameLock(rawLock);
+function upsertLayerLock(rawLock) {
+    const lock = normalizeLayerLock(rawLock);
     if (!lock) return;
-    frameLocksById.set(lock.frame_id, lock);
-    if (pendingFrameLockId === lock.frame_id && isLockOwnedByCurrentSession(lock)) {
-        pendingFrameLockId = null;
+    layerLocksById.set(lock.layer_id, lock);
+    if (pendingLayerLockId === lock.layer_id && isLockOwnedByCurrentSession(lock)) {
+        pendingLayerLockId = null;
     }
     syncCollaborativeEditorUi();
 }
 
-function removeFrameLock(frameId) {
-    const numericFrameId = Number(frameId);
-    if (!Number.isFinite(numericFrameId) || numericFrameId <= 0) return;
-    if (pendingFrameLockId === numericFrameId) {
-        pendingFrameLockId = null;
+function removeLayerLock(layerId) {
+    const numericLayerId = Number(layerId);
+    if (!Number.isFinite(numericLayerId) || numericLayerId <= 0) return;
+    if (pendingLayerLockId === numericLayerId) {
+        pendingLayerLockId = null;
     }
-    if (currentHeldFrameLockId === numericFrameId) {
-        currentHeldFrameLockId = null;
+    if (currentHeldLayerLockId === numericLayerId) {
+        currentHeldLayerLockId = null;
     }
-    frameLocksById.delete(numericFrameId);
+    layerLocksById.delete(numericLayerId);
     syncCollaborativeEditorUi();
 }
 
-function requestFrameLock(frameId) {
+function requestLayerLock(frameId, layerId) {
     const numericFrameId = Number(frameId);
-    if (!canCurrentUserUseFrameLocks()) {
+    const numericLayerId = Number(layerId);
+    if (!canCurrentUserUseLayerLocks()) {
         syncCollaborativeEditorUi();
         return false;
     }
-    if (!Number.isFinite(numericFrameId) || numericFrameId <= 0) {
+    if (
+        !Number.isFinite(numericFrameId) || numericFrameId <= 0
+        || !Number.isFinite(numericLayerId) || numericLayerId <= 0
+    ) {
         syncCollaborativeEditorUi();
         return false;
     }
     if (!isProjectPresenceSocketOpen() || !isCollaborationReady()) {
-        pendingFrameLockId = numericFrameId;
+        pendingLayerLockId = numericLayerId;
         syncCollaborativeEditorUi();
         return false;
     }
-    pendingFrameLockId = numericFrameId;
+    pendingLayerLockId = numericLayerId;
     syncCollaborativeEditorUi();
-    return sendProjectPresenceMessage('frame_lock_acquire', { frame_id: numericFrameId });
+    return sendProjectPresenceMessage('layer_lock_acquire', {
+        frame_id: numericFrameId,
+        layer_id: numericLayerId,
+    });
 }
 
-function releaseFrameLock(frameId) {
-    const numericFrameId = Number(frameId);
-    if (!Number.isFinite(numericFrameId) || numericFrameId <= 0) return false;
-    const lock = getFrameLock(numericFrameId);
-    if (!isLockOwnedByCurrentSession(lock) && currentHeldFrameLockId !== numericFrameId) {
+function releaseLayerLock(layerId) {
+    const numericLayerId = Number(layerId);
+    if (!Number.isFinite(numericLayerId) || numericLayerId <= 0) return false;
+    const lock = getLayerLock(numericLayerId);
+    if (!isLockOwnedByCurrentSession(lock) && currentHeldLayerLockId !== numericLayerId) {
         return false;
     }
-    if (pendingFrameLockId === numericFrameId) {
-        pendingFrameLockId = null;
+    if (pendingLayerLockId === numericLayerId) {
+        pendingLayerLockId = null;
     }
     if (!isProjectPresenceSocketOpen()) {
         syncCollaborativeEditorUi();
         return false;
     }
-    return sendProjectPresenceMessage('frame_lock_release', { frame_id: numericFrameId });
+    return sendProjectPresenceMessage('layer_lock_release', { layer_id: numericLayerId });
 }
 
-function syncCurrentFrameLock(previousFrameId = null) {
-    const previousId = Number(previousFrameId);
-    if (Number.isFinite(previousId) && previousId > 0 && previousId !== currentFrameId) {
-        releaseFrameLock(previousId);
+function syncCurrentLayerLock(previousLayerId = null) {
+    const previousId = Number(previousLayerId);
+    if (Number.isFinite(previousId) && previousId > 0 && previousId !== activeLayerId) {
+        releaseLayerLock(previousId);
     }
 
-    if (!canCurrentUserUseFrameLocks()) {
-        pendingFrameLockId = null;
+    if (!canCurrentUserUseLayerLocks()) {
+        pendingLayerLockId = null;
         syncCollaborativeEditorUi();
         return;
     }
 
-    if (!Number.isFinite(currentFrameId) || currentFrameId <= 0) {
-        pendingFrameLockId = null;
+    if (
+        !Number.isFinite(currentFrameId) || currentFrameId <= 0
+        || !Number.isFinite(activeLayerId) || activeLayerId <= 0
+    ) {
+        pendingLayerLockId = null;
         syncCollaborativeEditorUi();
         return;
     }
 
-    const currentLock = getCurrentFrameLock();
+    const currentLock = getCurrentLayerLock();
     if (isLockOwnedByCurrentSession(currentLock)) {
-        pendingFrameLockId = null;
-        currentHeldFrameLockId = currentFrameId;
+        pendingLayerLockId = null;
+        currentHeldLayerLockId = activeLayerId;
         syncCollaborativeEditorUi();
         return;
     }
 
-    requestFrameLock(currentFrameId);
+    requestLayerLock(currentFrameId, activeLayerId);
+}
+
+function getLayerContentRevision(layerId) {
+    const layer = getLayerById(layerId);
+    return layer ? normalizeFrameContentRevision(layer.content_revision) : 0;
+}
+
+function updateLayerContentRevision(layerId, revision) {
+    const layer = getLayerById(layerId);
+    if (!layer) return;
+    layer.content_revision = normalizeFrameContentRevision(revision);
+}
+
+function clearRemoteLayerPreview(layerId, options = {}) {
+    const numericLayerId = Number(layerId);
+    if (!Number.isFinite(numericLayerId) || numericLayerId <= 0) return;
+    const didDelete = remoteLayerPreviewStates.delete(numericLayerId);
+    if (didDelete && options.render !== false) {
+        renderScene();
+        renderOverlay();
+    }
+}
+
+function clearRemoteLayerPreviewsForFrame(frameId, options = {}) {
+    const numericFrameId = Number(frameId);
+    if (!Number.isFinite(numericFrameId) || numericFrameId <= 0) return;
+    let changed = false;
+    for (const [layerId, state] of remoteLayerPreviewStates.entries()) {
+        if (state.frame_id === numericFrameId) {
+            remoteLayerPreviewStates.delete(layerId);
+            changed = true;
+        }
+    }
+    if (changed && options.render !== false) {
+        renderScene();
+        renderOverlay();
+    }
+}
+
+function removeRemoteCursorByPresenceSession(targetPresenceSessionId, options = {}) {
+    const numericPresenceSessionId = Number(targetPresenceSessionId);
+    if (!Number.isFinite(numericPresenceSessionId) || numericPresenceSessionId <= 0) return;
+    const didDelete = remoteCursorStates.delete(numericPresenceSessionId);
+    if (didDelete && options.render !== false) {
+        renderOverlay();
+    }
+}
+
+function clearLayerLockStateForFrame(frameId) {
+    const numericFrameId = Number(frameId);
+    if (!Number.isFinite(numericFrameId) || numericFrameId <= 0) return;
+    for (const [layerId, lock] of layerLocksById.entries()) {
+        if (lock.frame_id === numericFrameId) {
+            layerLocksById.delete(layerId);
+        }
+    }
+    clearRemoteLayerPreviewsForFrame(numericFrameId, { render: false });
+    for (const [presenceId, cursor] of remoteCursorStates.entries()) {
+        if (cursor.frame_id === numericFrameId) {
+            remoteCursorStates.delete(presenceId);
+        }
+    }
+    syncCollaborativeEditorUi();
+}
+
+function ensureRemotePreviewCanvas(state, sourceCanvas) {
+    if (!state.canvas) {
+        state.canvas = document.createElement('canvas');
+    }
+    if (state.canvas.width !== projectFrameWidth) {
+        state.canvas.width = projectFrameWidth;
+    }
+    if (state.canvas.height !== projectFrameHeight) {
+        state.canvas.height = projectFrameHeight;
+    }
+    if (!state.ctx) {
+        state.ctx = state.canvas.getContext('2d');
+    }
+    if (!state.ctx) return false;
+    clearCanvas(state.ctx, state.canvas);
+    if (sourceCanvas) {
+        state.ctx.drawImage(sourceCanvas, 0, 0, state.canvas.width, state.canvas.height);
+    }
+    return true;
+}
+
+function applyRemotePreviewStrokeStyles(targetCtx, payload) {
+    if (!targetCtx) return;
+    const strokeSize = Math.max(1, Number(payload.size) || 1);
+    const strokeOpacity = clamp(Number(payload.opacity), 0, 1);
+    const blurValue = Math.max(0, Number(payload.blur) || 0);
+    targetCtx.lineCap = 'round';
+    targetCtx.lineJoin = 'round';
+    targetCtx.lineWidth = strokeSize;
+    targetCtx.globalAlpha = Number.isFinite(strokeOpacity) && strokeOpacity > 0 ? strokeOpacity : 1;
+    targetCtx.shadowBlur = blurValue;
+    targetCtx.shadowColor = payload.color || '#000000';
+    targetCtx.strokeStyle = payload.color || '#000000';
+    targetCtx.fillStyle = payload.color || '#000000';
+    targetCtx.globalCompositeOperation = payload.tool === TOOL_ERASER ? 'destination-out' : 'source-over';
+}
+
+function drawRemotePreviewPoint(targetCtx, payload, x, y) {
+    if (!targetCtx || !Number.isFinite(x) || !Number.isFinite(y)) return;
+    targetCtx.save();
+    applyRemotePreviewStrokeStyles(targetCtx, payload);
+    const radius = Math.max(0.5, (Number(payload.size) || 1) / 2);
+    targetCtx.beginPath();
+    targetCtx.arc(x, y, radius, 0, Math.PI * 2);
+    targetCtx.fill();
+    targetCtx.restore();
+}
+
+function drawRemotePreviewSegment(targetCtx, payload, fromX, fromY, toX, toY) {
+    if (
+        !targetCtx
+        || !Number.isFinite(fromX) || !Number.isFinite(fromY)
+        || !Number.isFinite(toX) || !Number.isFinite(toY)
+    ) {
+        return;
+    }
+    targetCtx.save();
+    applyRemotePreviewStrokeStyles(targetCtx, payload);
+    targetCtx.beginPath();
+    targetCtx.moveTo(fromX, fromY);
+    targetCtx.lineTo(toX, toY);
+    targetCtx.stroke();
+    targetCtx.restore();
+}
+
+function normalizeRemoteCursorPayload(payload) {
+    if (!payload || typeof payload !== 'object') return null;
+    const frameId = Number(payload.frame_id);
+    const layerId = Number(payload.layer_id);
+    const presenceSession = Number(payload.presence_session_id);
+    if (!Number.isFinite(frameId) || frameId <= 0 || !Number.isFinite(layerId) || layerId <= 0) {
+        return null;
+    }
+    if (!Number.isFinite(presenceSession) || presenceSession <= 0 || presenceSession === presenceSessionId) {
+        return null;
+    }
+    return {
+        ...payload,
+        frame_id: frameId,
+        layer_id: layerId,
+        presence_session_id: presenceSession,
+        user_id: Number(payload.user_id) || null,
+        display_name: payload.display_name
+            || (projectPresence.get(Number(payload.user_id)) || {}).display_name
+            || 'Remote user',
+        x: Number(payload.x),
+        y: Number(payload.y),
+    };
+}
+
+function handleRemoteCursorMoved(payload) {
+    const cursor = normalizeRemoteCursorPayload(payload);
+    if (!cursor) return;
+    if (cursor.frame_id !== currentFrameId || !Number.isFinite(cursor.x) || !Number.isFinite(cursor.y)) {
+        removeRemoteCursorByPresenceSession(cursor.presence_session_id);
+        return;
+    }
+    remoteCursorStates.set(cursor.presence_session_id, {
+        ...cursor,
+        last_seen_at: Date.now(),
+    });
+    renderOverlay();
+}
+
+function ensureRemoteLayerPreviewState(payload) {
+    const layerId = Number(payload.layer_id);
+    const frameId = Number(payload.frame_id);
+    const presenceSession = Number(payload.presence_session_id);
+    if (
+        !Number.isFinite(layerId) || layerId <= 0
+        || !Number.isFinite(frameId) || frameId <= 0
+        || !Number.isFinite(presenceSession) || presenceSession <= 0
+        || frameId !== currentFrameId
+        || presenceSession === presenceSessionId
+    ) {
+        return null;
+    }
+    const layer = getLayerById(layerId);
+    if (!layer || !layer.bufferCanvas) return null;
+
+    const baseRevision = normalizeFrameContentRevision(payload.base_revision);
+    const knownRevision = getLayerContentRevision(layerId);
+    let state = getRemoteLayerPreview(layerId);
+    const canReuseExistingState = Boolean(
+        state
+        && state.presence_session_id === presenceSession
+        && state.content_revision === baseRevision,
+    );
+    if (!canReuseExistingState && baseRevision !== knownRevision) {
+        if (!isLockOwnedByCurrentSession(getCurrentLayerLock())) {
+            void handleRemoteFrameContentUpdated(payload);
+        }
+        return null;
+    }
+
+    if (!state) {
+        state = { layer_id: layerId };
+    }
+    state.frame_id = frameId;
+    state.layer_id = layerId;
+    state.presence_session_id = presenceSession;
+    state.user_id = Number(payload.user_id) || null;
+    state.display_name = payload.display_name || payload.email || 'Remote user';
+    state.layer_name = payload.layer_name || layer.name;
+    state.tool = payload.tool;
+    state.content_revision = baseRevision;
+    state.updated_at = Date.now();
+
+    if (!canReuseExistingState) {
+        if (!ensureRemotePreviewCanvas(state, layer.bufferCanvas)) {
+            return null;
+        }
+        state.last_seq = 0;
+    }
+
+    remoteLayerPreviewStates.set(layerId, state);
+    return state;
+}
+
+function applyRemoteStrokePayloadToPreview(payload, options = {}) {
+    const state = ensureRemoteLayerPreviewState(payload);
+    if (!state || !state.ctx) return false;
+
+    const seq = Number(payload.seq);
+    if (Number.isFinite(seq)) {
+        if (seq <= state.last_seq) {
+            return true;
+        }
+        if (state.last_seq > 0 && seq > state.last_seq + 1) {
+            clearRemoteLayerPreview(state.layer_id, { render: false });
+            if (!isLockOwnedByCurrentSession(getCurrentLayerLock())) {
+                void handleRemoteFrameContentUpdated(payload);
+            }
+            return false;
+        }
+        state.last_seq = seq;
+    }
+
+    if (options.kind === 'begin') {
+        drawRemotePreviewPoint(state.ctx, payload, Number(payload.x), Number(payload.y));
+    } else if (options.kind === 'segment') {
+        drawRemotePreviewSegment(
+            state.ctx,
+            payload,
+            Number(payload.x1),
+            Number(payload.y1),
+            Number(payload.x2),
+            Number(payload.y2),
+        );
+    } else if (options.kind === 'end') {
+        drawRemotePreviewPoint(state.ctx, payload, Number(payload.x), Number(payload.y));
+    }
+
+    if (Number.isFinite(Number(payload.x)) && Number.isFinite(Number(payload.y))) {
+        handleRemoteCursorMoved(payload);
+    }
+    renderScene();
+    renderOverlay();
+    return true;
+}
+
+function handleRemoteLayerStrokeBegin(payload) {
+    applyRemoteStrokePayloadToPreview(payload, { kind: 'begin' });
+}
+
+function handleRemoteLayerStrokeSegment(payload) {
+    applyRemoteStrokePayloadToPreview(payload, { kind: 'segment' });
+}
+
+function handleRemoteLayerStrokeEnd(payload) {
+    applyRemoteStrokePayloadToPreview(payload, { kind: 'end' });
+}
+
+function handleRemoteLayerContentCommitted(payload) {
+    const layerId = Number(payload.layer_id);
+    if (!Number.isFinite(layerId) || layerId <= 0) return;
+    updateLayerContentRevision(layerId, payload.layer_content_revision);
+    updateTimelineFramePreview(payload);
+    const previewState = getRemoteLayerPreview(layerId);
+    if (previewState) {
+        previewState.content_revision = normalizeFrameContentRevision(payload.layer_content_revision);
+        previewState.updated_at = Date.now();
+    }
 }
 
 async function applyRemoteFrameCreated(payload) {
@@ -957,7 +1300,7 @@ async function applyRemoteFrameDeleted(payload) {
     }
     playbackFrameImageCache.clear();
     resetOnionFrameCache();
-    removeFrameLock(payload.frame_id);
+    clearLayerLockStateForFrame(payload.frame_id);
 
     const activeFrame = currentFrameId ? getTimelineFrameById(currentFrameId) : null;
     renderTimelineFrames();
@@ -1054,7 +1397,7 @@ async function recoverCollaborativeStateAfterReconnect() {
             await loadLayers();
             prefetchOnionFramesForCurrent();
             requestOnionSkinRender();
-            syncCurrentFrameLock();
+            syncCurrentLayerLock();
             syncCollaborativeEditorUi();
             return;
         }
@@ -1087,8 +1430,8 @@ function disconnectProjectPresence() {
     presenceIsClosing = true;
     stopProjectPresencePing();
     stopFrameLockHeartbeat();
-    if (Number.isFinite(currentHeldFrameLockId) && currentHeldFrameLockId > 0) {
-        sendProjectPresenceMessage('frame_lock_release', { frame_id: currentHeldFrameLockId });
+    if (Number.isFinite(currentHeldLayerLockId) && currentHeldLayerLockId > 0) {
+        sendProjectPresenceMessage('layer_lock_release', { layer_id: currentHeldLayerLockId });
     }
     if (presenceReconnectTimerId) {
         clearTimeout(presenceReconnectTimerId);
@@ -1119,7 +1462,7 @@ async function handleProjectPresenceMessage(message) {
         renderProjectPresence();
         syncCollaborativeEditorUi();
         notifyCurrentFramePresence();
-        syncCurrentFrameLock();
+        syncCurrentLayerLock();
         return;
     }
 
@@ -1143,9 +1486,9 @@ async function handleProjectPresenceMessage(message) {
         return;
     }
 
-    if (message.type === 'frame_lock_snapshot') {
-        setFrameLockSnapshot(payload.locks);
-        syncCurrentFrameLock();
+    if (message.type === 'layer_lock_snapshot') {
+        setLayerLockSnapshot(payload.locks);
+        syncCurrentLayerLock();
         if (collaborationRecoveryPending) {
             collaborationRecoveryPending = false;
             void recoverCollaborativeStateAfterReconnect();
@@ -1153,35 +1496,62 @@ async function handleProjectPresenceMessage(message) {
         return;
     }
 
-    if (message.type === 'frame_lock_acquired') {
-        upsertFrameLock(payload.lock);
+    if (message.type === 'layer_lock_acquired') {
+        upsertLayerLock(payload.lock);
         return;
     }
 
-    if (message.type === 'frame_lock_released') {
-        const releasedLock = normalizeFrameLock(payload.lock);
+    if (message.type === 'layer_lock_released') {
+        const releasedLock = normalizeLayerLock(payload.lock);
         if (!releasedLock) return;
-        const wasCurrentFrame = releasedLock.frame_id === currentFrameId;
-        removeFrameLock(releasedLock.frame_id);
-        if (wasCurrentFrame && canCurrentUserUseFrameLocks() && isCollaborationReady()) {
-            syncCurrentFrameLock();
+        clearRemoteLayerPreview(releasedLock.layer_id, { render: false });
+        removeRemoteCursorByPresenceSession(releasedLock.presence_session_id, { render: false });
+        const wasCurrentLayer = releasedLock.layer_id === activeLayerId;
+        removeLayerLock(releasedLock.layer_id);
+        if (wasCurrentLayer && canCurrentUserUseLayerLocks() && isCollaborationReady()) {
+            syncCurrentLayerLock();
         }
         return;
     }
 
-    if (message.type === 'frame_lock_denied') {
+    if (message.type === 'layer_lock_denied') {
         if (payload.lock) {
-            upsertFrameLock(payload.lock);
+            upsertLayerLock(payload.lock);
         }
-        const deniedFrameId = Number(payload.frame_id);
-        if (Number.isFinite(deniedFrameId) && deniedFrameId > 0 && pendingFrameLockId === deniedFrameId) {
-            pendingFrameLockId = null;
+        const deniedLayerId = Number(payload.layer_id);
+        if (Number.isFinite(deniedLayerId) && deniedLayerId > 0 && pendingLayerLockId === deniedLayerId) {
+            pendingLayerLockId = null;
         }
         syncCollaborativeEditorUi();
         return;
     }
 
+    if (message.type === 'remote_cursor_moved') {
+        handleRemoteCursorMoved(payload);
+        return;
+    }
+
+    if (message.type === 'layer_stroke_begin') {
+        handleRemoteLayerStrokeBegin(payload);
+        return;
+    }
+
+    if (message.type === 'layer_stroke_segment') {
+        handleRemoteLayerStrokeSegment(payload);
+        return;
+    }
+
+    if (message.type === 'layer_stroke_end') {
+        handleRemoteLayerStrokeEnd(payload);
+        return;
+    }
+
     if (shouldIgnoreProjectRealtimeEvent(payload)) {
+        return;
+    }
+
+    if (message.type === 'layer_content_committed') {
+        handleRemoteLayerContentCommitted(payload);
         return;
     }
 
@@ -1260,9 +1630,12 @@ function connectProjectPresence() {
         stopFrameLockHeartbeat();
         collaborationConnectionReady = false;
         presenceSessionId = null;
-        pendingFrameLockId = null;
-        currentHeldFrameLockId = null;
+        pendingLayerLockId = null;
+        currentHeldLayerLockId = null;
         frameLocksById.clear();
+        layerLocksById.clear();
+        remoteCursorStates.clear();
+        remoteLayerPreviewStates.clear();
         if (!presenceIsClosing) {
             collaborationRecoveryPending = collaborationHasConnected;
             projectPresence.clear();
@@ -1630,6 +2003,10 @@ function isEditingLockedByPlayback() {
 
 function isEditingLocked() {
     return isCurrentFrameReadOnly() || isEditingLockedByPlayback();
+}
+
+function isLayerPanelInteractionLocked() {
+    return isReadOnlyProject() || isEditingLockedByPlayback();
 }
 
 function getOrderedTimelineIndexes() {
@@ -2106,7 +2483,7 @@ function shouldDisableTimelineNavigation() {
 }
 
 function shouldDisableTimelineControls() {
-    return shouldDisableTimelineNavigation() || isCurrentFrameReadOnly();
+    return shouldDisableTimelineNavigation() || isReadOnlyProject();
 }
 
 function syncTimelineControlsState() {
@@ -2147,13 +2524,12 @@ function syncToolbarControlsState() {
 }
 
 function syncLayerControlsState() {
-    const isDisabled = isEditingLocked();
+    const isDisabled = isReadOnlyProject() || isEditingLockedByPlayback();
     if (addLayerButton) addLayerButton.disabled = isDisabled;
     if (!layersList) return;
 
     layersList.querySelectorAll('.layer-item').forEach((item) => {
         item.draggable = !isDisabled;
-        item.classList.toggle('layer-item--locked', isDisabled);
     });
     layersList.querySelectorAll('button, input, select, textarea').forEach((control) => {
         control.disabled = isDisabled;
@@ -2280,6 +2656,26 @@ function applyAllLayerStyles() {
     layers.forEach((layer) => applyLayerStyles(layer));
 }
 
+function getRemoteLayerPreview(layerId) {
+    const numericLayerId = Number(layerId);
+    if (!Number.isFinite(numericLayerId) || numericLayerId <= 0) return null;
+    return remoteLayerPreviewStates.get(numericLayerId) || null;
+}
+
+function getRenderableLayerSourceCanvas(layer) {
+    if (!layer) return null;
+    const previewState = getRemoteLayerPreview(layer.id);
+    if (
+        previewState
+        && previewState.frame_id === currentFrameId
+        && previewState.canvas
+        && previewState.presence_session_id !== presenceSessionId
+    ) {
+        return previewState.canvas;
+    }
+    return layer.bufferCanvas || null;
+}
+
 function updateLayerPreview(layer) {
     if (!layer || !layer.previewCanvas || !layer.bufferCanvas) return;
     if (!layer.previewCtx) {
@@ -2301,11 +2697,13 @@ function updateLayerPreview(layer) {
         layer.previewCanvas.width / layer.bufferCanvas.width,
         layer.previewCanvas.height / layer.bufferCanvas.height,
     );
-    const drawWidth = layer.bufferCanvas.width * scale;
-    const drawHeight = layer.bufferCanvas.height * scale;
+    const sourceCanvas = getRenderableLayerSourceCanvas(layer);
+    if (!sourceCanvas) return;
+    const drawWidth = sourceCanvas.width * scale;
+    const drawHeight = sourceCanvas.height * scale;
     const offsetX = (layer.previewCanvas.width - drawWidth) / 2;
     const offsetY = (layer.previewCanvas.height - drawHeight) / 2;
-    previewCtx.drawImage(layer.bufferCanvas, offsetX, offsetY, drawWidth, drawHeight);
+    previewCtx.drawImage(sourceCanvas, offsetX, offsetY, drawWidth, drawHeight);
 }
 
 function renderLayer(layer) {
@@ -2321,7 +2719,10 @@ function renderLayer(layer) {
         offsetX + frameOrigin.x * scale,
         offsetY + frameOrigin.y * scale,
     );
-    layer.ctx.drawImage(layer.bufferCanvas, 0, 0);
+    const renderSourceCanvas = getRenderableLayerSourceCanvas(layer);
+    if (renderSourceCanvas) {
+        layer.ctx.drawImage(renderSourceCanvas, 0, 0);
+    }
     if (layer.id === activeLayerId
         && selectionTransform
         && transformClipboard
@@ -2364,6 +2765,7 @@ function updateActiveLayerPointers() {
 
 function setActiveLayer(layerId, options = {}) {
     if (!layerId) return;
+    const previousLayerId = activeLayerId;
     if (hasFloatingSelection()) {
         commitSelectionTransform();
     }
@@ -2375,6 +2777,9 @@ function setActiveLayer(layerId, options = {}) {
         renderOverlay();
     }
     renderLayerList();
+    if (options.syncLock !== false) {
+        syncCurrentLayerLock(previousLayerId);
+    }
 }
 
 function updateLayersEmptyState() {
@@ -2388,10 +2793,18 @@ function renderLayerList() {
     const displayLayers = getDisplayLayers();
     layersList.innerHTML = '';
     displayLayers.forEach((layer) => {
+        const layerLock = getLayerLock(layer.id);
+        const isLayerLockMine = isLockOwnedByCurrentSession(layerLock);
         const item = document.createElement('li');
         item.className = 'layer-item';
         if (layer.id === activeLayerId) {
             item.classList.add('layer-item--active');
+        }
+        if (layerLock) {
+            item.classList.add('layer-item--occupied');
+            if (isLayerLockMine) {
+                item.classList.add('layer-item--occupied-self');
+            }
         }
         if (layer.isRenaming) {
             item.classList.add('layer-item--renaming');
@@ -2423,6 +2836,18 @@ function renderLayerList() {
         nameLabel.className = 'layer-name';
         nameLabel.textContent = layer.name;
         nameLabel.dataset.action = 'select-layer';
+
+        if (layerLock) {
+            const lockBadge = document.createElement('span');
+            lockBadge.className = 'layer-lock-chip';
+            if (isLayerLockMine) {
+                lockBadge.classList.add('layer-lock-chip--self');
+                lockBadge.textContent = 'Editing';
+            } else {
+                lockBadge.textContent = layerLock.display_name || 'Locked';
+            }
+            titleWrap.appendChild(lockBadge);
+        }
 
         const opacityWrap = document.createElement('label');
         opacityWrap.className = 'layer-opacity';
@@ -2534,11 +2959,13 @@ function mergeLayerList(layerItems) {
             stored.order = item.order;
             stored.visible = item.visible;
             stored.opacity = item.opacity;
+            stored.content_revision = normalizeFrameContentRevision(item.content_revision);
             nextLayers.push(stored);
             existing.delete(item.id);
         } else {
             nextLayers.push({
                 ...item,
+                content_revision: normalizeFrameContentRevision(item.content_revision),
                 canvas: null,
                 ctx: null,
                 bufferCanvas: null,
@@ -2579,6 +3006,7 @@ function mergeLayerList(layerItems) {
 function addLayerFromPayload(item) {
     const layer = {
         ...item,
+        content_revision: normalizeFrameContentRevision(item && item.content_revision),
         canvas: null,
         ctx: null,
         bufferCanvas: null,
@@ -2623,7 +3051,7 @@ function fillBackgroundLayerIfNeeded() {
 }
 
 async function createLayer() {
-    if (isEditingLocked()) return;
+    if (isLayerPanelInteractionLocked()) return;
     const listUrl = getLayerListUrl();
     if (!listUrl) return;
     beginFullHistory('layer_add');
@@ -2656,7 +3084,7 @@ async function createLayer() {
 }
 
 async function updateLayer(layerId, updates) {
-    if (isEditingLocked()) return null;
+    if (isLayerPanelInteractionLocked()) return null;
     const url = getLayerUpdateUrl(layerId);
     if (!url) return null;
     const clientRequestId = createProjectEventRequestId();
@@ -2687,7 +3115,7 @@ async function updateLayer(layerId, updates) {
 }
 
 async function deleteLayer(layerId) {
-    if (isEditingLocked()) return;
+    if (isLayerPanelInteractionLocked()) return;
     const url = getLayerDeleteUrl(layerId);
     if (!url) return;
     beginFullHistory('layer_delete');
@@ -2859,30 +3287,70 @@ function clearOverlay() {
     clearCanvas(overlayCtx, overlayCanvas);
 }
 
+function renderRemoteCursors() {
+    if (!overlayCtx || !overlayCanvas) return;
+    const now = Date.now();
+    const cursors = [];
+    for (const [presenceId, cursor] of remoteCursorStates.entries()) {
+        if (!cursor || cursor.frame_id !== currentFrameId || now - cursor.last_seen_at > REMOTE_CURSOR_STALE_MS) {
+            remoteCursorStates.delete(presenceId);
+            continue;
+        }
+        cursors.push(cursor);
+    }
+    if (!cursors.length) return;
+
+    withTransformedContext(overlayCtx, () => {
+        cursors.forEach((cursor) => {
+            overlayCtx.save();
+            overlayCtx.fillStyle = 'rgba(56, 189, 248, 0.95)';
+            overlayCtx.strokeStyle = 'rgba(2, 132, 199, 0.95)';
+            overlayCtx.lineWidth = Math.max(0.8, 1 / (scale || 1));
+            overlayCtx.beginPath();
+            overlayCtx.arc(cursor.x, cursor.y, Math.max(3, 6 / (scale || 1)), 0, Math.PI * 2);
+            overlayCtx.fill();
+            overlayCtx.stroke();
+
+            overlayCtx.font = `${Math.max(10, 12 / Math.max(scale || 1, 0.01))}px sans-serif`;
+            overlayCtx.textBaseline = 'bottom';
+            const label = cursor.display_name || 'Remote user';
+            const paddingX = 6 / Math.max(scale || 1, 0.01);
+            const labelWidth = overlayCtx.measureText(label).width + paddingX * 2;
+            const labelHeight = 18 / Math.max(scale || 1, 0.01);
+            const labelX = cursor.x + (10 / Math.max(scale || 1, 0.01));
+            const labelY = cursor.y - (10 / Math.max(scale || 1, 0.01));
+            overlayCtx.fillStyle = 'rgba(15, 23, 42, 0.9)';
+            overlayCtx.fillRect(labelX, labelY - labelHeight, labelWidth, labelHeight);
+            overlayCtx.fillStyle = '#e2e8f0';
+            overlayCtx.fillText(label, labelX + paddingX, labelY - (4 / Math.max(scale || 1, 0.01)));
+            overlayCtx.restore();
+        });
+    });
+}
+
 function renderOverlay() {
     if (!overlayCtx || !overlayCanvas) return;
     clearCanvas(overlayCtx, overlayCanvas);
     renderFrameOutline();
-    if (!selectionDraft && !selection) {
-        updateSelectionAnimationState();
-        return;
-    }
-
-    withTransformedContext(overlayCtx, () => {
-        const targetSelection = selectionDraft || selection;
-        if (targetSelection) {
-            drawSelectionPath(overlayCtx, targetSelection);
-        }
-
-        if (!selectionDraft && shouldShowSelectionTransformUI()) {
-            const bounds = selectionTransform && selectionTransform.currentBounds
-                ? selectionTransform.currentBounds
-                : getSelectionBounds(selection);
-            if (bounds && bounds.width > 0 && bounds.height > 0) {
-                drawSelectionTransformControls(overlayCtx, bounds);
+    const hasSelectionOverlay = Boolean(selectionDraft || selection);
+    if (hasSelectionOverlay) {
+        withTransformedContext(overlayCtx, () => {
+            const targetSelection = selectionDraft || selection;
+            if (targetSelection) {
+                drawSelectionPath(overlayCtx, targetSelection);
             }
-        }
-    });
+
+            if (!selectionDraft && shouldShowSelectionTransformUI()) {
+                const bounds = selectionTransform && selectionTransform.currentBounds
+                    ? selectionTransform.currentBounds
+                    : getSelectionBounds(selection);
+                if (bounds && bounds.width > 0 && bounds.height > 0) {
+                    drawSelectionTransformControls(overlayCtx, bounds);
+                }
+            }
+        });
+    }
+    renderRemoteCursors();
     updateSelectionAnimationState();
 }
 
@@ -3222,6 +3690,125 @@ function updateCursor() {
 // Drawing helpers
 // =======================
 
+function canStreamLiveStroke(toolName) {
+    return Boolean(
+        (toolName === TOOL_BRUSH || toolName === TOOL_ERASER)
+        && isProjectPresenceSocketOpen()
+        && isCollaborationReady()
+        && Number.isFinite(currentFrameId)
+        && currentFrameId > 0
+        && Number.isFinite(activeLayerId)
+        && activeLayerId > 0
+        && isLockOwnedByCurrentSession(getCurrentLayerLock()),
+    );
+}
+
+function buildLiveStrokePayload(toolName, extra = {}) {
+    return {
+        frame_id: currentFrameId,
+        layer_id: activeLayerId,
+        layer_name: getLayerById(activeLayerId)?.name || '',
+        tool: toolName,
+        color: activeStrokeColor,
+        size: currentSize,
+        opacity: activeStrokeOpacity,
+        blur: activeStrokeBlur,
+        base_revision: getLayerContentRevision(activeLayerId),
+        ...extra,
+    };
+}
+
+function broadcastRemoteCursorPosition(x, y, options = {}) {
+    const toolName = options.toolName || getEffectiveTool();
+    if (!canStreamLiveStroke(toolName)) return false;
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return false;
+    const now = Date.now();
+    if (!options.force && now - remoteCursorLastSentAt < REMOTE_CURSOR_INTERVAL_MS) {
+        return false;
+    }
+    remoteCursorLastSentAt = now;
+    return sendProjectPresenceMessage('remote_cursor_moved', buildLiveStrokePayload(toolName, { x, y }));
+}
+
+function beginLiveStrokeBroadcast(x, y, toolName) {
+    if (!canStreamLiveStroke(toolName)) {
+        liveStrokeLayerId = null;
+        liveStrokeLastPoint = null;
+        return;
+    }
+    liveStrokeSequence = 1;
+    liveStrokeLastSentAt = Date.now();
+    liveStrokeLastPoint = { x, y };
+    liveStrokeLayerId = activeLayerId;
+    liveStrokeBaseRevision = getLayerContentRevision(activeLayerId);
+    sendProjectPresenceMessage('layer_stroke_begin', buildLiveStrokePayload(toolName, {
+        x,
+        y,
+        seq: liveStrokeSequence,
+        base_revision: liveStrokeBaseRevision,
+    }));
+    broadcastRemoteCursorPosition(x, y, { force: true, toolName });
+}
+
+function maybeBroadcastLiveStrokeSegment(x, y) {
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !liveStrokeLastPoint || !liveStrokeLayerId) {
+        return;
+    }
+    if (!canStreamLiveStroke(activeTool) || liveStrokeLayerId !== activeLayerId) {
+        return;
+    }
+    const now = Date.now();
+    if (now - liveStrokeLastSentAt < LIVE_STROKE_SEGMENT_INTERVAL_MS) {
+        return;
+    }
+    liveStrokeSequence += 1;
+    sendProjectPresenceMessage('layer_stroke_segment', buildLiveStrokePayload(activeTool, {
+        x1: liveStrokeLastPoint.x,
+        y1: liveStrokeLastPoint.y,
+        x2: x,
+        y2: y,
+        seq: liveStrokeSequence,
+        base_revision: liveStrokeBaseRevision,
+    }));
+    liveStrokeLastPoint = { x, y };
+    liveStrokeLastSentAt = now;
+    broadcastRemoteCursorPosition(x, y, { force: true, toolName: activeTool });
+}
+
+function endLiveStrokeBroadcast(x, y) {
+    if (!liveStrokeLayerId || !canStreamLiveStroke(activeTool)) {
+        liveStrokeLastPoint = null;
+        liveStrokeLayerId = null;
+        liveStrokeSequence = 0;
+        return;
+    }
+    if (liveStrokeLastPoint && Number.isFinite(x) && Number.isFinite(y)) {
+        const didMove = liveStrokeLastPoint.x !== x || liveStrokeLastPoint.y !== y;
+        if (didMove) {
+            liveStrokeSequence += 1;
+            sendProjectPresenceMessage('layer_stroke_segment', buildLiveStrokePayload(activeTool, {
+                x1: liveStrokeLastPoint.x,
+                y1: liveStrokeLastPoint.y,
+                x2: x,
+                y2: y,
+                seq: liveStrokeSequence,
+                base_revision: liveStrokeBaseRevision,
+            }));
+        }
+    }
+    liveStrokeSequence += 1;
+    sendProjectPresenceMessage('layer_stroke_end', buildLiveStrokePayload(activeTool, {
+        x,
+        y,
+        seq: liveStrokeSequence,
+        base_revision: liveStrokeBaseRevision,
+    }));
+    broadcastRemoteCursorPosition(x, y, { force: true, toolName: activeTool });
+    liveStrokeLastPoint = null;
+    liveStrokeLayerId = null;
+    liveStrokeSequence = 0;
+}
+
 /**
  * Start drawing.
  */
@@ -3245,6 +3832,7 @@ function startDrawing(x, y, toolName) {
         lastDrawTool = toolName;
         markUnsavedChanges();
         beginBrushStroke(x, y);
+        beginLiveStrokeBroadcast(x, y, toolName);
         return;
     }
 
@@ -3257,6 +3845,7 @@ function startDrawing(x, y, toolName) {
             opacity: activeStrokeOpacity,
             blur: activeStrokeBlur,
         });
+        beginLiveStrokeBroadcast(x, y, toolName);
     }
 }
 
@@ -3271,6 +3860,7 @@ function continueDrawing(x, y) {
         appendBrushStrokePoint(target.x, target.y);
         lastX = target.x;
         lastY = target.y;
+        maybeBroadcastLiveStrokeSegment(target.x, target.y);
         return;
     }
 
@@ -3283,6 +3873,7 @@ function continueDrawing(x, y) {
         });
         lastX = target.x;
         lastY = target.y;
+        maybeBroadcastLiveStrokeSegment(target.x, target.y);
         return;
     }
 
@@ -3299,6 +3890,8 @@ function continueDrawing(x, y) {
  * Finish drawing.
  */
 function stopDrawing() {
+    const finalX = lastX;
+    const finalY = lastY;
     isDrawing = false;
     activePointerButton = 0;
     activeStrokeOpacity = 1;
@@ -3309,6 +3902,7 @@ function stopDrawing() {
     }
     didDrawStroke = false;
     lastDrawTool = null;
+    endLiveStrokeBroadcast(finalX, finalY);
     activeTool = null;
 }
 
@@ -6658,26 +7252,6 @@ function renderTimelineFrames() {
             button.appendChild(placeholder);
         }
 
-        const lock = getFrameLock(frame.id);
-        if (lock) {
-            const isMine = isLockOwnedByCurrentSession(lock);
-            button.classList.add('timeline-frame--locked');
-            if (isMine) {
-                button.classList.add('timeline-frame--locked-self');
-            }
-            frameTitle += isMine
-                ? ' • Editing in this session'
-                : ` • Locked by ${lock.display_name}`;
-
-            const lockBadge = document.createElement('span');
-            lockBadge.className = 'timeline-frame__lock';
-            if (isMine) {
-                lockBadge.classList.add('timeline-frame__lock--self');
-            }
-            lockBadge.textContent = isMine ? 'Editing' : 'Locked';
-            button.appendChild(lockBadge);
-        }
-
         button.title = frameTitle;
 
         timelineStrip.appendChild(button);
@@ -6795,6 +7369,7 @@ async function loadFrameByIndex(targetIndex) {
     const index = Number(targetIndex);
     if (!Number.isFinite(index) || index <= 0) return false;
     const previousFrameId = currentFrameId;
+    const previousActiveLayerId = activeLayerId;
 
     const url = getFrameDetailUrl(index);
     if (!url) return false;
@@ -6844,7 +7419,15 @@ async function loadFrameByIndex(targetIndex) {
         prefetchOnionFramesForCurrent();
         requestOnionSkinRender();
         notifyCurrentFramePresence();
-        syncCurrentFrameLock(previousFrameId);
+        if (Number.isFinite(previousFrameId) && previousFrameId > 0 && previousFrameId !== currentFrameId) {
+            clearRemoteLayerPreviewsForFrame(previousFrameId, { render: false });
+            for (const [presenceId, cursor] of remoteCursorStates.entries()) {
+                if (cursor.frame_id === previousFrameId) {
+                    remoteCursorStates.delete(presenceId);
+                }
+            }
+        }
+        syncCurrentLayerLock(previousActiveLayerId);
         return true;
     } catch (error) {
         console.error('Frame loading error', error);
@@ -6932,7 +7515,7 @@ async function handleRemoteFrameContentUpdated(payload) {
         return;
     }
 
-    const currentLock = getCurrentFrameLock();
+    const currentLock = getCurrentLayerLock();
     if (isLockOwnedByCurrentSession(currentLock)) {
         return;
     }
@@ -6954,10 +7537,11 @@ async function handleRemoteFrameContentUpdated(payload) {
         return;
     }
 
-    if (isLockOwnedByCurrentSession(getCurrentFrameLock())) {
+    if (isLockOwnedByCurrentSession(getCurrentLayerLock())) {
         return;
     }
 
+    clearRemoteLayerPreviewsForFrame(currentFrameId, { render: false });
     applyFrameDetailToCurrentFrame(detailData);
     initSaveState();
     await hydrateSavedFrame();
@@ -7242,7 +7826,7 @@ function flattenLayers() {
         if (!layer.visible) return;
         const sourceCanvas = (activeCompositeCanvas && layer.id === activeLayerId)
             ? activeCompositeCanvas
-            : layer.bufferCanvas;
+            : (getRenderableLayerSourceCanvas(layer) || layer.bufferCanvas);
         if (!sourceCanvas) return;
         flattenCtx.globalAlpha = clamp(layer.opacity, 0, 100) / 100;
         flattenCtx.drawImage(sourceCanvas, 0, 0, flattenCanvas.width, flattenCanvas.height);
@@ -7511,6 +8095,9 @@ function getCurrentFramePayload() {
         return {
             image_data: flattened,
             content_json: frameContent,
+            active_layer_id: activeLayerId,
+            active_layer_revision: getLayerContentRevision(activeLayerId),
+            presence_session_id: presenceSessionId,
         };
     }
     return null;
@@ -7589,12 +8176,18 @@ async function saveCurrentFrame(options = {}) {
         currentFrameContentJson = payload.content_json
             ? JSON.stringify(payload.content_json)
             : currentFrameContentJson;
+        if (data.layer && Number.isFinite(Number(data.layer.id))) {
+            updateLayerContentRevision(data.layer.id, data.layer.content_revision);
+            clearRemoteLayerPreview(data.layer.id, { render: false });
+        }
         if (data.frame) {
             currentFramePreviewUrl = data.frame.preview_url || currentFramePreviewUrl || '';
             currentFrameUpdatedAt = data.frame.updated_at || currentFrameUpdatedAt || '';
             currentFrameContentRevision = normalizeFrameContentRevision(data.frame.content_revision);
             updateTimelineFramePreview(data.frame);
         }
+        renderScene();
+        renderOverlay();
         setSaveStatus('Saved', 'saved');
         setSaveIndicator('saved');
         updateLastSavedLabel();
@@ -7713,6 +8306,7 @@ function handlePointerDown(event) {
     const { x, y } = getCanvasCoords(event);
     lastPointerX = x;
     lastPointerY = y;
+    broadcastRemoteCursorPosition(x, y, { force: true, toolName: activeTool });
     if (activeTool === TOOL_SELECT) {
         if (isRightButton) return;
         logCoordDebug('select-down', event);
@@ -7778,6 +8372,7 @@ function handlePointerMove(event) {
     const { x, y } = getCanvasCoords(event);
     lastPointerX = x;
     lastPointerY = y;
+    broadcastRemoteCursorPosition(x, y, { toolName: activeTool });
     if (activeTool === TOOL_EYEDROPPER) {
         updateEyedropperZoom(event);
         return;
@@ -8463,7 +9058,7 @@ function bindToolbarEvents() {
 function bindLayerEvents() {
     if (addLayerButton) {
         addLayerButton.addEventListener('click', () => {
-            if (isEditingLocked()) return;
+            if (isLayerPanelInteractionLocked()) return;
             createLayer();
         });
     }
@@ -8471,7 +9066,7 @@ function bindLayerEvents() {
     if (!layersList) return;
 
     layersList.addEventListener('pointerdown', (event) => {
-        if (isEditingLocked()) return;
+        if (isLayerPanelInteractionLocked()) return;
         if (event.target.matches('input[type="range"]')) {
             isOpacityDragging = true;
             beginFullHistory('layer_opacity_action');
@@ -8479,7 +9074,6 @@ function bindLayerEvents() {
     });
 
     layersList.addEventListener('click', async (event) => {
-        if (isEditingLocked()) return;
         const actionTarget = event.target.closest('[data-action]');
         const action = actionTarget ? actionTarget.dataset.action : null;
         const item = event.target.closest('.layer-item');
@@ -8489,6 +9083,7 @@ function bindLayerEvents() {
         if (!layer) return;
 
         if (action === 'toggle-visibility') {
+            if (isLayerPanelInteractionLocked()) return;
             const nextVisible = !layer.visible;
             const historyLabel = nextVisible ? 'layer_show_action' : 'layer_hide_action';
             beginFullHistory(historyLabel);
@@ -8505,6 +9100,7 @@ function bindLayerEvents() {
         }
 
         if (action === 'rename') {
+            if (isLayerPanelInteractionLocked()) return;
             layer.isRenaming = true;
             renderLayerList();
             const renameInput = layersList.querySelector(
@@ -8518,12 +9114,14 @@ function bindLayerEvents() {
         }
 
         if (action === 'rename-cancel') {
+            if (isLayerPanelInteractionLocked()) return;
             layer.isRenaming = false;
             renderLayerList();
             return;
         }
 
         if (action === 'rename-save') {
+            if (isLayerPanelInteractionLocked()) return;
             const input = item.querySelector('[data-action="rename-input"]');
             const value = input ? input.value.trim() : '';
             if (!value) return;
@@ -8541,6 +9139,7 @@ function bindLayerEvents() {
         }
 
         if (action === 'delete') {
+            if (isLayerPanelInteractionLocked()) return;
             await deleteLayer(layerId);
             return;
         }
@@ -8551,7 +9150,7 @@ function bindLayerEvents() {
     });
 
     layersList.addEventListener('input', (event) => {
-        if (isEditingLocked()) return;
+        if (isLayerPanelInteractionLocked()) return;
         if (event.target.dataset.action !== 'opacity') return;
         const item = event.target.closest('.layer-item');
         if (!item) return;
@@ -8565,7 +9164,7 @@ function bindLayerEvents() {
     });
 
     layersList.addEventListener('change', async (event) => {
-        if (isEditingLocked()) return;
+        if (isLayerPanelInteractionLocked()) return;
         if (event.target.dataset.action !== 'opacity') return;
         const item = event.target.closest('.layer-item');
         if (!item) return;
@@ -8585,7 +9184,7 @@ function bindLayerEvents() {
     });
 
     layersList.addEventListener('dragstart', (event) => {
-        if (isEditingLocked()) {
+        if (isLayerPanelInteractionLocked()) {
             event.preventDefault();
             return;
         }
@@ -8620,7 +9219,7 @@ function bindLayerEvents() {
     });
 
     layersList.addEventListener('dragover', (event) => {
-        if (isEditingLocked()) return;
+        if (isLayerPanelInteractionLocked()) return;
         event.preventDefault();
         const dragging = layersList.querySelector('.layer-item.is-dragging');
         const target = event.target.closest('.layer-item');
@@ -8635,7 +9234,7 @@ function bindLayerEvents() {
     });
 
     layersList.addEventListener('drop', (event) => {
-        if (isEditingLocked()) return;
+        if (isLayerPanelInteractionLocked()) return;
         event.preventDefault();
         beginFullHistory('layer_order');
         const orderedIds = [...layersList.querySelectorAll('.layer-item')]

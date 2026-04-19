@@ -27,6 +27,7 @@ from .access import (
     get_manageable_project_or_404,
 )
 from .models import AnimationProject, Frame, Layer, ProjectMember
+from .locks import presence_session_holds_layer_lock
 from .realtime import broadcast_project_event
 
 MAX_PREVIEW_IMAGE_BYTES = 5 * 1024 * 1024
@@ -81,6 +82,7 @@ def serialize_layer(layer):
         'name': layer.name,
         'visible': layer.visible,
         'opacity': layer.opacity,
+        'content_revision': layer.content_revision,
     }
 
 
@@ -116,6 +118,98 @@ def build_frame_content_updated_payload(frame, actor_user_id, client_request_id=
         'actor_user_id': actor_user_id,
         'client_request_id': client_request_id,
     }
+
+
+def build_layer_content_committed_payload(frame, layer, actor_user_id, client_request_id=''):
+    return {
+        **serialize_frame(frame),
+        'frame_id': frame.pk,
+        'frame_index': frame.index,
+        'layer_id': layer.pk,
+        'layer_name': layer.name,
+        'layer_content_revision': layer.content_revision,
+        'actor_user_id': actor_user_id,
+        'client_request_id': client_request_id,
+    }
+
+
+def _parse_frame_content_payload(raw_content):
+    if isinstance(raw_content, dict):
+        payload = raw_content
+    elif isinstance(raw_content, str):
+        try:
+            payload = json.loads(raw_content)
+        except json.JSONDecodeError:
+            return None
+    else:
+        return None
+    if not isinstance(payload, dict) or not isinstance(payload.get('layers'), list):
+        return None
+    return payload
+
+
+def _serialize_frame_content_payload(payload):
+    return json.dumps(payload, ensure_ascii=False)
+
+
+def _merge_active_layer_content(existing_raw, incoming_raw, active_layer_id):
+    incoming_payload = _parse_frame_content_payload(incoming_raw)
+    if incoming_payload is None:
+        return incoming_raw if isinstance(incoming_raw, str) else _serialize_frame_content_payload(incoming_raw)
+    if not active_layer_id:
+        return _serialize_frame_content_payload(incoming_payload)
+
+    existing_payload = _parse_frame_content_payload(existing_raw)
+    if existing_payload is None:
+        return _serialize_frame_content_payload(incoming_payload)
+
+    try:
+        numeric_layer_id = int(active_layer_id)
+    except (TypeError, ValueError):
+        return _serialize_frame_content_payload(incoming_payload)
+
+    incoming_layer_entry = None
+    for layer_entry in incoming_payload.get('layers', []):
+        try:
+            entry_layer_id = int(layer_entry.get('id'))
+        except (TypeError, ValueError, AttributeError):
+            continue
+        if entry_layer_id == numeric_layer_id:
+            incoming_layer_entry = layer_entry
+            break
+
+    if incoming_layer_entry is None:
+        return _serialize_frame_content_payload(incoming_payload)
+
+    merged_payload = {
+        **existing_payload,
+        'version': incoming_payload.get('version', existing_payload.get('version', 1)),
+        'width': incoming_payload.get('width', existing_payload.get('width')),
+        'height': incoming_payload.get('height', existing_payload.get('height')),
+        'active_layer_id': incoming_payload.get('active_layer_id'),
+        'active_layer_order': incoming_payload.get('active_layer_order'),
+        'active_layer_index': incoming_payload.get('active_layer_index'),
+    }
+
+    merged_layers = []
+    replaced = False
+    for layer_entry in existing_payload.get('layers', []):
+        try:
+            entry_layer_id = int(layer_entry.get('id'))
+        except (TypeError, ValueError, AttributeError):
+            merged_layers.append(layer_entry)
+            continue
+        if entry_layer_id == numeric_layer_id:
+            merged_layers.append(incoming_layer_entry)
+            replaced = True
+        else:
+            merged_layers.append(layer_entry)
+
+    if not replaced:
+        merged_layers.append(incoming_layer_entry)
+
+    merged_payload['layers'] = merged_layers
+    return _serialize_frame_content_payload(merged_payload)
 
 
 def serialize_project_card(project, first_frame=None, membership=None):
@@ -746,6 +840,8 @@ def frame_save(request, pk, index):
         return JsonResponse({'ok': False, 'error': 'Invalid payload format.'}, status=400)
 
     client_request_id = normalize_client_request_id(payload.get('client_request_id'))
+    active_layer_id = payload.get('active_layer_id')
+    presence_session_id = payload.get('presence_session_id')
     image_data = payload.get('image_data')
     content_json = payload.get('content_json')
 
@@ -798,21 +894,41 @@ def frame_save(request, pk, index):
         filename = f'project_{project.pk}_frame_{frame.index}.{extension}'
         frame.preview_image.save(filename, ContentFile(decoded), save=False)
 
+    active_layer = None
+    if active_layer_id is not None:
+        active_layer = Layer.objects.filter(frame=frame, pk=active_layer_id).first()
+        if active_layer is None:
+            return JsonResponse({'ok': False, 'error': 'Invalid active layer.'}, status=400)
+        if presence_session_id is not None and not presence_session_holds_layer_lock(
+            project_id=project.pk,
+            layer_id=active_layer.pk,
+            user_id=request.user.pk,
+            presence_session_id=presence_session_id,
+        ):
+            return JsonResponse({'ok': False, 'error': 'Layer lock required.'}, status=409)
+
     if content_json is not None:
         if isinstance(content_json, str):
-            frame.content_json = content_json
+            frame.content_json = _merge_active_layer_content(frame.content_json, content_json, active_layer_id)
         else:
             try:
-                frame.content_json = json.dumps(content_json, ensure_ascii=False)
+                frame.content_json = _merge_active_layer_content(frame.content_json, content_json, active_layer_id)
             except (TypeError, ValueError):
                 return JsonResponse({'ok': False, 'error': 'Invalid JSON data.'}, status=400)
 
     with transaction.atomic():
+        if active_layer is not None:
+            active_layer.content_revision += 1
+            active_layer.save(update_fields=['content_revision'])
         frame.content_revision += 1
         frame.save()
         project.save(update_fields=['updated_at'])
         response_frame = serialize_frame(frame)
         event_payload = build_frame_content_updated_payload(frame, request.user.pk, client_request_id)
+        layer_commit_payload = (
+            build_layer_content_committed_payload(frame, active_layer, request.user.pk, client_request_id)
+            if active_layer is not None else None
+        )
         transaction.on_commit(
             lambda project_id=project.pk, payload=event_payload: broadcast_project_event(
                 project_id,
@@ -820,10 +936,19 @@ def frame_save(request, pk, index):
                 payload,
             )
         )
+        if layer_commit_payload is not None:
+            transaction.on_commit(
+                lambda project_id=project.pk, payload=layer_commit_payload: broadcast_project_event(
+                    project_id,
+                    'layer_content_committed',
+                    payload,
+                )
+            )
 
     return JsonResponse({
         'ok': True,
         'frame': response_frame,
+        'layer': serialize_layer(active_layer) if active_layer is not None else None,
     })
 
 
