@@ -146,9 +146,6 @@ const playbackStopButton = document.getElementById('playback-stop-button');
 const playbackLoopToggle = document.getElementById('playback-loop-toggle');
 const playbackFpsInput = document.getElementById('playback-fps-input');
 
-const projectSaveUrl = (editorRoot && editorRoot.dataset.projectSaveUrl)
-    || window.ANIM_PROJECT_SAVE_URL
-    || '';
 const projectUpdateUrl = (editorRoot && editorRoot.dataset.projectUpdateUrl) || '';
 const projectExportUrl = (editorRoot && editorRoot.dataset.projectExportUrl)
     || window.ANIM_PROJECT_EXPORT_URL
@@ -320,12 +317,14 @@ let currentFrameIndex = Number(storedFrameIndex || window.ANIM_CURRENT_FRAME_IND
 let hasUnsavedChanges = false;
 let isSaving = false;
 let isAutosaving = false;
+let currentFrameSavePromise = null;
 let lastSavedAt = null;
 let autosaveTimerId = null;
 let lastSavedTickerId = null;
 let currentFrameId = null;
 let timelineFrames = [];
 let isSwitchingFrame = false;
+let isSwitchingLayer = false;
 let dragFrameId = null;
 let panStartedByMiddle = false;
 let isExporting = false;
@@ -2239,7 +2238,7 @@ function isEditingLocked() {
 }
 
 function isLayerPanelInteractionLocked() {
-    return isReadOnlyProject() || isEditingLockedByPlayback();
+    return isReadOnlyProject() || isEditingLockedByPlayback() || isSwitchingLayer;
 }
 
 function getOrderedTimelineIndexes() {
@@ -3000,13 +2999,34 @@ function updateActiveLayerPointers() {
     }
 }
 
-function setActiveLayer(layerId, options = {}) {
-    if (!layerId) return;
+async function setActiveLayer(layerId, options = {}) {
+    const numericLayerId = Number(layerId);
+    if (!Number.isFinite(numericLayerId) || numericLayerId <= 0) return false;
+    if (!getLayerById(numericLayerId)) return false;
     const previousLayerId = activeLayerId;
+    if (previousLayerId === numericLayerId) {
+        return true;
+    }
+    if (isSwitchingLayer) {
+        return false;
+    }
     if (hasFloatingSelection()) {
         commitSelectionTransform();
     }
-    activeLayerId = layerId;
+    isSwitchingLayer = true;
+    try {
+        if (options.saveBeforeSwitch !== false) {
+            const savedOk = await ensureCurrentFrameSavedBeforeLeave({
+                failureText: 'Could not save the current frame before switching layers. Stayed on the current layer.',
+            });
+            if (!savedOk) {
+                return false;
+            }
+        }
+        activeLayerId = numericLayerId;
+    } finally {
+        isSwitchingLayer = false;
+    }
     updateActiveLayerPointers();
     if (options.clearSelection) {
         clearSelection();
@@ -3017,6 +3037,7 @@ function setActiveLayer(layerId, options = {}) {
     if (options.syncLock !== false) {
         syncCurrentLayerLock(previousLayerId);
     }
+    return true;
 }
 
 function updateLayersEmptyState() {
@@ -3291,6 +3312,15 @@ async function createLayer() {
     if (isLayerPanelInteractionLocked()) return;
     const listUrl = getLayerListUrl();
     if (!listUrl) return;
+    if (hasFloatingSelection()) {
+        commitSelectionTransform();
+    }
+    const savedOk = await ensureCurrentFrameSavedBeforeLeave({
+        failureText: 'Could not save the current frame before switching layers. Stayed on the current layer.',
+    });
+    if (!savedOk) {
+        return;
+    }
     beginFullHistory('layer_add');
     const clientRequestId = createProjectEventRequestId();
     rememberLocalProjectEventRequest(clientRequestId);
@@ -3310,7 +3340,7 @@ async function createLayer() {
         }
         const layer = addLayerFromPayload(data.layer);
         applyAllLayerStyles();
-        setActiveLayer(layer.id);
+        await setActiveLayer(layer.id, { saveBeforeSwitch: false });
         renderScene();
         commitFullHistory();
     } catch (error) {
@@ -7801,7 +7831,9 @@ async function switchToFrameIndex(targetIndex) {
     if (isSwitchingFrame) return;
 
     setTimelineControlsDisabled(true);
-    const savedOk = await saveCurrentFrame();
+    const savedOk = await ensureCurrentFrameSavedBeforeLeave({
+        failureText: 'Could not save the current frame before switching frames. Stayed on the current frame.',
+    });
     if (!savedOk && hasUnsavedChanges) {
         setTimelineControlsDisabled(false);
         return;
@@ -8369,10 +8401,28 @@ function getCurrentFramePayload() {
     return null;
 }
 
+async function ensureCurrentFrameSavedBeforeLeave(options = {}) {
+    if (!hasUnsavedChanges) {
+        return true;
+    }
+    const savedOk = await saveCurrentFrame();
+    if (!savedOk && hasUnsavedChanges) {
+        if (options.failureText && (!saveStatusText || !saveStatusText.textContent)) {
+            setSaveStatus(options.failureText, 'error');
+            setSaveIndicator('error');
+        }
+        return false;
+    }
+    return true;
+}
+
 /**
  * Send the current frame to the server.
  */
 async function saveCurrentFrame(options = {}) {
+    if (currentFrameSavePromise) {
+        return currentFrameSavePromise;
+    }
     if (isCurrentFrameReadOnly()) {
         return false;
     }
@@ -8382,110 +8432,129 @@ async function saveCurrentFrame(options = {}) {
         return false;
     }
 
-    if (isSaving || isAutosaving) return false;
     if (!hasUnsavedChanges) return true;
-    if (isDrawing) {
-        if (isShapeTool(activeTool)) {
-            commitShape();
-        } else {
-            stopDrawing();
-        }
-    }
-
-    const saveUrl = getFrameSaveUrl(currentFrameIndex);
-    if (!saveUrl) {
-        setSaveStatus('Frame save URL was not found.', 'error');
-        setSaveIndicator('error');
-        return false;
-    }
-
-    const payload = getCurrentFramePayload();
-    if (!payload) {
-        setSaveStatus('There is no data to save.', 'error');
-        setSaveIndicator('error');
-        return false;
-    }
-
-    const clientRequestId = createProjectEventRequestId();
-    rememberLocalProjectEventRequest(clientRequestId);
-    payload.client_request_id = clientRequestId;
-
-    const isAuto = Boolean(options.isAuto);
-    if (isAuto) {
-        isAutosaving = true;
-    } else {
-        isSaving = true;
-    }
-
-    updateSaveButtonState();
-    setSaveStatus('Saving...', 'saving');
-    setSaveIndicator('saving');
-
-    try {
-        const response = await fetch(saveUrl, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'X-CSRFToken': getCsrfToken(),
-            },
-            credentials: 'same-origin',
-            body: JSON.stringify(payload),
-        });
-
-        let data = null;
-        try {
-            data = await response.json();
-        } catch (error) {
-            data = null;
+    currentFrameSavePromise = (async () => {
+        if (isDrawing) {
+            if (isShapeTool(activeTool)) {
+                commitShape();
+            } else {
+                stopDrawing();
+            }
         }
 
-        if (!response.ok || !data || !data.ok) {
-            const errorMessage = data && data.error ? data.error : 'Could not save the frame.';
-            throw new Error(errorMessage);
+        const saveUrl = getFrameSaveUrl(currentFrameIndex);
+        if (!saveUrl) {
+            setSaveStatus('Frame save URL was not found.', 'error');
+            setSaveIndicator('error');
+            return false;
         }
 
-        hasUnsavedChanges = false;
-        lastSavedAt = new Date();
-        currentFrameContentJson = payload.content_json
-            ? JSON.stringify(payload.content_json)
-            : currentFrameContentJson;
-        if (data.layer && Number.isFinite(Number(data.layer.id))) {
-            updateLayerContentRevision(data.layer.id, data.layer.content_revision);
-            clearRemoteLayerPreview(data.layer.id, { render: false });
+        const payload = getCurrentFramePayload();
+        if (!payload) {
+            setSaveStatus('There is no data to save.', 'error');
+            setSaveIndicator('error');
+            return false;
         }
-        if (data.frame) {
-            currentFramePreviewUrl = data.frame.preview_url || currentFramePreviewUrl || '';
-            currentFrameUpdatedAt = data.frame.updated_at || currentFrameUpdatedAt || '';
-            currentFrameContentRevision = normalizeFrameContentRevision(data.frame.content_revision);
-            updateTimelineFramePreview(data.frame);
-        }
-        renderScene();
-        renderOverlay();
-        setSaveStatus('Saved', 'saved');
-        setSaveIndicator('saved');
-        updateLastSavedLabel();
-        return true;
-    } catch (error) {
-        forgetLocalProjectEventRequest(clientRequestId);
-        console.error('Frame save error', error);
-        let errorText = 'Could not save the frame.';
-        if (error instanceof Error && error.message) {
-            errorText = error.message;
-        }
-        if (errorText === 'Failed to fetch') {
-            errorText = 'Could not reach the server.';
-        }
-        setSaveStatus(errorText, 'error');
-        setSaveIndicator('error');
-        return false;
-    } finally {
+
+        const clientRequestId = createProjectEventRequestId();
+        rememberLocalProjectEventRequest(clientRequestId);
+        payload.client_request_id = clientRequestId;
+
+        const isAuto = Boolean(options.isAuto);
         if (isAuto) {
-            isAutosaving = false;
+            isAutosaving = true;
         } else {
-            isSaving = false;
+            isSaving = true;
         }
+
         updateSaveButtonState();
-    }
+        setSaveStatus('Saving...', 'saving');
+        setSaveIndicator('saving');
+
+        try {
+            const response = await fetch(saveUrl, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRFToken': getCsrfToken(),
+                },
+                credentials: 'same-origin',
+                body: JSON.stringify(payload),
+            });
+
+            let data = null;
+            try {
+                data = await response.json();
+            } catch (error) {
+                data = null;
+            }
+
+            if (!response.ok || !data || !data.ok) {
+                const errorMessage = data && data.error ? data.error : 'Could not save the frame.';
+                throw new Error(errorMessage);
+            }
+
+            hasUnsavedChanges = false;
+            lastSavedAt = new Date();
+
+            const authoritativeFrameContentJson = (
+                data.frame && typeof data.frame.content_json === 'string'
+            )
+                ? data.frame.content_json
+                : (
+                    payload.content_json
+                        ? JSON.stringify(payload.content_json)
+                        : currentFrameContentJson
+                );
+            currentFrameContentJson = authoritativeFrameContentJson;
+
+            if (data.layer && Number.isFinite(Number(data.layer.id))) {
+                updateLayerContentRevision(data.layer.id, data.layer.content_revision);
+                clearRemoteLayerPreview(data.layer.id, { render: false });
+            }
+            if (data.frame) {
+                currentFramePreviewUrl = data.frame.preview_url || currentFramePreviewUrl || '';
+                currentFrameUpdatedAt = data.frame.updated_at || currentFrameUpdatedAt || '';
+                currentFrameContentRevision = normalizeFrameContentRevision(data.frame.content_revision);
+                updateTimelineFramePreview(data.frame);
+            }
+            if (authoritativeFrameContentJson) {
+                await hydrateSavedFrame({
+                    preserveLayerIds: Number.isFinite(activeLayerId) && activeLayerId > 0 ? [activeLayerId] : [],
+                    preserveActiveLayer: true,
+                    preserveLocalState: true,
+                });
+            }
+            renderScene();
+            renderOverlay();
+            setSaveStatus('Saved', 'saved');
+            setSaveIndicator('saved');
+            updateLastSavedLabel();
+            return true;
+        } catch (error) {
+            forgetLocalProjectEventRequest(clientRequestId);
+            console.error('Frame save error', error);
+            let errorText = 'Could not save the frame.';
+            if (error instanceof Error && error.message) {
+                errorText = error.message;
+            }
+            if (errorText === 'Failed to fetch') {
+                errorText = 'Could not reach the server.';
+            }
+            setSaveStatus(errorText, 'error');
+            setSaveIndicator('error');
+            return false;
+        } finally {
+            if (isAuto) {
+                isAutosaving = false;
+            } else {
+                isSaving = false;
+            }
+            currentFrameSavePromise = null;
+            updateSaveButtonState();
+        }
+    })();
+    return currentFrameSavePromise;
 }
 
 // =======================
@@ -9418,7 +9487,7 @@ function bindLayerEvents() {
         }
 
         if (action === 'select-layer' || !action) {
-            setActiveLayer(layerId);
+            void setActiveLayer(layerId);
         }
     });
 

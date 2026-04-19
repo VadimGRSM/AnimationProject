@@ -253,7 +253,7 @@ class LayerLockSemanticsTests(TestCase):
             is_active=is_active,
         )
 
-    def test_same_session_can_hold_multiple_layer_locks(self):
+    def test_same_session_releases_previous_layer_lock_when_switching_layers(self):
         presence_session = self._create_presence_session(self.owner, ProjectMember.Role.OWNER)
 
         first_lock_state = acquire_layer_lock(
@@ -275,18 +275,16 @@ class LayerLockSemanticsTests(TestCase):
 
         self.assertEqual(first_lock_state['status'], 'acquired')
         self.assertEqual(second_lock_state['status'], 'acquired')
-        self.assertEqual(second_lock_state['released'], [])
+        self.assertEqual(
+            [lock['layer_id'] for lock in second_lock_state['released']],
+            [self.layer_one.pk],
+        )
         self.assertEqual(
             LayerLock.objects.filter(project=self.project, presence_session=presence_session).count(),
-            2,
+            1,
         )
-        self.assertSetEqual(
-            set(
-                LayerLock.objects.filter(project=self.project, presence_session=presence_session)
-                .values_list('layer_id', flat=True)
-            ),
-            {self.layer_one.pk, self.layer_two.pk},
-        )
+        remaining_lock = LayerLock.objects.get(project=self.project, presence_session=presence_session)
+        self.assertEqual(remaining_lock.layer_id, self.layer_two.pk)
 
     def test_different_session_cannot_take_locked_layer(self):
         owner_presence = self._create_presence_session(self.owner, ProjectMember.Role.OWNER)
@@ -598,6 +596,16 @@ class ProjectAccessTests(TestCase):
             content_type='application/json',
         )
         self.assertEqual(save_response.status_code, 404)
+
+    def test_editor_template_uses_frame_save_url_not_project_save_url(self):
+        client = Client()
+        client.force_login(self.editor)
+
+        response = client.get(reverse('animation:project_editor', kwargs={'pk': self.project.pk}))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'data-frame-save-url-template=')
+        self.assertNotContains(response, 'data-project-save-url=')
 
     def test_editor_can_edit_but_cannot_delete_project(self):
         client = Client()
@@ -1542,6 +1550,65 @@ class ProjectWebsocketRoomTests(TransactionTestCase):
 
         async_to_sync(scenario)()
 
+    def test_same_session_switching_layers_releases_previous_lock(self):
+        async def scenario():
+            owner_communicator, owner_connection = await self._assert_member_can_connect(
+                self.owner,
+                ProjectMember.Role.OWNER,
+            )
+            viewer_communicator, _ = await self._assert_member_can_connect(
+                self.viewer,
+                ProjectMember.Role.VIEWER,
+                expected_user_count=2,
+            )
+            await owner_communicator.receive_json_from()
+
+            await owner_communicator.send_json_to({
+                'type': 'layer_lock_acquire',
+                'payload': {
+                    'frame_id': self.frame_one.pk,
+                    'layer_id': self.layer_one.pk,
+                },
+            })
+            await owner_communicator.receive_json_from()
+            await viewer_communicator.receive_json_from()
+
+            await owner_communicator.send_json_to({
+                'type': 'layer_lock_acquire',
+                'payload': {
+                    'frame_id': self.frame_one.pk,
+                    'layer_id': self.layer_two.pk,
+                },
+            })
+
+            owner_released = await owner_communicator.receive_json_from()
+            viewer_released = await viewer_communicator.receive_json_from()
+            self.assertEqual(owner_released['type'], 'layer_lock_released')
+            self.assertEqual(viewer_released['type'], 'layer_lock_released')
+            self.assertEqual(owner_released['payload']['lock']['layer_id'], self.layer_one.pk)
+            self.assertEqual(viewer_released['payload']['lock']['layer_id'], self.layer_one.pk)
+
+            owner_acquired = await owner_communicator.receive_json_from()
+            viewer_acquired = await viewer_communicator.receive_json_from()
+            self.assertEqual(owner_acquired['type'], 'layer_lock_acquired')
+            self.assertEqual(viewer_acquired['type'], 'layer_lock_acquired')
+            self.assertEqual(owner_acquired['payload']['lock']['layer_id'], self.layer_two.pk)
+            self.assertEqual(viewer_acquired['payload']['lock']['layer_id'], self.layer_two.pk)
+            self.assertEqual(
+                owner_acquired['payload']['lock']['presence_session_id'],
+                owner_connection['presence_session_id'],
+            )
+
+            self.assertIsNone(await database_sync_to_async(self._layer_lock_row)(self.layer_one.pk))
+            remaining_lock = await database_sync_to_async(self._layer_lock_row)(self.layer_two.pk)
+            self.assertIsNotNone(remaining_lock)
+            self.assertEqual(remaining_lock.presence_session_id, owner_connection['presence_session_id'])
+
+            await viewer_communicator.disconnect()
+            await owner_communicator.disconnect()
+
+        async_to_sync(scenario)()
+
     def test_viewer_cannot_acquire_layer_lock(self):
         async def scenario():
             communicator, _ = await self._assert_member_can_connect(
@@ -1638,6 +1705,57 @@ class ProjectWebsocketRoomTests(TransactionTestCase):
             self.assertIsNone(await database_sync_to_async(self._layer_lock_row)(self.layer_one.pk))
 
             await editor_communicator.disconnect()
+
+        async_to_sync(scenario)()
+
+    def test_frame_change_releases_owned_layer_locks(self):
+        async def scenario():
+            owner_communicator, _ = await self._assert_member_can_connect(
+                self.owner,
+                ProjectMember.Role.OWNER,
+            )
+            viewer_communicator, _ = await self._assert_member_can_connect(
+                self.viewer,
+                ProjectMember.Role.VIEWER,
+                expected_user_count=2,
+            )
+            await owner_communicator.receive_json_from()
+
+            await owner_communicator.send_json_to({
+                'type': 'layer_lock_acquire',
+                'payload': {
+                    'frame_id': self.frame_one.pk,
+                    'layer_id': self.layer_one.pk,
+                },
+            })
+            await owner_communicator.receive_json_from()
+            await viewer_communicator.receive_json_from()
+
+            await owner_communicator.send_json_to({
+                'type': 'presence_set_frame',
+                'payload': {
+                    'frame_id': self.frame_two.pk,
+                },
+            })
+
+            owner_released = await owner_communicator.receive_json_from()
+            viewer_released = await viewer_communicator.receive_json_from()
+            self.assertEqual(owner_released['type'], 'layer_lock_released')
+            self.assertEqual(viewer_released['type'], 'layer_lock_released')
+            self.assertEqual(owner_released['payload']['lock']['layer_id'], self.layer_one.pk)
+            self.assertEqual(viewer_released['payload']['lock']['layer_id'], self.layer_one.pk)
+
+            owner_presence_event = await owner_communicator.receive_json_from()
+            viewer_presence_event = await viewer_communicator.receive_json_from()
+            self.assertEqual(owner_presence_event['type'], 'presence_frame_changed')
+            self.assertEqual(viewer_presence_event['type'], 'presence_frame_changed')
+            self.assertEqual(owner_presence_event['payload']['user']['current_frame_id'], self.frame_two.pk)
+            self.assertEqual(viewer_presence_event['payload']['user']['current_frame_id'], self.frame_two.pk)
+
+            self.assertIsNone(await database_sync_to_async(self._layer_lock_row)(self.layer_one.pk))
+
+            await viewer_communicator.disconnect()
+            await owner_communicator.disconnect()
 
         async_to_sync(scenario)()
 
@@ -2138,22 +2256,25 @@ class FrameRealtimeSyncTests(TestCase):
         self.client = Client()
         self.client.force_login(self.user)
 
-    def _lock_active_layer(self):
+    def _lock_active_layer(self, *, user=None, layer=None, role=ProjectMember.Role.OWNER, frame=None):
+        user = user or self.user
+        layer = layer or self.layer
+        frame = frame or self.frame
         now = timezone.now()
         presence_session = ProjectPresenceSession.objects.create(
             project=self.project,
-            user=self.user,
-            channel_name=f'test-layer-lock-{self.layer.pk}',
-            current_frame=self.frame,
-            role=ProjectMember.Role.OWNER,
+            user=user,
+            channel_name=f'test-layer-lock-{user.pk}-{layer.pk}-{ProjectPresenceSession.objects.count() + 1}',
+            current_frame=frame,
+            role=role,
             last_seen_at=now,
             is_active=True,
         )
         LayerLock.objects.create(
             project=self.project,
-            frame=self.frame,
-            layer=self.layer,
-            user=self.user,
+            frame=frame,
+            layer=layer,
+            user=user,
             presence_session=presence_session,
             last_heartbeat_at=now,
             expires_at=now + timedelta(seconds=30),
@@ -2267,11 +2388,100 @@ class FrameRealtimeSyncTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
+        response_payload = response.json()
         self.frame.refresh_from_db()
         saved_payload = json.loads(self.frame.content_json)
         saved_layers = {entry['id']: entry['image_data'] for entry in saved_payload['layers']}
         self.assertEqual(saved_layers[self.layer.pk], 'ink-after')
         self.assertEqual(saved_layers[second_layer.pk], 'paint-stays')
+
+        returned_payload = json.loads(response_payload['frame']['content_json'])
+        returned_layers = {entry['id']: entry['image_data'] for entry in returned_payload['layers']}
+        self.assertEqual(returned_layers[self.layer.pk], 'ink-after')
+        self.assertEqual(returned_layers[second_layer.pk], 'paint-stays')
+
+    def test_sequential_frame_saves_preserve_other_users_layers(self):
+        second_user = User.objects.create_user(email='realtime-collaborator@example.com', password='test')
+        ProjectMember.objects.create(
+            project=self.project,
+            user=second_user,
+            role=ProjectMember.Role.EDITOR,
+            invited_by=self.user,
+        )
+        second_client = Client()
+        second_client.force_login(second_user)
+        second_layer = Layer.objects.create(frame=self.frame, order=2, name='Paint', visible=True, opacity=100)
+        self.frame.content_json = json.dumps({
+            'version': 1,
+            'active_layer_id': self.layer.pk,
+            'layers': [
+                {'id': self.layer.pk, 'image_data': 'ink-before'},
+                {'id': second_layer.pk, 'image_data': 'paint-before'},
+            ],
+        })
+        self.frame.save(update_fields=['content_json'])
+
+        owner_presence = self._lock_active_layer()
+        editor_presence = self._lock_active_layer(
+            user=second_user,
+            layer=second_layer,
+            role=ProjectMember.Role.EDITOR,
+        )
+
+        owner_response = self.client.post(
+            reverse('animation:frame_save', kwargs={'pk': self.project.pk, 'index': self.frame.index}),
+            data=json.dumps({
+                'content_json': {
+                    'version': 1,
+                    'active_layer_id': self.layer.pk,
+                    'layers': [
+                        {'id': self.layer.pk, 'image_data': 'ink-after'},
+                        {'id': second_layer.pk, 'image_data': 'paint-stale-from-owner'},
+                    ],
+                },
+                'active_layer_id': self.layer.pk,
+                'active_layer_revision': 0,
+                'presence_session_id': owner_presence.pk,
+            }),
+            content_type='application/json',
+        )
+        self.assertEqual(owner_response.status_code, 200)
+
+        self.frame.refresh_from_db()
+        after_owner_save = json.loads(self.frame.content_json)
+        layers_after_owner_save = {entry['id']: entry['image_data'] for entry in after_owner_save['layers']}
+        self.assertEqual(layers_after_owner_save[self.layer.pk], 'ink-after')
+        self.assertEqual(layers_after_owner_save[second_layer.pk], 'paint-before')
+
+        editor_response = second_client.post(
+            reverse('animation:frame_save', kwargs={'pk': self.project.pk, 'index': self.frame.index}),
+            data=json.dumps({
+                'content_json': {
+                    'version': 1,
+                    'active_layer_id': second_layer.pk,
+                    'layers': [
+                        {'id': self.layer.pk, 'image_data': 'ink-stale-from-editor'},
+                        {'id': second_layer.pk, 'image_data': 'paint-after'},
+                    ],
+                },
+                'active_layer_id': second_layer.pk,
+                'active_layer_revision': 0,
+                'presence_session_id': editor_presence.pk,
+            }),
+            content_type='application/json',
+        )
+        self.assertEqual(editor_response.status_code, 200)
+
+        self.frame.refresh_from_db()
+        final_payload = json.loads(self.frame.content_json)
+        final_layers = {entry['id']: entry['image_data'] for entry in final_payload['layers']}
+        self.assertEqual(final_layers[self.layer.pk], 'ink-after')
+        self.assertEqual(final_layers[second_layer.pk], 'paint-after')
+
+        returned_payload = json.loads(editor_response.json()['frame']['content_json'])
+        returned_layers = {entry['id']: entry['image_data'] for entry in returned_payload['layers']}
+        self.assertEqual(returned_layers[self.layer.pk], 'ink-after')
+        self.assertEqual(returned_layers[second_layer.pk], 'paint-after')
 
     def test_project_save_updates_frame_revisions(self):
         second_frame = Frame.objects.create(project=self.project, index=2, content_json='{"layers":[]}')

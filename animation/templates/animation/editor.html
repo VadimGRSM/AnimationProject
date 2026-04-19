@@ -70,7 +70,6 @@
      data-can-edit="{% if can_edit %}true{% else %}false{% endif %}"
      data-can-manage-members="{% if can_manage_members %}true{% else %}false{% endif %}"
      data-project-update-url="{% url 'animation:project_update' project.pk %}"
-     data-project-save-url="{% url 'animation:project_save' project.pk %}"
      data-project-export-url="{% url 'animation:project_export' project.pk %}"
      data-frames-list-url="{% url 'animation:frames_list' project.pk %}"
      data-frame-detail-url-template="{% url 'animation:frame_detail' project.pk 0 %}"

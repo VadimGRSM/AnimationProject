@@ -169,6 +169,11 @@ class ProjectConsumer(AsyncJsonWebsocketConsumer):
         if message_type == "presence_set_frame":
             frame_id = payload.get("frame_id")
             frame_state = await self.update_presence_frame(frame_id)
+            released_layer_locks = []
+            if frame_state["changed"]:
+                released_layer_locks = await self.release_all_layer_locks()
+                self.remove_owned_layer_locks(released_layer_locks)
+                await self.broadcast_released_layer_locks(released_layer_locks)
             if frame_state["changed"] and frame_state["user"] is not None:
                 await self.channel_layer.group_send(
                     self.project_group_name,

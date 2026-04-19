@@ -944,7 +944,10 @@ def frame_save(request, pk, index):
         frame.content_revision += 1
         frame.save()
         project.save(update_fields=['updated_at'])
-        response_frame = serialize_frame(frame)
+        response_frame = {
+            **serialize_frame(frame),
+            'content_json': frame.content_json or '',
+        }
         event_payload = build_frame_content_updated_payload(frame, request.user.pk, client_request_id)
         layer_commit_payload = (
             build_layer_content_committed_payload(
