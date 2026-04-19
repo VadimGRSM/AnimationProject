@@ -120,7 +120,7 @@ def build_frame_content_updated_payload(frame, actor_user_id, client_request_id=
     }
 
 
-def build_layer_content_committed_payload(frame, layer, actor_user_id, client_request_id=''):
+def build_layer_content_committed_payload(frame, layer, actor_user_id, client_request_id='', presence_session_id=None):
     return {
         **serialize_frame(frame),
         'frame_id': frame.pk,
@@ -130,6 +130,7 @@ def build_layer_content_committed_payload(frame, layer, actor_user_id, client_re
         'layer_content_revision': layer.content_revision,
         'actor_user_id': actor_user_id,
         'client_request_id': client_request_id,
+        'presence_session_id': presence_session_id,
     }
 
 
@@ -823,7 +824,6 @@ def frame_reorder(request, pk):
 @require_POST
 def frame_save(request, pk, index):
     project = get_editable_project_or_404(request.user, pk)
-    frame = get_object_or_404(Frame, project=project, index=index)
 
     try:
         payload = json.loads(request.body.decode('utf-8'))
@@ -841,9 +841,12 @@ def frame_save(request, pk, index):
 
     client_request_id = normalize_client_request_id(payload.get('client_request_id'))
     active_layer_id = payload.get('active_layer_id')
+    active_layer_revision = payload.get('active_layer_revision')
     presence_session_id = payload.get('presence_session_id')
     image_data = payload.get('image_data')
     content_json = payload.get('content_json')
+    preview_bytes = None
+    preview_filename = ''
 
     if isinstance(image_data, str):
         image_data = image_data.strip()
@@ -891,32 +894,50 @@ def frame_save(request, pk, index):
             elif mime_type == 'image/png':
                 extension = 'png'
 
-        filename = f'project_{project.pk}_frame_{frame.index}.{extension}'
-        frame.preview_image.save(filename, ContentFile(decoded), save=False)
-
-    active_layer = None
-    if active_layer_id is not None:
-        active_layer = Layer.objects.filter(frame=frame, pk=active_layer_id).first()
-        if active_layer is None:
-            return JsonResponse({'ok': False, 'error': 'Invalid active layer.'}, status=400)
-        if presence_session_id is not None and not presence_session_holds_layer_lock(
-            project_id=project.pk,
-            layer_id=active_layer.pk,
-            user_id=request.user.pk,
-            presence_session_id=presence_session_id,
-        ):
-            return JsonResponse({'ok': False, 'error': 'Layer lock required.'}, status=409)
-
-    if content_json is not None:
-        if isinstance(content_json, str):
-            frame.content_json = _merge_active_layer_content(frame.content_json, content_json, active_layer_id)
-        else:
-            try:
-                frame.content_json = _merge_active_layer_content(frame.content_json, content_json, active_layer_id)
-            except (TypeError, ValueError):
-                return JsonResponse({'ok': False, 'error': 'Invalid JSON data.'}, status=400)
+        preview_bytes = decoded
+        preview_filename = f'project_{project.pk}_frame_{index}.{extension}'
 
     with transaction.atomic():
+        frame = get_object_or_404(
+            Frame.objects.select_for_update(),
+            project=project,
+            index=index,
+        )
+        active_layer = None
+        if active_layer_id is not None:
+            active_layer = Layer.objects.select_for_update().filter(frame=frame, pk=active_layer_id).first()
+            if active_layer is None:
+                return JsonResponse({'ok': False, 'error': 'Invalid active layer.'}, status=400)
+            if presence_session_id is None or not presence_session_holds_layer_lock(
+                project_id=project.pk,
+                layer_id=active_layer.pk,
+                user_id=request.user.pk,
+                presence_session_id=presence_session_id,
+            ):
+                return JsonResponse({'ok': False, 'error': 'Layer lock required.'}, status=409)
+            if active_layer_revision is not None:
+                try:
+                    expected_layer_revision = int(active_layer_revision)
+                except (TypeError, ValueError):
+                    return JsonResponse({'ok': False, 'error': 'Invalid layer revision.'}, status=400)
+                if expected_layer_revision != active_layer.content_revision:
+                    return JsonResponse({
+                        'ok': False,
+                        'error': 'Layer content is stale. Refresh the frame and try again.',
+                    }, status=409)
+
+        if content_json is not None:
+            if isinstance(content_json, str):
+                frame.content_json = _merge_active_layer_content(frame.content_json, content_json, active_layer_id)
+            else:
+                try:
+                    frame.content_json = _merge_active_layer_content(frame.content_json, content_json, active_layer_id)
+                except (TypeError, ValueError):
+                    return JsonResponse({'ok': False, 'error': 'Invalid JSON data.'}, status=400)
+
+        if preview_bytes is not None:
+            frame.preview_image.save(preview_filename, ContentFile(preview_bytes), save=False)
+
         if active_layer is not None:
             active_layer.content_revision += 1
             active_layer.save(update_fields=['content_revision'])
@@ -926,7 +947,13 @@ def frame_save(request, pk, index):
         response_frame = serialize_frame(frame)
         event_payload = build_frame_content_updated_payload(frame, request.user.pk, client_request_id)
         layer_commit_payload = (
-            build_layer_content_committed_payload(frame, active_layer, request.user.pk, client_request_id)
+            build_layer_content_committed_payload(
+                frame,
+                active_layer,
+                request.user.pk,
+                client_request_id,
+                presence_session_id=presence_session_id,
+            )
             if active_layer is not None else None
         )
         transaction.on_commit(

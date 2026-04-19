@@ -348,6 +348,8 @@ let pendingFrameLockId = null;
 let currentHeldFrameLockId = null;
 let pendingLayerLockId = null;
 let currentHeldLayerLockId = null;
+let pendingLayerLockRequestedAt = 0;
+let pendingLayerLockRequestKey = '';
 let remoteCursorLastSentAt = 0;
 let liveStrokeSequence = 0;
 let liveStrokeLastSentAt = 0;
@@ -366,7 +368,9 @@ const PRESENCE_RECONNECT_BASE_DELAY_MS = 2000;
 const PRESENCE_RECONNECT_MAX_DELAY_MS = 15000;
 const REMOTE_CURSOR_INTERVAL_MS = 60;
 const REMOTE_CURSOR_STALE_MS = 2500;
-const LIVE_STROKE_SEGMENT_INTERVAL_MS = 45;
+const REMOTE_LAYER_PREVIEW_STALE_MS = 2500;
+const LAYER_LOCK_REQUEST_RETRY_MS = 1200;
+const LIVE_STROKE_SEGMENT_INTERVAL_MS = 20;
 
 const PLAYBACK_IDLE = 'idle';
 const PLAYBACK_PLAYING = 'playing';
@@ -571,6 +575,31 @@ function isLockOwnedByCurrentSession(lock) {
         && Number.isFinite(presenceSessionId)
         && lock.presence_session_id === presenceSessionId,
     );
+}
+
+function isLayerLockOwnedByCurrentSession(layerId) {
+    return isLockOwnedByCurrentSession(getLayerLock(layerId));
+}
+
+function getLayerLockRequestKey(frameId, layerId) {
+    const numericFrameId = Number(frameId);
+    const numericLayerId = Number(layerId);
+    if (
+        !Number.isFinite(numericFrameId) || numericFrameId <= 0
+        || !Number.isFinite(numericLayerId) || numericLayerId <= 0
+    ) {
+        return '';
+    }
+    return `${numericFrameId}:${numericLayerId}`;
+}
+
+function clearPendingLayerLockRequest(layerId = null) {
+    const numericLayerId = Number(layerId);
+    if (!Number.isFinite(numericLayerId) || numericLayerId <= 0 || pendingLayerLockId === numericLayerId) {
+        pendingLayerLockId = null;
+        pendingLayerLockRequestedAt = 0;
+        pendingLayerLockRequestKey = '';
+    }
 }
 
 function getCurrentLayerLockOwnerName() {
@@ -894,8 +923,8 @@ function upsertLayerLock(rawLock) {
     const lock = normalizeLayerLock(rawLock);
     if (!lock) return;
     layerLocksById.set(lock.layer_id, lock);
-    if (pendingLayerLockId === lock.layer_id && isLockOwnedByCurrentSession(lock)) {
-        pendingLayerLockId = null;
+    if (pendingLayerLockId === lock.layer_id) {
+        clearPendingLayerLockRequest(lock.layer_id);
     }
     syncCollaborativeEditorUi();
 }
@@ -903,9 +932,7 @@ function upsertLayerLock(rawLock) {
 function removeLayerLock(layerId) {
     const numericLayerId = Number(layerId);
     if (!Number.isFinite(numericLayerId) || numericLayerId <= 0) return;
-    if (pendingLayerLockId === numericLayerId) {
-        pendingLayerLockId = null;
-    }
+    clearPendingLayerLockRequest(numericLayerId);
     if (currentHeldLayerLockId === numericLayerId) {
         currentHeldLayerLockId = null;
     }
@@ -917,6 +944,7 @@ function requestLayerLock(frameId, layerId) {
     const numericFrameId = Number(frameId);
     const numericLayerId = Number(layerId);
     if (!canCurrentUserUseLayerLocks()) {
+        clearPendingLayerLockRequest(numericLayerId);
         syncCollaborativeEditorUi();
         return false;
     }
@@ -924,20 +952,48 @@ function requestLayerLock(frameId, layerId) {
         !Number.isFinite(numericFrameId) || numericFrameId <= 0
         || !Number.isFinite(numericLayerId) || numericLayerId <= 0
     ) {
+        clearPendingLayerLockRequest(numericLayerId);
         syncCollaborativeEditorUi();
         return false;
     }
     if (!isProjectPresenceSocketOpen() || !isCollaborationReady()) {
-        pendingLayerLockId = numericLayerId;
+        clearPendingLayerLockRequest(numericLayerId);
         syncCollaborativeEditorUi();
         return false;
     }
+    const currentLock = getLayerLock(numericLayerId);
+    if (isLockOwnedByCurrentSession(currentLock)) {
+        clearPendingLayerLockRequest(numericLayerId);
+        syncCollaborativeEditorUi();
+        return true;
+    }
+    if (currentLock) {
+        clearPendingLayerLockRequest(numericLayerId);
+        syncCollaborativeEditorUi();
+        return false;
+    }
+    const requestKey = getLayerLockRequestKey(numericFrameId, numericLayerId);
+    const now = Date.now();
+    if (
+        pendingLayerLockId === numericLayerId
+        && pendingLayerLockRequestKey === requestKey
+        && now - pendingLayerLockRequestedAt < LAYER_LOCK_REQUEST_RETRY_MS
+    ) {
+        return false;
+    }
     pendingLayerLockId = numericLayerId;
+    pendingLayerLockRequestedAt = now;
+    pendingLayerLockRequestKey = requestKey;
     syncCollaborativeEditorUi();
-    return sendProjectPresenceMessage('layer_lock_acquire', {
+    const didSend = sendProjectPresenceMessage('layer_lock_acquire', {
         frame_id: numericFrameId,
         layer_id: numericLayerId,
     });
+    if (!didSend) {
+        clearPendingLayerLockRequest(numericLayerId);
+        syncCollaborativeEditorUi();
+    }
+    return didSend;
 }
 
 function releaseLayerLock(layerId) {
@@ -947,9 +1003,7 @@ function releaseLayerLock(layerId) {
     if (!isLockOwnedByCurrentSession(lock) && currentHeldLayerLockId !== numericLayerId) {
         return false;
     }
-    if (pendingLayerLockId === numericLayerId) {
-        pendingLayerLockId = null;
-    }
+    clearPendingLayerLockRequest(numericLayerId);
     if (!isProjectPresenceSocketOpen()) {
         syncCollaborativeEditorUi();
         return false;
@@ -964,7 +1018,7 @@ function syncCurrentLayerLock(previousLayerId = null) {
     }
 
     if (!canCurrentUserUseLayerLocks()) {
-        pendingLayerLockId = null;
+        clearPendingLayerLockRequest();
         syncCollaborativeEditorUi();
         return;
     }
@@ -973,15 +1027,27 @@ function syncCurrentLayerLock(previousLayerId = null) {
         !Number.isFinite(currentFrameId) || currentFrameId <= 0
         || !Number.isFinite(activeLayerId) || activeLayerId <= 0
     ) {
-        pendingLayerLockId = null;
+        clearPendingLayerLockRequest();
+        syncCollaborativeEditorUi();
+        return;
+    }
+
+    if (!isProjectPresenceSocketOpen() || !isCollaborationReady()) {
+        clearPendingLayerLockRequest(activeLayerId);
         syncCollaborativeEditorUi();
         return;
     }
 
     const currentLock = getCurrentLayerLock();
     if (isLockOwnedByCurrentSession(currentLock)) {
-        pendingLayerLockId = null;
+        clearPendingLayerLockRequest(activeLayerId);
         currentHeldLayerLockId = activeLayerId;
+        syncCollaborativeEditorUi();
+        return;
+    }
+
+    if (currentLock) {
+        clearPendingLayerLockRequest(activeLayerId);
         syncCollaborativeEditorUi();
         return;
     }
@@ -1089,8 +1155,133 @@ function applyRemotePreviewStrokeStyles(targetCtx, payload) {
     targetCtx.globalCompositeOperation = payload.tool === TOOL_ERASER ? 'destination-out' : 'source-over';
 }
 
+function getRemotePreviewStampKey(payload) {
+    const strokeSize = Math.max(1, Number(payload.size) || 1);
+    const strokeOpacity = clamp(Number(payload.opacity), 0, 1);
+    const blurValue = Math.max(0, Number(payload.blur) || 0);
+    const strokeColor = payload.tool === TOOL_ERASER ? '#000000' : (payload.color || '#000000');
+    return [payload.tool || '', strokeColor, strokeSize, strokeOpacity, blurValue].join(':');
+}
+
+function ensureRemotePreviewStamp(state, payload) {
+    if (!state) return false;
+    const stampKey = getRemotePreviewStampKey(payload);
+    if (state.stampCanvas && state.stampKey === stampKey) {
+        return true;
+    }
+
+    const strokeSize = Math.max(1, Number(payload.size) || 1);
+    const strokeOpacity = clamp(Number(payload.opacity), 0, 1);
+    const blurValue = Math.max(0, Number(payload.blur) || 0);
+    const radius = Math.max(0.75, strokeSize / 2);
+    const softness = clamp(blurValue / 40, 0, 1);
+    const spacingFactor = softness > 0 ? 0.32 : 0.5;
+    const spacing = Math.max(1, radius * spacingFactor);
+    const stampAlpha = computeBrushStampAlpha(strokeOpacity > 0 ? strokeOpacity : 1, radius, spacing);
+    const size = Math.max(4, Math.ceil(radius * 2 + 6));
+
+    if (!state.stampCanvas) {
+        state.stampCanvas = document.createElement('canvas');
+    }
+    if (state.stampCanvas.width !== size || state.stampCanvas.height !== size) {
+        state.stampCanvas.width = size;
+        state.stampCanvas.height = size;
+        state.stampCtx = state.stampCanvas.getContext('2d');
+    }
+    if (!state.stampCtx) {
+        state.stampCtx = state.stampCanvas.getContext('2d');
+    }
+    if (!state.stampCtx) return false;
+
+    state.stampRadius = radius;
+    state.stampSpacing = spacing;
+    state.stampKey = stampKey;
+
+    clearCanvas(state.stampCtx, state.stampCanvas);
+
+    const center = size / 2;
+    const innerRadius = radius * Math.max(0, 1 - softness * 0.92);
+    const strokeColor = payload.tool === TOOL_ERASER ? '#000000' : (payload.color || '#000000');
+    const colorSolid = toRgbaCss(strokeColor, stampAlpha);
+    const colorTransparent = toRgbaCss(strokeColor, 0);
+
+    state.stampCtx.save();
+    if (softness <= 0.001 || innerRadius >= radius - 0.25) {
+        state.stampCtx.fillStyle = colorSolid;
+        state.stampCtx.beginPath();
+        state.stampCtx.arc(center, center, radius, 0, Math.PI * 2);
+        state.stampCtx.fill();
+    } else {
+        const gradient = state.stampCtx.createRadialGradient(
+            center,
+            center,
+            Math.max(0, innerRadius),
+            center,
+            center,
+            radius,
+        );
+        const innerStop = clamp(innerRadius / radius, 0, 0.98);
+        gradient.addColorStop(0, colorSolid);
+        gradient.addColorStop(innerStop, colorSolid);
+        gradient.addColorStop(1, colorTransparent);
+        state.stampCtx.fillStyle = gradient;
+        state.stampCtx.beginPath();
+        state.stampCtx.arc(center, center, radius, 0, Math.PI * 2);
+        state.stampCtx.fill();
+    }
+    state.stampCtx.restore();
+    return true;
+}
+
+function drawRemotePreviewStampAt(state, payload, x, y) {
+    if (!state || !state.ctx || !state.stampCanvas) return;
+    const offset = state.stampCanvas.width / 2;
+    state.ctx.save();
+    state.ctx.globalCompositeOperation = payload.tool === TOOL_ERASER ? 'destination-out' : 'source-over';
+    state.ctx.drawImage(state.stampCanvas, x - offset, y - offset);
+    state.ctx.restore();
+}
+
+function drawRemotePreviewStampedPoint(state, payload, x, y) {
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+    if (!ensureRemotePreviewStamp(state, payload)) return;
+    drawRemotePreviewStampAt(state, payload, x, y);
+}
+
+function drawRemotePreviewStampedSegment(state, payload, fromX, fromY, toX, toY) {
+    if (
+        !Number.isFinite(fromX) || !Number.isFinite(fromY)
+        || !Number.isFinite(toX) || !Number.isFinite(toY)
+    ) {
+        return;
+    }
+    if (!ensureRemotePreviewStamp(state, payload)) return;
+
+    const dx = toX - fromX;
+    const dy = toY - fromY;
+    const segmentLength = Math.hypot(dx, dy);
+    if (segmentLength <= 0) {
+        drawRemotePreviewStampAt(state, payload, toX, toY);
+        return;
+    }
+
+    const unitX = dx / segmentLength;
+    const unitY = dy / segmentLength;
+    let distance = state.stampSpacing - (state.stampCarryDistance || 0);
+    while (distance <= segmentLength) {
+        drawRemotePreviewStampAt(state, payload, fromX + unitX * distance, fromY + unitY * distance);
+        distance += state.stampSpacing;
+    }
+    state.stampCarryDistance = ((state.stampCarryDistance || 0) + segmentLength) % state.stampSpacing;
+}
+
 function drawRemotePreviewPoint(targetCtx, payload, x, y) {
     if (!targetCtx || !Number.isFinite(x) || !Number.isFinite(y)) return;
+    const previewState = getRemoteLayerPreview(payload.layer_id);
+    if (previewState && (payload.tool === TOOL_BRUSH || payload.tool === TOOL_ERASER)) {
+        drawRemotePreviewStampedPoint(previewState, payload, x, y);
+        return;
+    }
     targetCtx.save();
     applyRemotePreviewStrokeStyles(targetCtx, payload);
     const radius = Math.max(0.5, (Number(payload.size) || 1) / 2);
@@ -1106,6 +1297,11 @@ function drawRemotePreviewSegment(targetCtx, payload, fromX, fromY, toX, toY) {
         || !Number.isFinite(fromX) || !Number.isFinite(fromY)
         || !Number.isFinite(toX) || !Number.isFinite(toY)
     ) {
+        return;
+    }
+    const previewState = getRemoteLayerPreview(payload.layer_id);
+    if (previewState && (payload.tool === TOOL_BRUSH || payload.tool === TOOL_ERASER)) {
+        drawRemotePreviewStampedSegment(previewState, payload, fromX, fromY, toX, toY);
         return;
     }
     targetCtx.save();
@@ -1181,7 +1377,7 @@ function ensureRemoteLayerPreviewState(payload) {
         && state.content_revision === baseRevision,
     );
     if (!canReuseExistingState && baseRevision !== knownRevision) {
-        if (!isLockOwnedByCurrentSession(getCurrentLayerLock())) {
+        if (!isLayerLockOwnedByCurrentSession(layerId)) {
             void handleRemoteFrameContentUpdated(payload);
         }
         return null;
@@ -1205,6 +1401,7 @@ function ensureRemoteLayerPreviewState(payload) {
             return null;
         }
         state.last_seq = 0;
+        state.stampCarryDistance = 0;
     }
 
     remoteLayerPreviewStates.set(layerId, state);
@@ -1222,7 +1419,7 @@ function applyRemoteStrokePayloadToPreview(payload, options = {}) {
         }
         if (state.last_seq > 0 && seq > state.last_seq + 1) {
             clearRemoteLayerPreview(state.layer_id, { render: false });
-            if (!isLockOwnedByCurrentSession(getCurrentLayerLock())) {
+            if (!isLayerLockOwnedByCurrentSession(state.layer_id)) {
                 void handleRemoteFrameContentUpdated(payload);
             }
             return false;
@@ -1231,6 +1428,7 @@ function applyRemoteStrokePayloadToPreview(payload, options = {}) {
     }
 
     if (options.kind === 'begin') {
+        state.stampCarryDistance = 0;
         drawRemotePreviewPoint(state.ctx, payload, Number(payload.x), Number(payload.y));
     } else if (options.kind === 'segment') {
         drawRemotePreviewSegment(
@@ -1270,11 +1468,13 @@ function handleRemoteLayerContentCommitted(payload) {
     if (!Number.isFinite(layerId) || layerId <= 0) return;
     updateLayerContentRevision(layerId, payload.layer_content_revision);
     updateTimelineFramePreview(payload);
-    const previewState = getRemoteLayerPreview(layerId);
-    if (previewState) {
-        previewState.content_revision = normalizeFrameContentRevision(payload.layer_content_revision);
-        previewState.updated_at = Date.now();
+    clearRemoteLayerPreview(layerId, { render: false });
+    const committingPresenceSessionId = Number(payload.presence_session_id);
+    if (Number.isFinite(committingPresenceSessionId) && committingPresenceSessionId > 0) {
+        removeRemoteCursorByPresenceSession(committingPresenceSessionId, { render: false });
     }
+    renderScene();
+    renderOverlay();
 }
 
 async function applyRemoteFrameCreated(payload) {
@@ -1520,7 +1720,7 @@ async function handleProjectPresenceMessage(message) {
         }
         const deniedLayerId = Number(payload.layer_id);
         if (Number.isFinite(deniedLayerId) && deniedLayerId > 0 && pendingLayerLockId === deniedLayerId) {
-            pendingLayerLockId = null;
+            clearPendingLayerLockRequest(deniedLayerId);
         }
         syncCollaborativeEditorUi();
         return;
@@ -1630,7 +1830,7 @@ function connectProjectPresence() {
         stopFrameLockHeartbeat();
         collaborationConnectionReady = false;
         presenceSessionId = null;
-        pendingLayerLockId = null;
+        clearPendingLayerLockRequest();
         currentHeldLayerLockId = null;
         frameLocksById.clear();
         layerLocksById.clear();
@@ -2665,6 +2865,10 @@ function getRemoteLayerPreview(layerId) {
 function getRenderableLayerSourceCanvas(layer) {
     if (!layer) return null;
     const previewState = getRemoteLayerPreview(layer.id);
+    if (previewState && Date.now() - previewState.updated_at > REMOTE_LAYER_PREVIEW_STALE_MS) {
+        clearRemoteLayerPreview(layer.id, { render: false });
+        return layer.bufferCanvas || null;
+    }
     if (
         previewState
         && previewState.frame_id === currentFrameId
@@ -3690,9 +3894,14 @@ function updateCursor() {
 // Drawing helpers
 // =======================
 
+function hasUnsupportedLivePreviewMask() {
+    return Boolean(selection && selection.type === SELECT_MAGIC && selection.maskCanvas);
+}
+
 function canStreamLiveStroke(toolName) {
     return Boolean(
         (toolName === TOOL_BRUSH || toolName === TOOL_ERASER)
+        && !hasUnsupportedLivePreviewMask()
         && isProjectPresenceSocketOpen()
         && isCollaborationReady()
         && Number.isFinite(currentFrameId)
@@ -3856,7 +4065,7 @@ function continueDrawing(x, y) {
     if (!isDrawing) return;
 
     if (activeTool === TOOL_BRUSH) {
-        const target = isShiftPressed ? getSnappedPoint(startX, startY, x, y) : { x, y };
+        const target = { x, y };
         appendBrushStrokePoint(target.x, target.y);
         lastX = target.x;
         lastY = target.y;
@@ -3865,7 +4074,7 @@ function continueDrawing(x, y) {
     }
 
     if (activeTool === TOOL_ERASER) {
-        const target = isShiftPressed ? getSnappedPoint(startX, startY, x, y) : { x, y };
+        const target = { x, y };
         drawStrokeSegment(lastX, lastY, target.x, target.y, activeTool, {
             color: activeStrokeColor,
             opacity: activeStrokeOpacity,
@@ -7472,7 +7681,7 @@ function getRealtimeFrameReference(payload) {
     return { frameId, frameIndex };
 }
 
-function applyFrameDetailToCurrentFrame(detailData) {
+function applyFrameDetailToCurrentFrame(detailData, options = {}) {
     const framePayload = detailData && detailData.frame ? detailData.frame : null;
     if (!framePayload) return;
 
@@ -7482,8 +7691,10 @@ function applyFrameDetailToCurrentFrame(detailData) {
     currentFrameContentJson = framePayload.content_json || '';
     currentFrameUpdatedAt = framePayload.updated_at || '';
     currentFrameContentRevision = normalizeFrameContentRevision(framePayload.content_revision);
-    lastSavedAt = null;
-    hasUnsavedChanges = false;
+    if (!options.preserveLocalState) {
+        lastSavedAt = null;
+        hasUnsavedChanges = false;
+    }
 
     if (Array.isArray(detailData.layers)) {
         mergeLayerList(detailData.layers);
@@ -7515,11 +7726,6 @@ async function handleRemoteFrameContentUpdated(payload) {
         return;
     }
 
-    const currentLock = getCurrentLayerLock();
-    if (isLockOwnedByCurrentSession(currentLock)) {
-        return;
-    }
-
     const detailData = await fetchFrameDetailPayload(frameIndex);
     if (!detailData || !detailData.frame) {
         updateTimelineFramePreview(payload);
@@ -7537,14 +7743,18 @@ async function handleRemoteFrameContentUpdated(payload) {
         return;
     }
 
-    if (isLockOwnedByCurrentSession(getCurrentLayerLock())) {
-        return;
-    }
-
+    const currentLock = getCurrentLayerLock();
+    const preserveLocalLayer = Boolean(currentLock && isLockOwnedByCurrentSession(currentLock));
     clearRemoteLayerPreviewsForFrame(currentFrameId, { render: false });
-    applyFrameDetailToCurrentFrame(detailData);
-    initSaveState();
-    await hydrateSavedFrame();
+    applyFrameDetailToCurrentFrame(detailData, { preserveLocalState: preserveLocalLayer });
+    if (!preserveLocalLayer) {
+        initSaveState();
+    }
+    await hydrateSavedFrame({
+        preserveLayerIds: preserveLocalLayer ? [currentLock.layer_id] : [],
+        preserveActiveLayer: preserveLocalLayer,
+        preserveLocalState: preserveLocalLayer,
+    });
     fillBackgroundLayerIfNeeded();
     prefetchOnionFramesForCurrent();
     requestOnionSkinRender();
@@ -7953,10 +8163,15 @@ function resolveStoredLayerTarget(entry, orderedLayers, usedLayerIds, fallbackIn
     return orderedLayers.find((layer) => !usedLayerIds.has(layer.id)) || null;
 }
 
-async function restoreLayersFromContentPayload(payload, expectedToken) {
+async function restoreLayersFromContentPayload(payload, expectedToken, options = {}) {
     if (!payload || !Array.isArray(payload.layers) || !layers.length) return false;
 
     const orderedLayers = getOrderedLayersForStorage();
+    const preservedLayerIds = new Set(
+        (Array.isArray(options.preserveLayerIds) ? options.preserveLayerIds : [])
+            .map((layerId) => Number(layerId))
+            .filter((layerId) => Number.isFinite(layerId) && layerId > 0),
+    );
     const usedLayerIds = new Set();
     const mappedEntries = payload.layers.map((entry, index) => {
         const layer = resolveStoredLayerTarget(entry, orderedLayers, usedLayerIds, index);
@@ -7983,16 +8198,21 @@ async function restoreLayersFromContentPayload(payload, expectedToken) {
         return false;
     }
 
-    clearAllLayerBuffers();
+    layers.forEach((layer) => {
+        if (preservedLayerIds.has(layer.id)) return;
+        ensureLayerCanvases(layer);
+        if (!layer.bufferCtx || !layer.bufferCanvas) return;
+        clearCanvas(layer.bufferCtx, layer.bufferCanvas);
+    });
     loadedEntries.forEach(({ layer, image }) => {
-        if (!layer || !image) return;
+        if (!layer || !image || preservedLayerIds.has(layer.id)) return;
         ensureLayerCanvases(layer);
         if (!layer.bufferCtx || !layer.bufferCanvas) return;
         layer.bufferCtx.drawImage(image, 0, 0, layer.bufferCanvas.width, layer.bufferCanvas.height);
     });
 
     const restoredActiveLayer = resolveStoredActiveLayer(payload, orderedLayers);
-    if (restoredActiveLayer) {
+    if (restoredActiveLayer && !options.preserveActiveLayer) {
         activeLayerId = restoredActiveLayer.id;
     }
     updateActiveLayerPointers();
@@ -8035,36 +8255,45 @@ function drawImageOnLayer(layer, image, options = {}) {
 }
 
 async function hydrateSavedFrame() {
+    const options = arguments.length > 0 && arguments[0] ? arguments[0] : {};
     if (!canvas || !layers.length) return;
     const expectedToken = ++frameHydrationToken;
 
     const savedAt = parseSavedDate(currentFrameUpdatedAt);
-    if (savedAt) {
+    if (savedAt && !options.preserveLocalState) {
         lastSavedAt = savedAt;
     }
 
     const contentPayload = parseFrameContentPayload(currentFrameContentJson);
     if (contentPayload) {
-        const restored = await restoreLayersFromContentPayload(contentPayload, expectedToken);
+        const restored = await restoreLayersFromContentPayload(contentPayload, expectedToken, options);
         if (expectedToken !== frameHydrationToken) return;
         if (restored) {
-            finalizeHydratedFrameState();
+            if (!options.preserveLocalState) {
+                finalizeHydratedFrameState();
+            }
             return;
         }
     }
 
-    clearAllLayerBuffers();
+    if (!options.preserveLocalState) {
+        clearAllLayerBuffers();
+    } else {
+        return;
+    }
     renderScene();
     renderOverlay();
     syncOverlayPlacement();
 
     if (!currentFramePreviewUrl) {
-        if (lastSavedAt) {
+        if (lastSavedAt && !options.preserveLocalState) {
             setSaveIndicator('saved');
             setSaveStatus('Saved', 'saved');
             updateLastSavedLabel();
         }
-        ensureHistoryBaseline();
+        if (!options.preserveLocalState) {
+            ensureHistoryBaseline();
+        }
         return;
     }
 
@@ -8075,13 +8304,17 @@ async function hydrateSavedFrame() {
         if (backgroundLayer) {
             drawImageOnLayer(backgroundLayer, image);
         }
-        finalizeHydratedFrameState();
+        if (!options.preserveLocalState) {
+            finalizeHydratedFrameState();
+        }
     } catch (error) {
         if (expectedToken !== frameHydrationToken) return;
         console.warn('Could not load the saved frame', error);
-        setSaveIndicator('error');
-        setSaveStatus('Could not load the saved frame.', 'error');
-        ensureHistoryBaseline();
+        if (!options.preserveLocalState) {
+            setSaveIndicator('error');
+            setSaveStatus('Could not load the saved frame.', 'error');
+            ensureHistoryBaseline();
+        }
     }
 }
 
@@ -8118,6 +8351,13 @@ async function saveCurrentFrame(options = {}) {
 
     if (isSaving || isAutosaving) return false;
     if (!hasUnsavedChanges) return true;
+    if (isDrawing) {
+        if (isShapeTool(activeTool)) {
+            commitShape();
+        } else {
+            stopDrawing();
+        }
+    }
 
     const saveUrl = getFrameSaveUrl(currentFrameIndex);
     if (!saveUrl) {

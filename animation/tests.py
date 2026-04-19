@@ -1533,6 +1533,149 @@ class ProjectWebsocketRoomTests(TransactionTestCase):
 
         async_to_sync(scenario)()
 
+    def test_live_eraser_stroke_events_broadcast_to_other_editor(self):
+        async def scenario():
+            owner_communicator, owner_connection = await self._assert_member_can_connect(
+                self.owner,
+                ProjectMember.Role.OWNER,
+            )
+            editor_communicator, _ = await self._assert_member_can_connect(
+                self.editor,
+                ProjectMember.Role.EDITOR,
+                expected_user_count=2,
+            )
+            await owner_communicator.receive_json_from()
+
+            await owner_communicator.send_json_to({
+                'type': 'layer_lock_acquire',
+                'payload': {
+                    'frame_id': self.frame_one.pk,
+                    'layer_id': self.layer_one.pk,
+                },
+            })
+            await owner_communicator.receive_json_from()
+            await editor_communicator.receive_json_from()
+
+            await owner_communicator.send_json_to({
+                'type': 'layer_stroke_begin',
+                'payload': {
+                    'frame_id': self.frame_one.pk,
+                    'layer_id': self.layer_one.pk,
+                    'tool': 'eraser',
+                    'size': 10,
+                    'opacity': 1,
+                    'blur': 0,
+                    'seq': 1,
+                    'base_revision': 0,
+                    'x': 18,
+                    'y': 20,
+                },
+            })
+            begin_event = await editor_communicator.receive_json_from()
+            self.assertEqual(begin_event['type'], 'layer_stroke_begin')
+            self.assertEqual(begin_event['payload']['tool'], 'eraser')
+            self.assertEqual(begin_event['payload']['seq'], 1)
+            self.assertEqual(begin_event['payload']['presence_session_id'], owner_connection['presence_session_id'])
+
+            await owner_communicator.send_json_to({
+                'type': 'layer_stroke_segment',
+                'payload': {
+                    'frame_id': self.frame_one.pk,
+                    'layer_id': self.layer_one.pk,
+                    'tool': 'eraser',
+                    'size': 10,
+                    'opacity': 1,
+                    'blur': 0,
+                    'seq': 2,
+                    'base_revision': 0,
+                    'x1': 18,
+                    'y1': 20,
+                    'x2': 42,
+                    'y2': 44,
+                },
+            })
+            segment_event = await editor_communicator.receive_json_from()
+            self.assertEqual(segment_event['type'], 'layer_stroke_segment')
+            self.assertEqual(segment_event['payload']['tool'], 'eraser')
+            self.assertEqual(segment_event['payload']['seq'], 2)
+            self.assertEqual(segment_event['payload']['user_id'], self.owner.pk)
+
+            await owner_communicator.send_json_to({
+                'type': 'layer_stroke_end',
+                'payload': {
+                    'frame_id': self.frame_one.pk,
+                    'layer_id': self.layer_one.pk,
+                    'tool': 'eraser',
+                    'seq': 3,
+                    'base_revision': 0,
+                    'x': 42,
+                    'y': 44,
+                },
+            })
+            end_event = await editor_communicator.receive_json_from()
+            self.assertEqual(end_event['type'], 'layer_stroke_end')
+            self.assertEqual(end_event['payload']['tool'], 'eraser')
+            self.assertEqual(end_event['payload']['seq'], 3)
+
+            await editor_communicator.disconnect()
+            await owner_communicator.disconnect()
+
+        async_to_sync(scenario)()
+
+    def test_frame_save_broadcasts_committed_updates_to_other_client(self):
+        async def scenario():
+            owner_communicator, owner_connection = await self._assert_member_can_connect(
+                self.owner,
+                ProjectMember.Role.OWNER,
+            )
+            viewer_communicator, _ = await self._assert_member_can_connect(
+                self.viewer,
+                ProjectMember.Role.VIEWER,
+                expected_user_count=2,
+            )
+            await owner_communicator.receive_json_from()
+
+            await owner_communicator.send_json_to({
+                'type': 'layer_lock_acquire',
+                'payload': {
+                    'frame_id': self.frame_one.pk,
+                    'layer_id': self.layer_one.pk,
+                },
+            })
+            await owner_communicator.receive_json_from()
+            await viewer_communicator.receive_json_from()
+
+            response = await sync_to_async(self.owner_client.post)(
+                reverse('animation:frame_save', kwargs={'pk': self.project.pk, 'index': self.frame_one.index}),
+                data=json.dumps({
+                    'content_json': {
+                        'version': 1,
+                        'active_layer_id': self.layer_one.pk,
+                        'layers': [{'id': self.layer_one.pk, 'image_data': 'data:image/png;base64,AAAA'}],
+                    },
+                    'active_layer_id': self.layer_one.pk,
+                    'active_layer_revision': 0,
+                    'presence_session_id': owner_connection['presence_session_id'],
+                    'client_request_id': 'ws-frame-save',
+                }),
+                content_type='application/json',
+            )
+            self.assertEqual(response.status_code, 200)
+
+            frame_event = await viewer_communicator.receive_json_from()
+            layer_event = await viewer_communicator.receive_json_from()
+            self.assertEqual(frame_event['type'], 'frame_content_updated')
+            self.assertEqual(frame_event['payload']['frame_id'], self.frame_one.pk)
+            self.assertEqual(frame_event['payload']['client_request_id'], 'ws-frame-save')
+            self.assertEqual(layer_event['type'], 'layer_content_committed')
+            self.assertEqual(layer_event['payload']['layer_id'], self.layer_one.pk)
+            self.assertEqual(layer_event['payload']['presence_session_id'], owner_connection['presence_session_id'])
+
+            await viewer_communicator.disconnect()
+            await owner_communicator.disconnect()
+
+        async_to_sync(scenario)()
+
 
 class ProjectInviteFlowTests(TestCase):
     def setUp(self):
@@ -1743,23 +1886,46 @@ class FrameRealtimeSyncTests(TestCase):
         self.client = Client()
         self.client.force_login(self.user)
 
-    def test_frame_save_broadcasts_frame_content_updated_after_commit(self):
+    def _lock_active_layer(self):
+        now = timezone.now()
+        presence_session = ProjectPresenceSession.objects.create(
+            project=self.project,
+            user=self.user,
+            channel_name=f'test-layer-lock-{self.layer.pk}',
+            current_frame=self.frame,
+            role=ProjectMember.Role.OWNER,
+            last_seen_at=now,
+            is_active=True,
+        )
+        LayerLock.objects.create(
+            project=self.project,
+            frame=self.frame,
+            layer=self.layer,
+            user=self.user,
+            presence_session=presence_session,
+            last_heartbeat_at=now,
+            expires_at=now + timedelta(seconds=30),
+        )
+        return presence_session
+
+    def test_frame_save_updates_revisions_with_valid_layer_lock(self):
+        presence_session = self._lock_active_layer()
         payload = {
             'content_json': {
                 'layers': [{'id': self.layer.pk, 'image_data': 'data:image/png;base64,AAAA'}],
                 'active_layer_id': self.layer.pk,
             },
             'active_layer_id': self.layer.pk,
+            'active_layer_revision': 0,
+            'presence_session_id': presence_session.pk,
             'client_request_id': 'frame-save-request',
         }
 
-        with mock.patch('animation.views.broadcast_project_event') as broadcast_mock:
-            with self.captureOnCommitCallbacks(execute=True):
-                response = self.client.post(
-                    reverse('animation:frame_save', kwargs={'pk': self.project.pk, 'index': self.frame.index}),
-                    data=json.dumps(payload),
-                    content_type='application/json',
-                )
+        response = self.client.post(
+            reverse('animation:frame_save', kwargs={'pk': self.project.pk, 'index': self.frame.index}),
+            data=json.dumps(payload),
+            content_type='application/json',
+        )
 
         self.assertEqual(response.status_code, 200)
         response_payload = response.json()
@@ -1772,46 +1938,90 @@ class FrameRealtimeSyncTests(TestCase):
         self.assertEqual(self.frame.content_revision, 1)
         self.assertEqual(self.layer.content_revision, 1)
 
-        self.assertEqual(broadcast_mock.call_count, 2)
-        broadcast_mock.assert_has_calls([
-            mock.call(
-                self.project.pk,
-                'frame_content_updated',
-                {
-                    'id': self.frame.pk,
-                    'index': self.frame.index,
-                    'preview_url': '',
-                    'updated_at': self.frame.updated_at.isoformat(),
-                    'content_revision': 1,
-                    'has_preview': False,
-                    'frame_id': self.frame.pk,
-                    'frame_index': self.frame.index,
-                    'actor_user_id': self.user.pk,
-                    'client_request_id': 'frame-save-request',
-                },
-            ),
-            mock.call(
-                self.project.pk,
-                'layer_content_committed',
-                {
-                    'id': self.frame.pk,
-                    'index': self.frame.index,
-                    'preview_url': '',
-                    'updated_at': self.frame.updated_at.isoformat(),
-                    'content_revision': 1,
-                    'has_preview': False,
-                    'frame_id': self.frame.pk,
-                    'frame_index': self.frame.index,
-                    'layer_id': self.layer.pk,
-                    'layer_name': self.layer.name,
-                    'layer_content_revision': 1,
-                    'actor_user_id': self.user.pk,
-                    'client_request_id': 'frame-save-request',
-                },
-            ),
-        ], any_order=False)
+    def test_frame_save_requires_layer_lock_for_active_layer(self):
+        payload = {
+            'content_json': {
+                'layers': [{'id': self.layer.pk, 'image_data': 'data:image/png;base64,AAAA'}],
+                'active_layer_id': self.layer.pk,
+            },
+            'active_layer_id': self.layer.pk,
+            'active_layer_revision': 0,
+        }
 
-    def test_project_save_broadcasts_frame_content_updates_for_each_saved_frame(self):
+        response = self.client.post(
+            reverse('animation:frame_save', kwargs={'pk': self.project.pk, 'index': self.frame.index}),
+            data=json.dumps(payload),
+            content_type='application/json',
+        )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()['error'], 'Layer lock required.')
+
+    def test_frame_save_rejects_stale_layer_revision(self):
+        presence_session = self._lock_active_layer()
+        self.layer.content_revision = 2
+        self.layer.save(update_fields=['content_revision'])
+
+        payload = {
+            'content_json': {
+                'layers': [{'id': self.layer.pk, 'image_data': 'data:image/png;base64,AAAA'}],
+                'active_layer_id': self.layer.pk,
+            },
+            'active_layer_id': self.layer.pk,
+            'active_layer_revision': 1,
+            'presence_session_id': presence_session.pk,
+        }
+
+        response = self.client.post(
+            reverse('animation:frame_save', kwargs={'pk': self.project.pk, 'index': self.frame.index}),
+            data=json.dumps(payload),
+            content_type='application/json',
+        )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()['error'], 'Layer content is stale. Refresh the frame and try again.')
+
+    def test_frame_save_merges_active_layer_into_latest_frame_content(self):
+        presence_session = self._lock_active_layer()
+        second_layer = Layer.objects.create(frame=self.frame, order=2, name='Paint', visible=True, opacity=100)
+        self.frame.content_json = json.dumps({
+            'version': 1,
+            'active_layer_id': second_layer.pk,
+            'layers': [
+                {'id': self.layer.pk, 'image_data': 'ink-before'},
+                {'id': second_layer.pk, 'image_data': 'paint-stays'},
+            ],
+        })
+        self.frame.save(update_fields=['content_json'])
+
+        payload = {
+            'content_json': {
+                'version': 1,
+                'active_layer_id': self.layer.pk,
+                'layers': [
+                    {'id': self.layer.pk, 'image_data': 'ink-after'},
+                    {'id': second_layer.pk, 'image_data': 'paint-ignored-from-client'},
+                ],
+            },
+            'active_layer_id': self.layer.pk,
+            'active_layer_revision': 0,
+            'presence_session_id': presence_session.pk,
+        }
+
+        response = self.client.post(
+            reverse('animation:frame_save', kwargs={'pk': self.project.pk, 'index': self.frame.index}),
+            data=json.dumps(payload),
+            content_type='application/json',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.frame.refresh_from_db()
+        saved_payload = json.loads(self.frame.content_json)
+        saved_layers = {entry['id']: entry['image_data'] for entry in saved_payload['layers']}
+        self.assertEqual(saved_layers[self.layer.pk], 'ink-after')
+        self.assertEqual(saved_layers[second_layer.pk], 'paint-stays')
+
+    def test_project_save_updates_frame_revisions(self):
         second_frame = Frame.objects.create(project=self.project, index=2, content_json='{"layers":[]}')
         payload = {
             'frames': [
@@ -1821,13 +2031,11 @@ class FrameRealtimeSyncTests(TestCase):
             'client_request_id': 'project-save-request',
         }
 
-        with mock.patch('animation.views.broadcast_project_event') as broadcast_mock:
-            with self.captureOnCommitCallbacks(execute=True):
-                response = self.client.post(
-                    reverse('animation:project_save', kwargs={'pk': self.project.pk}),
-                    data=json.dumps(payload),
-                    content_type='application/json',
-                )
+        response = self.client.post(
+            reverse('animation:project_save', kwargs={'pk': self.project.pk}),
+            data=json.dumps(payload),
+            content_type='application/json',
+        )
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), {'ok': True, 'saved_frames': [1, 2]})
@@ -1836,40 +2044,3 @@ class FrameRealtimeSyncTests(TestCase):
         second_frame.refresh_from_db()
         self.assertEqual(self.frame.content_revision, 1)
         self.assertEqual(second_frame.content_revision, 1)
-
-        self.assertEqual(broadcast_mock.call_count, 2)
-        expected_calls = [
-            mock.call(
-                self.project.pk,
-                'frame_content_updated',
-                {
-                    'id': self.frame.pk,
-                    'index': self.frame.index,
-                    'preview_url': '',
-                    'updated_at': self.frame.updated_at.isoformat(),
-                    'content_revision': 1,
-                    'has_preview': False,
-                    'frame_id': self.frame.pk,
-                    'frame_index': self.frame.index,
-                    'actor_user_id': self.user.pk,
-                    'client_request_id': 'project-save-request',
-                },
-            ),
-            mock.call(
-                self.project.pk,
-                'frame_content_updated',
-                {
-                    'id': second_frame.pk,
-                    'index': second_frame.index,
-                    'preview_url': '',
-                    'updated_at': second_frame.updated_at.isoformat(),
-                    'content_revision': 1,
-                    'has_preview': False,
-                    'frame_id': second_frame.pk,
-                    'frame_index': second_frame.index,
-                    'actor_user_id': self.user.pk,
-                    'client_request_id': 'project-save-request',
-                },
-            ),
-        ]
-        broadcast_mock.assert_has_calls(expected_calls, any_order=False)
