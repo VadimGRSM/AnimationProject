@@ -125,6 +125,112 @@ class ExportSmokeTests(TestCase):
                 gif_bytes = b''.join(download.streaming_content)
                 self.assertTrue(gif_bytes.startswith(b'GIF8'))
 
+    def test_export_mp4_and_webm(self):
+        with tempfile.TemporaryDirectory() as tmp_media_root:
+            with override_settings(MEDIA_ROOT=tmp_media_root):
+                user = User.objects.create_user(email="video_export_test@example.com", password="test")
+                project = AnimationProject.objects.create(
+                    owner=user,
+                    title='Video Export Test',
+                    width=64,
+                    height=64,
+                    fps=12,
+                )
+
+                for index, color in enumerate([
+                    (255, 0, 0, 255),
+                    (0, 255, 0, 128),
+                ], start=1):
+                    frame = Frame.objects.create(project=project, index=index)
+                    frame.preview_image.save(
+                        f'project_{project.pk}_video_frame_{index}.png',
+                        ContentFile(_make_png_bytes(size=(64, 64), color=color)),
+                        save=True,
+                    )
+
+                client = Client()
+                client.force_login(user)
+                export_url = reverse('animation:project_export', kwargs={'pk': project.pk})
+
+                def fake_ffmpeg_run(command, check, capture_output):
+                    self.assertTrue(check)
+                    self.assertTrue(capture_output)
+                    output_path = command[-1]
+                    if output_path.endswith('.mp4'):
+                        with open(output_path, 'wb') as f:
+                            f.write(b'fake-mp4')
+                    else:
+                        with open(output_path, 'wb') as f:
+                            f.write(b'fake-webm')
+                    return mock.Mock(returncode=0)
+
+                with mock.patch('animation.views.shutil.which', return_value='ffmpeg'), \
+                        mock.patch('animation.views.subprocess.run', side_effect=fake_ffmpeg_run) as run_mock:
+                    for export_format, expected_bytes in (
+                        ('mp4', b'fake-mp4'),
+                        ('webm', b'fake-webm'),
+                    ):
+                        response = client.post(
+                            export_url,
+                            data=json.dumps({
+                                'format': export_format,
+                                'resolution': 'original',
+                                'fps': 12,
+                            }),
+                            content_type='application/json',
+                        )
+                        self.assertEqual(response.status_code, 200)
+                        payload = response.json()
+                        self.assertTrue(payload.get('ok'))
+                        self.assertEqual(payload['format'], export_format)
+                        self.assertTrue(payload['filename'].endswith(f'.{export_format}'))
+
+                        download = client.get(payload['download_url'])
+                        self.assertEqual(download.status_code, 200)
+                        self.assertEqual(b''.join(download.streaming_content), expected_bytes)
+
+                    commands = [call.args[0] for call in run_mock.call_args_list]
+                    self.assertTrue(any('libx264' in command for command in commands))
+                    self.assertTrue(any('libvpx-vp9' in command for command in commands))
+
+    def test_video_export_requires_ffmpeg(self):
+        with tempfile.TemporaryDirectory() as tmp_media_root:
+            with override_settings(MEDIA_ROOT=tmp_media_root):
+                user = User.objects.create_user(email="missing_ffmpeg_export_test@example.com", password="test")
+                project = AnimationProject.objects.create(
+                    owner=user,
+                    title='Missing ffmpeg test',
+                    width=64,
+                    height=64,
+                    fps=12,
+                )
+                frame = Frame.objects.create(project=project, index=1)
+                frame.preview_image.save(
+                    f'project_{project.pk}_frame_1.png',
+                    ContentFile(_make_png_bytes(size=(64, 64))),
+                    save=True,
+                )
+
+                client = Client()
+                client.force_login(user)
+
+                with mock.patch('animation.views.shutil.which', return_value=None):
+                    response = client.post(
+                        reverse('animation:project_export', kwargs={'pk': project.pk}),
+                        data=json.dumps({
+                            'format': 'mp4',
+                            'resolution': 'original',
+                            'fps': 12,
+                        }),
+                        content_type='application/json',
+                    )
+
+                self.assertEqual(response.status_code, 500)
+                payload = response.json()
+                self.assertFalse(payload['ok'])
+                self.assertEqual(payload['error'], 'export_unavailable')
+                self.assertIn('ffmpeg is not installed', payload['message'])
+
 
 class CollaborationModelsTests(TestCase):
     def setUp(self):

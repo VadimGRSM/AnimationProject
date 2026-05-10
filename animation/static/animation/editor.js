@@ -10341,6 +10341,10 @@ function getSelectedExportFormat() {
     return 'png_zip';
 }
 
+function isTimedExportFormat(format) {
+    return format === 'gif' || format === 'mp4' || format === 'webm';
+}
+
 function syncGifLoopControls() {
     if (!exportGifLoopCountInput) return;
     const isGif = getSelectedExportFormat() === 'gif';
@@ -10357,12 +10361,14 @@ function syncGifLoopControls() {
 }
 
 function updateExportOptionsVisibility() {
-    const isGif = getSelectedExportFormat() === 'gif';
+    const format = getSelectedExportFormat();
+    const isGif = format === 'gif';
+    const isTimed = isTimedExportFormat(format);
     if (exportFpsField) {
-        exportFpsField.hidden = !isGif;
+        exportFpsField.hidden = !isTimed;
     }
     if (exportFpsInput) {
-        exportFpsInput.disabled = !isGif;
+        exportFpsInput.disabled = !isTimed;
     }
     if (exportGifOptions) {
         exportGifOptions.hidden = !isGif;
@@ -10383,7 +10389,7 @@ function openExportModal() {
     resetExportModalUi();
     exportModal.hidden = false;
     syncPopupBackdropState();
-    if (getSelectedExportFormat() === 'gif' && exportFpsInput) {
+    if (isTimedExportFormat(getSelectedExportFormat()) && exportFpsInput) {
         exportFpsInput.focus();
         exportFpsInput.select();
     } else if (exportResolutionSelect) {
@@ -10420,7 +10426,7 @@ async function performProjectExport() {
     const format = getSelectedExportFormat();
     const resolution = exportResolutionSelect ? exportResolutionSelect.value : 'original';
     let fps = projectFps;
-    if (format === 'gif') {
+    if (isTimedExportFormat(format)) {
         const fpsRaw = exportFpsInput ? parseInt(exportFpsInput.value, 10) : projectFps;
         if (!Number.isFinite(fpsRaw) || fpsRaw <= 0) {
             setExportError('Enter a valid FPS value (1-60).');
@@ -10440,6 +10446,10 @@ async function performProjectExport() {
     }
     if (format === 'png_zip' && totalFrames && totalFrames > 2000) {
         setExportError(`Too many frames for export (${totalFrames}). Reduce the frame count.`);
+        return;
+    }
+    if ((format === 'mp4' || format === 'webm') && totalFrames && totalFrames > 2000) {
+        setExportError(`Too many frames for video export (${totalFrames}). Try PNG sequence export instead.`);
         return;
     }
 
@@ -10469,8 +10479,10 @@ async function performProjectExport() {
             format,
             resolution,
         };
-        if (format === 'gif') {
+        if (isTimedExportFormat(format)) {
             payload.fps = fps;
+        }
+        if (format === 'gif') {
             payload.loop_infinite = loopInfinite;
             payload.loop_count = loopCount;
         }

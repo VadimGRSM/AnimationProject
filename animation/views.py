@@ -3,6 +3,9 @@ import io
 import json
 import mimetypes
 import os
+import shutil
+import subprocess
+import tempfile
 import zipfile
 from binascii import Error as BinasciiError
 from email.utils import parseaddr
@@ -35,6 +38,9 @@ MAX_EXPORT_GIF_BYTES = 50 * 1024 * 1024
 MAX_EXPORT_GIF_FRAMES = 250
 MAX_EXPORT_GIF_TOTAL_PIXELS = 200_000_000
 MAX_EXPORT_PNG_ZIP_FRAMES = 2000
+MAX_EXPORT_VIDEO_BYTES = 250 * 1024 * 1024
+MAX_EXPORT_VIDEO_FRAMES = 2000
+MAX_EXPORT_VIDEO_TOTAL_PIXELS = 500_000_000
 EXPORT_TOKEN_MAX_AGE_SECONDS = 60 * 60  # 1 hour
 EXPORT_SIGNING_SALT = 'animstudio.export'
 EXPORT_BASE_DIR = 'exports'
@@ -1229,6 +1235,10 @@ def _get_export_size(project, resolution_key):
     return int(project.width), int(project.height)
 
 
+def _get_even_video_size(width, height):
+    return int(width) + (int(width) % 2), int(height) + (int(height) % 2)
+
+
 def _get_pillow_resample():
     # Pillow 9+: Image.Resampling.LANCZOS; older versions: Image.LANCZOS
     try:
@@ -1288,6 +1298,93 @@ def _fit_to_exact_size(image_rgba, out_size):
     return canvas
 
 
+def _flatten_rgba_to_rgb(image_rgba, background=(255, 255, 255, 255)):
+    try:
+        from PIL import Image  # pylint: disable=import-outside-toplevel
+    except Exception as exc:
+        raise RuntimeError('Pillow is not installed. Install Pillow to export images.') from exc
+
+    canvas = Image.new('RGBA', image_rgba.size, background)
+    canvas.alpha_composite(image_rgba)
+    return canvas.convert('RGB')
+
+
+def _build_video_ffmpeg_command(ffmpeg_path, export_format, input_pattern, fps, abs_path):
+    base_command = [
+        ffmpeg_path,
+        '-y',
+        '-hide_banner',
+        '-loglevel',
+        'error',
+        '-framerate',
+        str(int(fps)),
+        '-i',
+        input_pattern,
+    ]
+    if export_format == 'mp4':
+        return [
+            *base_command,
+            '-vf',
+            'format=yuv420p',
+            '-c:v',
+            'libx264',
+            '-preset',
+            'medium',
+            '-crf',
+            '18',
+            '-movflags',
+            '+faststart',
+            abs_path,
+        ]
+    return [
+        *base_command,
+        '-vf',
+        'format=yuva420p',
+        '-c:v',
+        'libvpx-vp9',
+        '-pix_fmt',
+        'yuva420p',
+        '-auto-alt-ref',
+        '0',
+        '-b:v',
+        '0',
+        '-crf',
+        '31',
+        abs_path,
+    ]
+
+
+def _encode_video_export(frames, source_size, out_size, fps, export_format, abs_dir, abs_path):
+    ffmpeg_path = shutil.which('ffmpeg')
+    if not ffmpeg_path:
+        raise RuntimeError('ffmpeg is not installed. Install ffmpeg to export MP4 or WebM video.')
+
+    digits = max(6, len(str(len(frames))))
+    with tempfile.TemporaryDirectory(prefix='video_export_', dir=abs_dir) as temp_dir:
+        for idx, frame in enumerate(frames, start=1):
+            rgba = _load_frame_rgba(frame, fallback_size=source_size)
+            fitted = _fit_to_exact_size(rgba, out_size)
+            if export_format == 'mp4':
+                image = _flatten_rgba_to_rgb(fitted)
+            else:
+                image = fitted
+            image.save(os.path.join(temp_dir, f'frame_{idx:0{digits}d}.png'), format='PNG')
+
+        input_pattern = os.path.join(temp_dir, f'frame_%0{digits}d.png')
+        command = _build_video_ffmpeg_command(ffmpeg_path, export_format, input_pattern, fps, abs_path)
+        try:
+            subprocess.run(command, check=True, capture_output=True)
+        except subprocess.CalledProcessError as exc:
+            stderr = ''
+            try:
+                stderr = (exc.stderr or b'').decode('utf-8', errors='replace').strip()
+            except Exception:
+                stderr = ''
+            if stderr:
+                raise RuntimeError(f'ffmpeg could not generate the video: {stderr[:400]}') from exc
+            raise RuntimeError('ffmpeg could not generate the video.') from exc
+
+
 def _ensure_export_dir(user_id, project_id):
     rel_dir = os.path.join(EXPORT_BASE_DIR, f'user_{user_id}', f'project_{project_id}')
     abs_dir = os.path.join(settings.MEDIA_ROOT, rel_dir)
@@ -1340,11 +1437,17 @@ def project_export(request, pk):
         export_format = 'png_zip'
     elif export_format in ('gif', 'gif_file'):
         export_format = 'gif'
+    elif export_format in ('mp4', 'mpeg4', 'h264'):
+        export_format = 'mp4'
+    elif export_format in ('webm', 'vp9'):
+        export_format = 'webm'
     else:
         return JsonResponse({'ok': False, 'error': 'invalid_format', 'message': 'Choose an export format.'}, status=400)
 
     resolution_key = _normalize_resolution_key(payload.get('resolution'))
     out_w, out_h = _get_export_size(project, resolution_key)
+    if export_format in {'mp4', 'webm'}:
+        out_w, out_h = _get_even_video_size(out_w, out_h)
 
     frames_qs = project.frames.order_by('index', 'id')
     frames = list(frames_qs)
@@ -1368,13 +1471,24 @@ def project_export(request, pk):
             'limits': {'max_png_zip_frames': MAX_EXPORT_PNG_ZIP_FRAMES},
         }, status=413)
 
-    if export_format == 'gif':
+    if export_format in {'mp4', 'webm'} and total_frames > MAX_EXPORT_VIDEO_FRAMES:
+        return JsonResponse({
+            'ok': False,
+            'error': 'too_many_frames',
+            'message': f'Too many frames for video export ({total_frames}). Try PNG sequence export or reduce the frame count.',
+            'limits': {'max_video_frames': MAX_EXPORT_VIDEO_FRAMES},
+        }, status=413)
+
+    if export_format in {'gif', 'mp4', 'webm'}:
         fps = _parse_int(payload.get('fps'), default_value=int(project.fps), min_value=1, max_value=60)
+    else:
+        fps = None
+
+    if export_format == 'gif':
         loop_infinite = bool(payload.get('loop_infinite', True))
         loop_count = _parse_int(payload.get('loop_count'), default_value=0, min_value=0, max_value=10_000)
         loop_value = 0 if loop_infinite or loop_count == 0 else loop_count
     else:
-        fps = None
         loop_value = None
 
     rel_dir, abs_dir = _ensure_export_dir(request.user.id, project.pk)
@@ -1420,6 +1534,69 @@ def project_export(request, pk):
         return JsonResponse({
             'ok': True,
             'format': 'png_zip',
+            'filename': filename,
+            'download_url': download_url,
+        })
+
+    if export_format in {'mp4', 'webm'}:
+        try:
+            total_pixels = int(out_w) * int(out_h) * int(total_frames)
+        except Exception:
+            total_pixels = 0
+        if total_pixels and total_pixels > MAX_EXPORT_VIDEO_TOTAL_PIXELS:
+            return JsonResponse({
+                'ok': False,
+                'error': 'video_too_large',
+                'message': 'The video is too large to generate. Try reducing the resolution or frame count, or export a PNG sequence instead.',
+                'limits': {'max_total_pixels': MAX_EXPORT_VIDEO_TOTAL_PIXELS},
+            }, status=413)
+
+        extension = 'mp4' if export_format == 'mp4' else 'webm'
+        filename = f'{safe_title}_{out_w}x{out_h}_{fps}fps.{extension}'
+        abs_path = os.path.join(abs_dir, filename)
+        try:
+            _encode_video_export(
+                frames=frames,
+                source_size=source_size,
+                out_size=(out_w, out_h),
+                fps=fps,
+                export_format=export_format,
+                abs_dir=abs_dir,
+                abs_path=abs_path,
+            )
+        except RuntimeError as error:
+            try:
+                if os.path.exists(abs_path):
+                    os.remove(abs_path)
+            except Exception:
+                pass
+            return JsonResponse({'ok': False, 'error': 'export_unavailable', 'message': str(error)}, status=500)
+        except Exception:
+            try:
+                if os.path.exists(abs_path):
+                    os.remove(abs_path)
+            except Exception:
+                pass
+            return JsonResponse({'ok': False, 'error': 'export_failed', 'message': 'Could not generate the video.'}, status=500)
+
+        try:
+            if os.path.getsize(abs_path) > MAX_EXPORT_VIDEO_BYTES:
+                os.remove(abs_path)
+                return JsonResponse({
+                    'ok': False,
+                    'error': 'video_too_large',
+                    'message': 'The video is too large. Try reducing the resolution, FPS, or frame count.',
+                    'limits': {'max_video_bytes': MAX_EXPORT_VIDEO_BYTES},
+                }, status=413)
+        except OSError:
+            return JsonResponse({'ok': False, 'error': 'export_failed', 'message': 'Could not generate the video.'}, status=500)
+
+        rel_path = f'{rel_dir}/{filename}'
+        token = _build_export_token(request.user.id, project.pk, rel_path)
+        download_url = reverse('animation:project_export_download', kwargs={'pk': project.pk, 'token': token})
+        return JsonResponse({
+            'ok': True,
+            'format': export_format,
             'filename': filename,
             'download_url': download_url,
         })
