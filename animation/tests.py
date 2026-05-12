@@ -192,6 +192,8 @@ class ExportSmokeTests(TestCase):
                     commands = [call.args[0] for call in run_mock.call_args_list]
                     self.assertTrue(any('libx264' in command for command in commands))
                     self.assertTrue(any('libvpx-vp9' in command for command in commands))
+                    self.assertTrue(any('fps=30,format=yuv420p' in command for command in commands))
+                    self.assertTrue(any('fps=30,format=yuva420p' in command for command in commands))
 
     def test_video_export_requires_ffmpeg(self):
         with tempfile.TemporaryDirectory() as tmp_media_root:

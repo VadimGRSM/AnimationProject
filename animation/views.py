@@ -41,6 +41,7 @@ MAX_EXPORT_PNG_ZIP_FRAMES = 2000
 MAX_EXPORT_VIDEO_BYTES = 250 * 1024 * 1024
 MAX_EXPORT_VIDEO_FRAMES = 2000
 MAX_EXPORT_VIDEO_TOTAL_PIXELS = 500_000_000
+VIDEO_ENCODE_PLAYBACK_FPS = 30
 EXPORT_TOKEN_MAX_AGE_SECONDS = 60 * 60  # 1 hour
 EXPORT_SIGNING_SALT = 'animstudio.export'
 EXPORT_BASE_DIR = 'exports'
@@ -1310,6 +1311,7 @@ def _flatten_rgba_to_rgb(image_rgba, background=(255, 255, 255, 255)):
 
 
 def _build_video_ffmpeg_command(ffmpeg_path, export_format, input_pattern, fps, abs_path):
+    playback_filter = f'fps={VIDEO_ENCODE_PLAYBACK_FPS}'
     base_command = [
         ffmpeg_path,
         '-y',
@@ -1325,7 +1327,7 @@ def _build_video_ffmpeg_command(ffmpeg_path, export_format, input_pattern, fps, 
         return [
             *base_command,
             '-vf',
-            'format=yuv420p',
+            f'{playback_filter},format=yuv420p',
             '-c:v',
             'libx264',
             '-preset',
@@ -1339,7 +1341,7 @@ def _build_video_ffmpeg_command(ffmpeg_path, export_format, input_pattern, fps, 
     return [
         *base_command,
         '-vf',
-        'format=yuva420p',
+        f'{playback_filter},format=yuva420p',
         '-c:v',
         'libvpx-vp9',
         '-pix_fmt',
