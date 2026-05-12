@@ -3,8 +3,16 @@ from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
+
+def env_bool(name, default=False):
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY", "dev-only-key")
-DEBUG = os.environ.get("DJANGO_DEBUG", "False").lower() == "true"
+DEBUG = env_bool("DJANGO_DEBUG")
 
 ALLOWED_HOSTS = [
     host.strip()
@@ -153,6 +161,12 @@ SOCIALACCOUNT_PROVIDERS = {
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+SECURE_SSL_REDIRECT = env_bool("DJANGO_SECURE_SSL_REDIRECT")
+SESSION_COOKIE_SECURE = env_bool("DJANGO_SESSION_COOKIE_SECURE")
+CSRF_COOKIE_SECURE = env_bool("DJANGO_CSRF_COOKIE_SECURE")
+SECURE_HSTS_SECONDS = int(os.environ.get("DJANGO_SECURE_HSTS_SECONDS", "0") or "0")
+SECURE_HSTS_INCLUDE_SUBDOMAINS = env_bool("DJANGO_SECURE_HSTS_INCLUDE_SUBDOMAINS")
+SECURE_HSTS_PRELOAD = env_bool("DJANGO_SECURE_HSTS_PRELOAD")
 
 LOGGING = {
     "version": 1,
