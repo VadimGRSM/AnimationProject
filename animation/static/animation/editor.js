@@ -93,6 +93,7 @@ const projectCommentInput = document.getElementById('project-comment-input');
 const projectCommentError = document.getElementById('project-comment-error');
 const projectCommentSubmit = document.getElementById('project-comment-submit');
 const projectCommentScopeInputs = document.querySelectorAll('input[name="project-comment-scope"]');
+const commentNotifications = document.getElementById('comment-notifications');
 
 const exportModal = document.getElementById('export-modal');
 const exportModalCloseButton = document.getElementById('export-modal-close');
@@ -355,6 +356,7 @@ let timelineControlsTemporarilyDisabled = false;
 let isUpdatingProjectFps = false;
 const projectPresence = new Map();
 const projectCommentsById = new Map();
+const commentNotificationItems = new Map();
 const frameLocksById = new Map();
 const layerLocksById = new Map();
 const remoteCursorStates = new Map();
@@ -405,6 +407,8 @@ const REMOTE_LAYER_PREVIEW_STALE_MS = 2500;
 const LAYER_LOCK_REQUEST_RETRY_MS = 1200;
 const LIVE_STROKE_SEGMENT_INTERVAL_MS = 45;
 const AUTHORITATIVE_FRAME_REFRESH_DELAY_MS = 75;
+const COMMENT_NOTIFICATION_TTL_MS = 7000;
+const COMMENT_NOTIFICATION_MAX_ITEMS = 3;
 
 const PLAYBACK_IDLE = 'idle';
 const PLAYBACK_PLAYING = 'playing';
@@ -1115,6 +1119,109 @@ function formatProjectCommentTime(value) {
     });
 }
 
+function getProjectCommentScopeLabel(comment) {
+    if (comment && comment.frame_id) {
+        return comment.frame_index ? `Frame ${comment.frame_index}` : 'Frame';
+    }
+    return 'Project';
+}
+
+function shouldShowProjectCommentNotification(comment, payload = {}) {
+    if (!comment || comment.is_resolved) return false;
+    const authorId = Number(comment.author && comment.author.id);
+    const actorUserId = Number(payload.actor_user_id);
+    const currentUserId = Number(presenceCurrentUserId);
+    if (
+        Number.isFinite(currentUserId)
+        && currentUserId > 0
+        && (
+            (Number.isFinite(authorId) && authorId === currentUserId)
+            || (Number.isFinite(actorUserId) && actorUserId === currentUserId)
+        )
+    ) {
+        return false;
+    }
+    if (!comment.frame_id) return true;
+    return Number(comment.frame_id) === Number(currentFrameId);
+}
+
+function removeProjectCommentNotification(commentId) {
+    const id = Number(commentId);
+    if (!Number.isFinite(id) || id <= 0) return;
+    const item = commentNotificationItems.get(id);
+    if (item && item.timerId) {
+        window.clearTimeout(item.timerId);
+    }
+    commentNotificationItems.delete(id);
+    renderProjectCommentNotifications();
+}
+
+function renderProjectCommentNotifications() {
+    if (!commentNotifications) return;
+    commentNotifications.innerHTML = '';
+    const notifications = Array.from(commentNotificationItems.values()).slice(-COMMENT_NOTIFICATION_MAX_ITEMS);
+    commentNotifications.hidden = notifications.length === 0;
+
+    notifications.forEach(({ comment }) => {
+        const item = document.createElement('article');
+        item.className = 'comment-notification';
+        item.dataset.commentId = String(comment.id);
+
+        const avatar = document.createElement('span');
+        avatar.className = 'comment-notification__avatar';
+        avatar.setAttribute('aria-hidden', 'true');
+        if (comment.author.avatar_url) {
+            const avatarImage = document.createElement('img');
+            avatarImage.src = comment.author.avatar_url;
+            avatarImage.alt = '';
+            avatar.appendChild(avatarImage);
+        } else {
+            avatar.textContent = comment.author.avatar_initial || getPresenceAvatarInitial(comment.author.display_name);
+        }
+        item.appendChild(avatar);
+
+        const bubble = document.createElement('div');
+        bubble.className = 'comment-notification__bubble';
+
+        const head = document.createElement('div');
+        head.className = 'comment-notification__head';
+
+        const author = document.createElement('strong');
+        author.className = 'comment-notification__author';
+        author.textContent = comment.author.display_name;
+        head.appendChild(author);
+
+        const scope = document.createElement('span');
+        scope.className = 'comment-notification__scope';
+        scope.textContent = getProjectCommentScopeLabel(comment);
+        head.appendChild(scope);
+
+        bubble.appendChild(head);
+
+        const body = document.createElement('p');
+        body.className = 'comment-notification__body';
+        body.textContent = comment.body;
+        bubble.appendChild(body);
+
+        item.appendChild(bubble);
+        commentNotifications.appendChild(item);
+    });
+}
+
+function showProjectCommentNotification(comment, payload = {}) {
+    if (!shouldShowProjectCommentNotification(comment, payload)) return;
+    removeProjectCommentNotification(comment.id);
+    const timerId = window.setTimeout(() => {
+        removeProjectCommentNotification(comment.id);
+    }, COMMENT_NOTIFICATION_TTL_MS);
+    commentNotificationItems.set(comment.id, { comment, timerId });
+    while (commentNotificationItems.size > COMMENT_NOTIFICATION_MAX_ITEMS) {
+        const oldestId = commentNotificationItems.keys().next().value;
+        removeProjectCommentNotification(oldestId);
+    }
+    renderProjectCommentNotifications();
+}
+
 function renderProjectComments() {
     if (!projectCommentsList) return;
     projectCommentsList.innerHTML = '';
@@ -1234,6 +1341,7 @@ function removeProjectComment(commentId) {
     const id = Number(commentId);
     if (!Number.isFinite(id) || id <= 0) return;
     projectCommentsById.delete(id);
+    removeProjectCommentNotification(id);
     renderProjectComments();
 }
 
@@ -2295,7 +2403,17 @@ async function handleProjectPresenceMessage(message) {
         return;
     }
 
-    if (message.type === 'project_comment_created' || message.type === 'project_comment_resolved') {
+    if (message.type === 'project_comment_created') {
+        const comment = normalizeProjectComment(payload.comment);
+        if (comment) {
+            projectCommentsById.set(comment.id, comment);
+            showProjectCommentNotification(comment, payload);
+            renderProjectComments();
+        }
+        return;
+    }
+
+    if (message.type === 'project_comment_resolved') {
         upsertProjectComment(payload.comment);
         return;
     }
