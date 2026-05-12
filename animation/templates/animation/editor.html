@@ -71,6 +71,7 @@
      data-can-manage-members="{% if can_manage_members %}true{% else %}false{% endif %}"
      data-project-update-url="{% url 'animation:project_update' project.pk %}"
      data-project-export-url="{% url 'animation:project_export' project.pk %}"
+     data-project-comments-url="{% url 'animation:project_comments' project.pk %}"
      data-frames-list-url="{% url 'animation:frames_list' project.pk %}"
      data-frame-detail-url-template="{% url 'animation:frame_detail' project.pk 0 %}"
      data-frame-create-url="{% url 'animation:frame_create' project.pk %}"
@@ -440,6 +441,52 @@
                     </div>
                     <ul class="layers-list" id="layers-list"></ul>
                     <p class="layers-empty" id="layers-empty" hidden>No layers found</p>
+                </aside>
+
+                <aside class="discussion-panel" aria-label="Project discussion">
+                    <div class="editor-section-heading">
+                        <div>
+                            <p class="editor-section-heading__eyebrow">Discussion</p>
+                            <h3 class="discussion-panel__title">Comments</h3>
+                        </div>
+                    </div>
+
+                    <div class="discussion-filter"
+                         role="radiogroup"
+                         aria-label="Comment scope">
+                        <label class="discussion-filter__option">
+                            <input type="radio"
+                                   name="project-comment-scope"
+                                   value="project"
+                                   checked>
+                            <span>Project</span>
+                        </label>
+                        <label class="discussion-filter__option">
+                            <input type="radio"
+                                   name="project-comment-scope"
+                                   value="frame">
+                            <span>Current frame</span>
+                        </label>
+                    </div>
+
+                    <ul class="project-comments-list" id="project-comments-list"></ul>
+                    <p class="project-comments-empty" id="project-comments-empty">No comments yet</p>
+
+                    <form class="project-comment-form" id="project-comment-form">
+                        <label class="project-comment-form__field">
+                            <span>Message</span>
+                            <textarea id="project-comment-input"
+                                      rows="3"
+                                      maxlength="5000"
+                                      placeholder="Add a note or feedback"></textarea>
+                        </label>
+                        <p class="form-error" id="project-comment-error" role="alert" hidden></p>
+                        <button type="submit"
+                                class="tool-button tool-button--small"
+                                id="project-comment-submit">
+                            Send
+                        </button>
+                    </form>
                 </aside>
             </div>
         </aside>

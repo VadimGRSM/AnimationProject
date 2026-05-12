@@ -20,6 +20,7 @@ from django.db.models import Max, Prefetch
 from django.http import JsonResponse, FileResponse, Http404, HttpResponse
 from django.shortcuts import render, redirect, get_object_or_404
 from django.urls import reverse
+from django.utils import timezone
 from django.contrib.auth.decorators import login_required
 from django.views.decorators.http import require_POST, require_http_methods
 from .access import (
@@ -29,7 +30,7 @@ from .access import (
     get_editable_project_or_404,
     get_manageable_project_or_404,
 )
-from .models import AnimationProject, Frame, Layer, ProjectMember
+from .models import AnimationProject, Frame, Layer, ProjectComment, ProjectMember
 from .locks import presence_session_holds_layer_lock
 from .realtime import broadcast_project_event
 
@@ -42,6 +43,7 @@ MAX_EXPORT_VIDEO_BYTES = 250 * 1024 * 1024
 MAX_EXPORT_VIDEO_FRAMES = 2000
 MAX_EXPORT_VIDEO_TOTAL_PIXELS = 500_000_000
 VIDEO_ENCODE_PLAYBACK_FPS = 30
+MAX_PROJECT_COMMENT_BODY_LENGTH = 5000
 EXPORT_TOKEN_MAX_AGE_SECONDS = 60 * 60  # 1 hour
 EXPORT_SIGNING_SALT = 'animstudio.export'
 EXPORT_BASE_DIR = 'exports'
@@ -113,6 +115,43 @@ def serialize_frame(frame):
         'updated_at': frame.updated_at.isoformat() if frame.updated_at else '',
         'content_revision': frame.content_revision,
         'has_preview': bool(preview_url),
+    }
+
+
+def serialize_project_comment(comment, current_user=None, membership=None):
+    author = comment.author
+    frame = comment.frame
+    can_delete = False
+    can_resolve = False
+    if current_user and getattr(current_user, 'is_authenticated', False):
+        can_delete = comment.author_id == current_user.pk or (
+            membership is not None and membership.can_manage_members()
+        )
+        can_resolve = membership is not None and membership.can_edit()
+
+    resolved_by = comment.resolved_by
+    return {
+        'id': comment.pk,
+        'project_id': comment.project_id,
+        'frame_id': comment.frame_id,
+        'frame_index': frame.index if frame is not None else None,
+        'body': comment.body,
+        'created_at': comment.created_at.isoformat() if comment.created_at else '',
+        'updated_at': comment.updated_at.isoformat() if comment.updated_at else '',
+        'is_resolved': comment.is_resolved,
+        'resolved_at': comment.resolved_at.isoformat() if comment.resolved_at else '',
+        'resolved_by': {
+            'id': resolved_by.pk,
+            'display_name': resolved_by.display_name or resolved_by.email,
+        } if resolved_by is not None else None,
+        'author': {
+            'id': author.pk,
+            'display_name': author.display_name or author.email,
+            'email': author.email,
+            'avatar_url': author.avatar_url,
+        },
+        'can_delete': can_delete,
+        'can_resolve': can_resolve,
     }
 
 
@@ -646,6 +685,154 @@ def project_update(request, pk):
             'fps': project.fps,
             'updated_at': project.updated_at.isoformat() if project.updated_at else '',
         },
+    })
+
+
+@login_required
+@require_http_methods(["GET", "POST"])
+def project_comments(request, pk):
+    project = get_accessible_project_or_404(request.user, pk)
+    membership = get_project_membership(request.user, project)
+
+    if request.method == 'GET':
+        comments = ProjectComment.objects.filter(project=project).select_related(
+            'author',
+            'frame',
+            'resolved_by',
+        )
+        return JsonResponse({
+            'ok': True,
+            'comments': [
+                serialize_project_comment(comment, request.user, membership)
+                for comment in comments
+            ],
+        })
+
+    try:
+        payload = json.loads(request.body.decode('utf-8')) if request.body else {}
+    except json.JSONDecodeError:
+        return JsonResponse({'ok': False, 'error': 'invalid_json'}, status=400)
+
+    if not isinstance(payload, dict):
+        return JsonResponse({'ok': False, 'error': 'invalid_payload'}, status=400)
+
+    body = (payload.get('body') or '').strip()
+    if not body:
+        return JsonResponse({'ok': False, 'error': 'empty_body'}, status=400)
+    if len(body) > MAX_PROJECT_COMMENT_BODY_LENGTH:
+        return JsonResponse({'ok': False, 'error': 'body_too_long'}, status=400)
+
+    frame = None
+    frame_id = payload.get('frame_id')
+    if frame_id not in (None, ''):
+        try:
+            normalized_frame_id = int(frame_id)
+        except (TypeError, ValueError):
+            return JsonResponse({'ok': False, 'error': 'invalid_frame'}, status=400)
+        frame = Frame.objects.filter(project=project, pk=normalized_frame_id).first()
+        if frame is None:
+            return JsonResponse({'ok': False, 'error': 'invalid_frame'}, status=400)
+
+    client_request_id = normalize_client_request_id(payload.get('client_request_id'))
+    comment = ProjectComment.objects.create(
+        project=project,
+        frame=frame,
+        author=request.user,
+        body=body,
+    )
+    comment_payload = serialize_project_comment(comment, request.user, membership)
+    transaction.on_commit(
+        lambda project_id=project.pk, event_payload={
+            'comment': comment_payload,
+            'actor_user_id': request.user.pk,
+            'client_request_id': client_request_id,
+        }: broadcast_project_event(project_id, 'project_comment_created', event_payload)
+    )
+    return JsonResponse({
+        'ok': True,
+        'comment': comment_payload,
+    })
+
+
+@login_required
+@require_POST
+def project_comment_resolve(request, pk, comment_id):
+    project = get_accessible_project_or_404(request.user, pk)
+    membership = get_project_membership(request.user, project)
+    if membership is None or not membership.can_edit():
+        return JsonResponse({'ok': False, 'error': 'permission_denied'}, status=403)
+
+    comment = get_object_or_404(
+        ProjectComment.objects.select_related('author', 'frame', 'resolved_by'),
+        project=project,
+        pk=comment_id,
+    )
+
+    try:
+        payload = json.loads(request.body.decode('utf-8')) if request.body else {}
+    except json.JSONDecodeError:
+        return JsonResponse({'ok': False, 'error': 'invalid_json'}, status=400)
+
+    if not isinstance(payload, dict):
+        return JsonResponse({'ok': False, 'error': 'invalid_payload'}, status=400)
+
+    next_resolved = bool(payload.get('is_resolved', True))
+    client_request_id = normalize_client_request_id(payload.get('client_request_id'))
+    if next_resolved:
+        comment.is_resolved = True
+        comment.resolved_at = timezone.now()
+        comment.resolved_by = request.user
+    else:
+        comment.is_resolved = False
+        comment.resolved_at = None
+        comment.resolved_by = None
+    comment.save(update_fields=['is_resolved', 'resolved_at', 'resolved_by', 'updated_at'])
+
+    comment_payload = serialize_project_comment(comment, request.user, membership)
+    transaction.on_commit(
+        lambda project_id=project.pk, event_payload={
+            'comment': comment_payload,
+            'actor_user_id': request.user.pk,
+            'client_request_id': client_request_id,
+        }: broadcast_project_event(project_id, 'project_comment_resolved', event_payload)
+    )
+    return JsonResponse({
+        'ok': True,
+        'comment': comment_payload,
+    })
+
+
+@login_required
+@require_POST
+def project_comment_delete(request, pk, comment_id):
+    project = get_accessible_project_or_404(request.user, pk)
+    membership = get_project_membership(request.user, project)
+    comment = get_object_or_404(
+        ProjectComment.objects.select_related('author', 'frame'),
+        project=project,
+        pk=comment_id,
+    )
+    if comment.author_id != request.user.pk and (membership is None or not membership.can_manage_members()):
+        return JsonResponse({'ok': False, 'error': 'permission_denied'}, status=403)
+
+    try:
+        payload = json.loads(request.body.decode('utf-8')) if request.body else {}
+    except json.JSONDecodeError:
+        payload = {}
+    client_request_id = normalize_client_request_id(payload.get('client_request_id') if isinstance(payload, dict) else '')
+    comment_payload = serialize_project_comment(comment, request.user, membership)
+    comment.delete()
+    transaction.on_commit(
+        lambda project_id=project.pk, event_payload={
+            'comment_id': comment_id,
+            'comment': comment_payload,
+            'actor_user_id': request.user.pk,
+            'client_request_id': client_request_id,
+        }: broadcast_project_event(project_id, 'project_comment_deleted', event_payload)
+    )
+    return JsonResponse({
+        'ok': True,
+        'comment_id': comment_id,
     })
 
 

@@ -80,6 +80,13 @@ const projectPresenceList = document.getElementById('project-presence-list');
 const projectPresenceEmpty = document.getElementById('project-presence-empty');
 const frameLockStatus = document.getElementById('frame-lock-status');
 const frameLockStatusText = document.getElementById('frame-lock-status-text');
+const projectCommentsList = document.getElementById('project-comments-list');
+const projectCommentsEmpty = document.getElementById('project-comments-empty');
+const projectCommentForm = document.getElementById('project-comment-form');
+const projectCommentInput = document.getElementById('project-comment-input');
+const projectCommentError = document.getElementById('project-comment-error');
+const projectCommentSubmit = document.getElementById('project-comment-submit');
+const projectCommentScopeInputs = document.querySelectorAll('input[name="project-comment-scope"]');
 
 const exportModal = document.getElementById('export-modal');
 const exportModalCloseButton = document.getElementById('export-modal-close');
@@ -147,6 +154,7 @@ const playbackLoopToggle = document.getElementById('playback-loop-toggle');
 const playbackFpsInput = document.getElementById('playback-fps-input');
 
 const projectUpdateUrl = (editorRoot && editorRoot.dataset.projectUpdateUrl) || '';
+const projectCommentsUrl = (editorRoot && editorRoot.dataset.projectCommentsUrl) || '';
 const projectExportUrl = (editorRoot && editorRoot.dataset.projectExportUrl)
     || window.ANIM_PROJECT_EXPORT_URL
     || '';
@@ -332,6 +340,7 @@ let isExporting = false;
 let timelineControlsTemporarilyDisabled = false;
 let isUpdatingProjectFps = false;
 const projectPresence = new Map();
+const projectCommentsById = new Map();
 const frameLocksById = new Map();
 const layerLocksById = new Map();
 const remoteCursorStates = new Map();
@@ -341,6 +350,8 @@ let presenceSocket = null;
 let presenceCurrentUserId = null;
 let presenceSessionId = null;
 let collaborationConnectionReady = false;
+let projectCommentsLoading = false;
+let projectCommentSubmitting = false;
 let presencePingTimerId = null;
 let frameLockHeartbeatTimerId = null;
 let presenceReconnectTimerId = null;
@@ -988,6 +999,359 @@ function shouldIgnoreProjectRealtimeEvent(payload) {
         return false;
     }
     return true;
+}
+
+function getProjectCommentResolveUrl(commentId) {
+    if (!projectCommentsUrl || !commentId) return '';
+    return `${projectCommentsUrl}${commentId}/resolve/`;
+}
+
+function getProjectCommentDeleteUrl(commentId) {
+    if (!projectCommentsUrl || !commentId) return '';
+    return `${projectCommentsUrl}${commentId}/delete/`;
+}
+
+function getSelectedProjectCommentScope() {
+    if (projectCommentScopeInputs && projectCommentScopeInputs.length) {
+        for (const input of projectCommentScopeInputs) {
+            if (input && input.checked) {
+                return input.value === 'frame' ? 'frame' : 'project';
+            }
+        }
+    }
+    return 'project';
+}
+
+function setProjectCommentError(message) {
+    if (!projectCommentError) return;
+    const text = typeof message === 'string' ? message.trim() : '';
+    projectCommentError.textContent = text;
+    projectCommentError.hidden = !text;
+}
+
+function setProjectCommentSubmitting(isSubmitting) {
+    projectCommentSubmitting = Boolean(isSubmitting);
+    if (projectCommentSubmit) {
+        projectCommentSubmit.disabled = projectCommentSubmitting;
+    }
+    if (projectCommentInput) {
+        projectCommentInput.disabled = projectCommentSubmitting;
+    }
+}
+
+function normalizeProjectComment(rawComment) {
+    if (!rawComment || typeof rawComment !== 'object') return null;
+    const id = Number(rawComment.id);
+    if (!Number.isFinite(id) || id <= 0) return null;
+    const author = rawComment.author && typeof rawComment.author === 'object' ? rawComment.author : {};
+    const authorId = Number(author.id);
+    const frameId = Number(rawComment.frame_id);
+    const frameIndex = Number(rawComment.frame_index);
+    const body = typeof rawComment.body === 'string' ? rawComment.body : '';
+    const canDelete = projectCanManageMembers
+        || (Number.isFinite(presenceCurrentUserId) && presenceCurrentUserId > 0 && authorId === presenceCurrentUserId)
+        || (!Number.isFinite(presenceCurrentUserId) && Boolean(rawComment.can_delete));
+    return {
+        id,
+        project_id: Number(rawComment.project_id) || null,
+        frame_id: Number.isFinite(frameId) && frameId > 0 ? frameId : null,
+        frame_index: Number.isFinite(frameIndex) && frameIndex > 0 ? frameIndex : null,
+        body,
+        created_at: rawComment.created_at || '',
+        updated_at: rawComment.updated_at || '',
+        is_resolved: Boolean(rawComment.is_resolved),
+        resolved_at: rawComment.resolved_at || '',
+        author: {
+            id: Number.isFinite(authorId) && authorId > 0 ? authorId : null,
+            display_name: author.display_name || author.email || 'Unknown',
+            avatar_url: author.avatar_url || '',
+        },
+        can_delete: canDelete,
+        can_resolve: projectCanEdit,
+    };
+}
+
+function sortProjectComments(comments) {
+    return comments.sort((a, b) => {
+        const aTime = Date.parse(a.created_at || '') || 0;
+        const bTime = Date.parse(b.created_at || '') || 0;
+        if (aTime !== bTime) return aTime - bTime;
+        return a.id - b.id;
+    });
+}
+
+function getVisibleProjectComments() {
+    const scope = getSelectedProjectCommentScope();
+    const comments = Array.from(projectCommentsById.values());
+    if (scope === 'frame') {
+        return sortProjectComments(comments.filter((comment) => comment.frame_id === currentFrameId));
+    }
+    return sortProjectComments(comments.filter((comment) => !comment.frame_id));
+}
+
+function formatProjectCommentTime(value) {
+    const date = value ? new Date(value) : null;
+    if (!date || Number.isNaN(date.getTime())) return '';
+    return date.toLocaleString([], {
+        month: 'short',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+    });
+}
+
+function renderProjectComments() {
+    if (!projectCommentsList) return;
+    projectCommentsList.innerHTML = '';
+    const comments = getVisibleProjectComments();
+    if (projectCommentsEmpty) {
+        if (projectCommentsLoading) {
+            projectCommentsEmpty.textContent = 'Loading comments...';
+        } else if (getSelectedProjectCommentScope() === 'frame') {
+            projectCommentsEmpty.textContent = 'No comments for this frame yet';
+        } else {
+            projectCommentsEmpty.textContent = 'No project comments yet';
+        }
+        projectCommentsEmpty.hidden = comments.length > 0;
+    }
+
+    comments.forEach((comment) => {
+        const item = document.createElement('li');
+        item.className = 'project-comment';
+        if (comment.is_resolved) {
+            item.classList.add('project-comment--resolved');
+        }
+        item.dataset.commentId = String(comment.id);
+
+        const head = document.createElement('div');
+        head.className = 'project-comment__head';
+
+        const author = document.createElement('strong');
+        author.className = 'project-comment__author';
+        author.textContent = comment.author.display_name;
+        head.appendChild(author);
+
+        const meta = document.createElement('span');
+        meta.className = 'project-comment__meta';
+        const metaParts = [];
+        if (comment.frame_index) {
+            metaParts.push(`Frame ${comment.frame_index}`);
+        }
+        const timeText = formatProjectCommentTime(comment.created_at);
+        if (timeText) {
+            metaParts.push(timeText);
+        }
+        if (comment.is_resolved) {
+            metaParts.push('Resolved');
+        }
+        meta.textContent = metaParts.join(' В· ');
+        head.appendChild(meta);
+        item.appendChild(head);
+
+        const body = document.createElement('p');
+        body.className = 'project-comment__body';
+        body.textContent = comment.body;
+        item.appendChild(body);
+
+        const actions = document.createElement('div');
+        actions.className = 'project-comment__actions';
+        if (comment.can_resolve) {
+            const resolveButton = document.createElement('button');
+            resolveButton.type = 'button';
+            resolveButton.className = 'project-comment__action';
+            resolveButton.dataset.commentAction = 'resolve';
+            resolveButton.textContent = comment.is_resolved ? 'Reopen' : 'Resolve';
+            actions.appendChild(resolveButton);
+        }
+        if (comment.can_delete) {
+            const deleteButton = document.createElement('button');
+            deleteButton.type = 'button';
+            deleteButton.className = 'project-comment__action project-comment__action--danger';
+            deleteButton.dataset.commentAction = 'delete';
+            deleteButton.textContent = 'Delete';
+            actions.appendChild(deleteButton);
+        }
+        if (actions.childElementCount > 0) {
+            item.appendChild(actions);
+        }
+
+        projectCommentsList.appendChild(item);
+    });
+}
+
+async function loadProjectComments() {
+    if (!projectCommentsUrl || projectCommentsLoading) return;
+    projectCommentsLoading = true;
+    renderProjectComments();
+    try {
+        const response = await fetch(projectCommentsUrl, { credentials: 'same-origin' });
+        const data = await response.json();
+        if (!response.ok || !data || !data.ok) {
+            throw new Error('Could not load project comments.');
+        }
+        projectCommentsById.clear();
+        (Array.isArray(data.comments) ? data.comments : []).forEach((rawComment) => {
+            const comment = normalizeProjectComment(rawComment);
+            if (comment) {
+                projectCommentsById.set(comment.id, comment);
+            }
+        });
+    } catch (error) {
+        console.error('Project comments loading error', error);
+        setProjectCommentError('Could not load comments.');
+    } finally {
+        projectCommentsLoading = false;
+        renderProjectComments();
+    }
+}
+
+function upsertProjectComment(rawComment) {
+    const comment = normalizeProjectComment(rawComment);
+    if (!comment) return;
+    projectCommentsById.set(comment.id, comment);
+    renderProjectComments();
+}
+
+function removeProjectComment(commentId) {
+    const id = Number(commentId);
+    if (!Number.isFinite(id) || id <= 0) return;
+    projectCommentsById.delete(id);
+    renderProjectComments();
+}
+
+async function submitProjectComment(event) {
+    if (event) {
+        event.preventDefault();
+    }
+    if (!projectCommentsUrl || projectCommentSubmitting) return;
+    const body = projectCommentInput ? projectCommentInput.value.trim() : '';
+    if (!body) {
+        setProjectCommentError('Write a comment first.');
+        return;
+    }
+    const scope = getSelectedProjectCommentScope();
+    if (scope === 'frame' && (!Number.isFinite(currentFrameId) || currentFrameId <= 0)) {
+        setProjectCommentError('Could not identify the current frame.');
+        return;
+    }
+    const payload = {
+        body,
+        frame_id: scope === 'frame' && Number.isFinite(currentFrameId) && currentFrameId > 0 ? currentFrameId : null,
+        client_request_id: createProjectEventRequestId(),
+    };
+    rememberLocalProjectEventRequest(payload.client_request_id);
+    setProjectCommentSubmitting(true);
+    setProjectCommentError('');
+    try {
+        const response = await fetch(projectCommentsUrl, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRFToken': getCsrfToken(),
+            },
+            credentials: 'same-origin',
+            body: JSON.stringify(payload),
+        });
+        const data = await response.json();
+        if (!response.ok || !data || !data.ok) {
+            throw new Error((data && (data.message || data.error)) || 'Could not send comment.');
+        }
+        if (projectCommentInput) {
+            projectCommentInput.value = '';
+        }
+        upsertProjectComment(data.comment);
+    } catch (error) {
+        console.error('Project comment submit error', error);
+        setProjectCommentError(error instanceof Error && error.message ? error.message : 'Could not send comment.');
+    } finally {
+        setProjectCommentSubmitting(false);
+    }
+}
+
+async function updateProjectCommentResolved(commentId, isResolved) {
+    const url = getProjectCommentResolveUrl(commentId);
+    if (!url) return;
+    const clientRequestId = createProjectEventRequestId();
+    rememberLocalProjectEventRequest(clientRequestId);
+    try {
+        const response = await fetch(url, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRFToken': getCsrfToken(),
+            },
+            credentials: 'same-origin',
+            body: JSON.stringify({
+                is_resolved: isResolved,
+                client_request_id: clientRequestId,
+            }),
+        });
+        const data = await response.json();
+        if (!response.ok || !data || !data.ok) {
+            throw new Error((data && (data.message || data.error)) || 'Could not update comment.');
+        }
+        upsertProjectComment(data.comment);
+    } catch (error) {
+        console.error('Project comment resolve error', error);
+        setProjectCommentError(error instanceof Error && error.message ? error.message : 'Could not update comment.');
+    }
+}
+
+async function deleteProjectComment(commentId) {
+    const url = getProjectCommentDeleteUrl(commentId);
+    if (!url) return;
+    const clientRequestId = createProjectEventRequestId();
+    rememberLocalProjectEventRequest(clientRequestId);
+    try {
+        const response = await fetch(url, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRFToken': getCsrfToken(),
+            },
+            credentials: 'same-origin',
+            body: JSON.stringify({ client_request_id: clientRequestId }),
+        });
+        const data = await response.json();
+        if (!response.ok || !data || !data.ok) {
+            throw new Error((data && (data.message || data.error)) || 'Could not delete comment.');
+        }
+        removeProjectComment(data.comment_id || commentId);
+    } catch (error) {
+        console.error('Project comment delete error', error);
+        setProjectCommentError(error instanceof Error && error.message ? error.message : 'Could not delete comment.');
+    }
+}
+
+function bindProjectCommentEvents() {
+    if (projectCommentForm) {
+        projectCommentForm.addEventListener('submit', submitProjectComment);
+    }
+    if (projectCommentScopeInputs && projectCommentScopeInputs.forEach) {
+        projectCommentScopeInputs.forEach((input) => {
+            if (!input) return;
+            input.addEventListener('change', () => {
+                setProjectCommentError('');
+                renderProjectComments();
+            });
+        });
+    }
+    if (projectCommentsList) {
+        projectCommentsList.addEventListener('click', (event) => {
+            const target = event.target && event.target.closest('[data-comment-action]');
+            if (!target) return;
+            const item = target.closest('.project-comment');
+            const commentId = Number(item && item.dataset.commentId);
+            if (!Number.isFinite(commentId) || commentId <= 0) return;
+            const comment = projectCommentsById.get(commentId);
+            if (target.dataset.commentAction === 'resolve' && comment) {
+                void updateProjectCommentResolved(commentId, !comment.is_resolved);
+            }
+            if (target.dataset.commentAction === 'delete') {
+                void deleteProjectComment(commentId);
+            }
+        });
+    }
 }
 
 function normalizeFrameContentRevision(value) {
@@ -1822,6 +2186,7 @@ async function handleProjectPresenceMessage(message) {
         collaborationRecoveryPending = shouldRecoverState;
         presenceReconnectAttempt = 0;
         renderProjectPresence();
+        renderProjectComments();
         syncCollaborativeEditorUi();
         notifyCurrentFramePresence();
         syncCurrentLayerLock();
@@ -1909,6 +2274,16 @@ async function handleProjectPresenceMessage(message) {
     }
 
     if (shouldIgnoreProjectRealtimeEvent(payload)) {
+        return;
+    }
+
+    if (message.type === 'project_comment_created' || message.type === 'project_comment_resolved') {
+        upsertProjectComment(payload.comment);
+        return;
+    }
+
+    if (message.type === 'project_comment_deleted') {
+        removeProjectComment(payload.comment_id);
         return;
     }
 
@@ -7937,6 +8312,7 @@ async function loadFrameByIndex(targetIndex) {
         fillBackgroundLayerIfNeeded();
 
         setActiveTimelineIndex(currentFrameIndex);
+        renderProjectComments();
         if (isPlaybackSessionActive()) {
             setPlaybackMarkerFrame(currentFrameIndex);
         }
@@ -10651,6 +11027,7 @@ async function initEditor() {
     initOnionSkin();
     syncEditorLayout();
     await loadFrameByIndex(currentFrameIndex);
+    await loadProjectComments();
     connectProjectPresence();
 
     // Apply initial values.
@@ -10670,6 +11047,7 @@ async function initEditor() {
     bindHistoryPanelDrag();
     bindHistoryEvents();
     bindSaveEvents();
+    bindProjectCommentEvents();
     bindExportEvents();
     bindCanvasStageEvents();
     syncEditorInteractionLockUi();

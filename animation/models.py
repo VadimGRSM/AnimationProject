@@ -162,6 +162,49 @@ class ProjectInvite(models.Model):
         return self.is_pending() and user.email.casefold() == self.email.casefold()
 
 
+class ProjectComment(models.Model):
+    project = models.ForeignKey(
+        AnimationProject,
+        on_delete=models.CASCADE,
+        related_name='comments',
+    )
+    frame = models.ForeignKey(
+        'Frame',
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='comments',
+    )
+    author = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='project_comments',
+    )
+    body = models.TextField()
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    is_resolved = models.BooleanField(default=False)
+    resolved_at = models.DateTimeField(null=True, blank=True)
+    resolved_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='resolved_project_comments',
+    )
+
+    class Meta:
+        ordering = ['created_at', 'id']
+        indexes = [
+            models.Index(fields=['project', 'created_at']),
+            models.Index(fields=['project', 'frame', 'created_at']),
+            models.Index(fields=['project', 'is_resolved']),
+        ]
+
+    def __str__(self):
+        return f'{self.project} comment by {self.author}'
+
+
 class Frame(models.Model):
     project = models.ForeignKey(AnimationProject, on_delete=models.CASCADE, related_name='frames')
     index = models.PositiveIntegerField(verbose_name='Frame number')

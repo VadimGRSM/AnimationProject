@@ -36,6 +36,17 @@ urlpatterns = [
     path('invites/<str:token>/', views.invite_detail, name='invite_detail'),
     path('invites/<str:token>/accept/', views.invite_accept, name='invite_accept'),
     path('api/project/<int:pk>/update/', views.project_update, name='project_update'),
+    path('api/project/<int:pk>/comments/', views.project_comments, name='project_comments'),
+    path(
+        'api/project/<int:pk>/comments/<int:comment_id>/resolve/',
+        views.project_comment_resolve,
+        name='project_comment_resolve',
+    ),
+    path(
+        'api/project/<int:pk>/comments/<int:comment_id>/delete/',
+        views.project_comment_delete,
+        name='project_comment_delete',
+    ),
     path('api/project/<int:pk>/frames/', views.frames_list, name='frames_list'),
     path('api/project/<int:pk>/frames/create/', views.frame_create, name='frame_create'),
     path('api/project/<int:pk>/frames/reorder/', views.frame_reorder, name='frame_reorder'),

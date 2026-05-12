@@ -33,7 +33,7 @@ from .access import (
 from .consumers import ProjectConsumer
 from .locks import acquire_layer_lock, cleanup_stale_layer_locks, heartbeat_layer_lock, release_layer_locks
 from .services.invite_service import PENDING_PROJECT_INVITE_SESSION_KEY
-from .models import AnimationProject, Frame, FrameLock, Layer, LayerLock, ProjectInvite, ProjectMember, ProjectPresenceSession
+from .models import AnimationProject, Frame, FrameLock, Layer, LayerLock, ProjectComment, ProjectInvite, ProjectMember, ProjectPresenceSession
 
 User = get_user_model()
 
@@ -314,6 +314,160 @@ class CollaborationModelsTests(TestCase):
         self.assertTrue(invite.is_expired())
         self.assertFalse(invite.is_pending())
         self.assertFalse(invite.can_be_accepted_by(self.other_user))
+
+
+class ProjectCommentTests(TestCase):
+    def setUp(self):
+        self.owner = User.objects.create_user(email='comment-owner@example.com', password='test')
+        self.editor = User.objects.create_user(email='comment-editor@example.com', password='test')
+        self.viewer = User.objects.create_user(email='comment-viewer@example.com', password='test')
+        self.outsider = User.objects.create_user(email='comment-outsider@example.com', password='test')
+        self.project = AnimationProject.objects.create(
+            owner=self.owner,
+            title='Commentable project',
+            width=1280,
+            height=720,
+            fps=12,
+        )
+        self.frame = Frame.objects.create(project=self.project, index=1, content_json='{}')
+        ProjectMember.objects.create(
+            project=self.project,
+            user=self.editor,
+            role=ProjectMember.Role.EDITOR,
+            invited_by=self.owner,
+        )
+        ProjectMember.objects.create(
+            project=self.project,
+            user=self.viewer,
+            role=ProjectMember.Role.VIEWER,
+            invited_by=self.owner,
+        )
+
+    def test_project_member_can_create_and_list_project_and_frame_comments(self):
+        client = Client()
+        client.force_login(self.viewer)
+        url = reverse('animation:project_comments', kwargs={'pk': self.project.pk})
+
+        response = client.post(
+            url,
+            data=json.dumps({'body': 'Project note'}),
+            content_type='application/json',
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()['ok'])
+
+        frame_response = client.post(
+            url,
+            data=json.dumps({'body': 'Frame note', 'frame_id': self.frame.pk}),
+            content_type='application/json',
+        )
+        self.assertEqual(frame_response.status_code, 200)
+        frame_payload = frame_response.json()['comment']
+        self.assertEqual(frame_payload['frame_id'], self.frame.pk)
+        self.assertEqual(frame_payload['frame_index'], 1)
+
+        list_response = client.get(url)
+        self.assertEqual(list_response.status_code, 200)
+        comments = list_response.json()['comments']
+        self.assertEqual([comment['body'] for comment in comments], ['Project note', 'Frame note'])
+        self.assertTrue(comments[0]['can_delete'])
+        self.assertFalse(comments[0]['can_resolve'])
+
+    def test_outsider_cannot_access_comments(self):
+        client = Client()
+        client.force_login(self.outsider)
+
+        response = client.get(reverse('animation:project_comments', kwargs={'pk': self.project.pk}))
+
+        self.assertEqual(response.status_code, 404)
+
+    def test_editor_can_resolve_comment(self):
+        comment = ProjectComment.objects.create(
+            project=self.project,
+            frame=self.frame,
+            author=self.viewer,
+            body='Needs a pass',
+        )
+        client = Client()
+        client.force_login(self.editor)
+
+        response = client.post(
+            reverse(
+                'animation:project_comment_resolve',
+                kwargs={'pk': self.project.pk, 'comment_id': comment.pk},
+            ),
+            data=json.dumps({'is_resolved': True}),
+            content_type='application/json',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        comment.refresh_from_db()
+        self.assertTrue(comment.is_resolved)
+        self.assertEqual(comment.resolved_by, self.editor)
+        self.assertTrue(response.json()['comment']['is_resolved'])
+
+    def test_viewer_cannot_resolve_comment(self):
+        comment = ProjectComment.objects.create(
+            project=self.project,
+            author=self.owner,
+            body='Owner note',
+        )
+        client = Client()
+        client.force_login(self.viewer)
+
+        response = client.post(
+            reverse(
+                'animation:project_comment_resolve',
+                kwargs={'pk': self.project.pk, 'comment_id': comment.pk},
+            ),
+            data=json.dumps({'is_resolved': True}),
+            content_type='application/json',
+        )
+
+        self.assertEqual(response.status_code, 403)
+        comment.refresh_from_db()
+        self.assertFalse(comment.is_resolved)
+
+    def test_author_or_owner_can_delete_comment(self):
+        viewer_comment = ProjectComment.objects.create(
+            project=self.project,
+            author=self.viewer,
+            body='Own note',
+        )
+        owner_comment = ProjectComment.objects.create(
+            project=self.project,
+            author=self.owner,
+            body='Owner note',
+        )
+
+        viewer_client = Client()
+        viewer_client.force_login(self.viewer)
+        own_delete = viewer_client.post(
+            reverse(
+                'animation:project_comment_delete',
+                kwargs={'pk': self.project.pk, 'comment_id': viewer_comment.pk},
+            ),
+        )
+        self.assertEqual(own_delete.status_code, 200)
+
+        forbidden_delete = viewer_client.post(
+            reverse(
+                'animation:project_comment_delete',
+                kwargs={'pk': self.project.pk, 'comment_id': owner_comment.pk},
+            ),
+        )
+        self.assertEqual(forbidden_delete.status_code, 403)
+
+        owner_client = Client()
+        owner_client.force_login(self.owner)
+        owner_delete = owner_client.post(
+            reverse(
+                'animation:project_comment_delete',
+                kwargs={'pk': self.project.pk, 'comment_id': owner_comment.pk},
+            ),
+        )
+        self.assertEqual(owner_delete.status_code, 200)
+        self.assertFalse(ProjectComment.objects.filter(project=self.project).exists())
 
 
 class LayerLockSemanticsTests(TestCase):

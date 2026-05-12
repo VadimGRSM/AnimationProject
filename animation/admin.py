@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import AnimationProject, Frame, FrameLock, Layer, LayerLock, ProjectPresenceSession
+from .models import AnimationProject, Frame, FrameLock, Layer, LayerLock, ProjectComment, ProjectPresenceSession
 
 
 class FrameInline(admin.TabularInline):
@@ -46,3 +46,10 @@ class LayerLockAdmin(admin.ModelAdmin):
     list_display = ('id', 'project', 'frame', 'layer', 'user', 'presence_session', 'last_heartbeat_at', 'expires_at')
     list_filter = ('project', 'frame')
     search_fields = ('user__email', 'user__display_name', 'project__title', 'layer__name')
+
+
+@admin.register(ProjectComment)
+class ProjectCommentAdmin(admin.ModelAdmin):
+    list_display = ('id', 'project', 'frame', 'author', 'is_resolved', 'created_at')
+    list_filter = ('project', 'is_resolved', 'created_at')
+    search_fields = ('body', 'author__email', 'author__display_name', 'project__title')
