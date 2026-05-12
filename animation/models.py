@@ -196,9 +196,9 @@ class ProjectComment(models.Model):
     class Meta:
         ordering = ['created_at', 'id']
         indexes = [
-            models.Index(fields=['project', 'created_at']),
-            models.Index(fields=['project', 'frame', 'created_at']),
-            models.Index(fields=['project', 'is_resolved']),
+            models.Index(fields=['project', 'created_at'], name='animation_p_project_59979d_idx'),
+            models.Index(fields=['project', 'frame', 'created_at'], name='animation_p_project_6b4b56_idx'),
+            models.Index(fields=['project', 'is_resolved'], name='animation_p_project_30b060_idx'),
         ]
 
     def __str__(self):
@@ -346,9 +346,9 @@ class LayerLock(models.Model):
 
     class Meta:
         indexes = [
-            models.Index(fields=['project', 'frame', 'expires_at']),
-            models.Index(fields=['project', 'user']),
-            models.Index(fields=['presence_session', 'expires_at']),
+            models.Index(fields=['project', 'frame', 'expires_at'], name='animation_l_project_0ca8e0_idx'),
+            models.Index(fields=['project', 'user'], name='animation_l_project_542477_idx'),
+            models.Index(fields=['presence_session', 'expires_at'], name='animation_l_presenc_0acc42_idx'),
         ]
 
     def __str__(self):
