@@ -1154,6 +1154,9 @@ function renderProjectComments() {
         }
         item.appendChild(avatar);
 
+        const bubble = document.createElement('div');
+        bubble.className = 'project-comment__bubble';
+
         const head = document.createElement('div');
         head.className = 'project-comment__head';
 
@@ -1170,7 +1173,7 @@ function renderProjectComments() {
             meta.textContent = timeText;
             head.appendChild(meta);
         }
-        item.appendChild(head);
+        bubble.appendChild(head);
 
         if (comment.can_delete) {
             const quickDeleteButton = document.createElement('button');
@@ -1180,35 +1183,15 @@ function renderProjectComments() {
             quickDeleteButton.setAttribute('aria-label', 'Delete comment');
             quickDeleteButton.title = 'Delete comment';
             quickDeleteButton.textContent = 'x';
-            item.appendChild(quickDeleteButton);
+            bubble.appendChild(quickDeleteButton);
         }
 
         const body = document.createElement('p');
         body.className = 'project-comment__body';
         body.textContent = comment.body;
-        item.appendChild(body);
+        bubble.appendChild(body);
 
-        const actions = document.createElement('div');
-        actions.className = 'project-comment__actions';
-        if (comment.can_resolve) {
-            const resolveButton = document.createElement('button');
-            resolveButton.type = 'button';
-            resolveButton.className = 'project-comment__action';
-            resolveButton.dataset.commentAction = 'resolve';
-            resolveButton.textContent = comment.is_resolved ? 'Reopen' : 'Resolve';
-            actions.appendChild(resolveButton);
-        }
-        if (comment.can_delete) {
-            const deleteButton = document.createElement('button');
-            deleteButton.type = 'button';
-            deleteButton.className = 'project-comment__action project-comment__action--danger';
-            deleteButton.dataset.commentAction = 'delete';
-            deleteButton.textContent = 'Delete';
-            actions.appendChild(deleteButton);
-        }
-        if (actions.childElementCount > 0) {
-            item.appendChild(actions);
-        }
+        item.appendChild(bubble);
 
         projectCommentsList.appendChild(item);
     });

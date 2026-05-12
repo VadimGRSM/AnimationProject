@@ -668,6 +668,119 @@ body.modal-open {
     overflow: hidden;
 }
 
+.anim-page--editor,
+.anim-page--editor input,
+.anim-page--editor select,
+.anim-page--editor textarea,
+.anim-page--editor progress {
+    accent-color: #3b82f6;
+}
+
+.anim-page--editor input[type="range"] {
+    appearance: none;
+    -webkit-appearance: none;
+    height: 18px;
+    background: transparent;
+    cursor: pointer;
+}
+
+.anim-page--editor input[type="range"]::-webkit-slider-runnable-track {
+    height: 6px;
+    border-radius: 999px;
+    background: linear-gradient(90deg, #3b82f6 0%, #60a5fa 100%);
+    border: 1px solid rgba(147, 197, 253, 0.24);
+}
+
+.anim-page--editor input[type="range"]::-webkit-slider-thumb {
+    appearance: none;
+    -webkit-appearance: none;
+    width: 16px;
+    height: 16px;
+    margin-top: -6px;
+    border-radius: 999px;
+    border: 2px solid #dbeafe;
+    background: #2563eb;
+    box-shadow: 0 4px 12px rgba(37, 99, 235, 0.38);
+}
+
+.anim-page--editor input[type="range"]::-moz-range-track {
+    height: 6px;
+    border-radius: 999px;
+    background: linear-gradient(90deg, #3b82f6 0%, #60a5fa 100%);
+    border: 1px solid rgba(147, 197, 253, 0.24);
+}
+
+.anim-page--editor input[type="range"]::-moz-range-thumb {
+    width: 14px;
+    height: 14px;
+    border-radius: 999px;
+    border: 2px solid #dbeafe;
+    background: #2563eb;
+    box-shadow: 0 4px 12px rgba(37, 99, 235, 0.38);
+}
+
+.anim-page--editor input[type="range"]:focus-visible {
+    outline: none;
+}
+
+.anim-page--editor input[type="range"]:focus-visible::-webkit-slider-runnable-track {
+    box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.18);
+}
+
+.anim-page--editor input[type="range"]:focus-visible::-moz-range-track {
+    box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.18);
+}
+
+.anim-page--editor :is(
+    .history-list,
+    .layers-list,
+    .project-comments-list,
+    .discussion-panel
+) {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(96, 165, 250, 0.7) rgba(15, 23, 42, 0.72);
+}
+
+.anim-page--editor :is(
+    .history-list,
+    .layers-list,
+    .project-comments-list,
+    .discussion-panel
+)::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+
+.anim-page--editor :is(
+    .history-list,
+    .layers-list,
+    .project-comments-list,
+    .discussion-panel
+)::-webkit-scrollbar-track {
+    border-radius: 999px;
+    background: rgba(15, 23, 42, 0.72);
+}
+
+.anim-page--editor :is(
+    .history-list,
+    .layers-list,
+    .project-comments-list,
+    .discussion-panel
+)::-webkit-scrollbar-thumb {
+    border-radius: 999px;
+    background: linear-gradient(180deg, #60a5fa 0%, #2563eb 100%);
+    border: 2px solid rgba(15, 23, 42, 0.72);
+}
+
+.anim-page--editor :is(
+    .history-list,
+    .layers-list,
+    .project-comments-list,
+    .discussion-panel
+)::-webkit-scrollbar-thumb:hover {
+    background: linear-gradient(180deg, #93c5fd 0%, #3b82f6 100%);
+}
+
 .editor-popup-backdrop {
     position: fixed;
     inset: 0;
@@ -2038,6 +2151,8 @@ body.modal-open {
     width: 100%;
     min-width: 0;
     align-self: stretch;
+    align-content: start;
+    align-items: start;
     scrollbar-gutter: stable both-edges;
     box-sizing: border-box;
 }
@@ -2085,6 +2200,9 @@ body.modal-open {
     column-gap: 9px;
     row-gap: 0;
     min-width: 0;
+    width: 100%;
+    align-self: start;
+    justify-self: stretch;
     color: #dbeafe;
 }
 
@@ -2094,11 +2212,11 @@ body.modal-open {
 
 .project-comment__avatar {
     grid-column: 1;
-    grid-row: 1 / span 3;
+    grid-row: 1 / span 2;
     width: 30px;
     height: 30px;
-    align-self: end;
-    margin-bottom: 1px;
+    align-self: start;
+    margin-top: 2px;
     border-radius: 999px;
     border: 1px solid rgba(148, 163, 184, 0.2);
     background: linear-gradient(135deg, #38bdf8 0%, #4f46e5 100%);
@@ -2120,13 +2238,18 @@ body.modal-open {
     display: block;
 }
 
-.project-comment__head,
-.project-comment__body {
+.project-comment__bubble {
+    position: relative;
     grid-column: 2;
+    align-self: start;
+    justify-self: start;
+    width: fit-content;
+    max-width: min(100%, 248px);
     min-width: 0;
-    border-color: rgba(148, 163, 184, 0.13);
-    border-style: solid;
+    border: 1px solid rgba(148, 163, 184, 0.13);
+    border-radius: 14px;
     background: rgba(15, 23, 42, 0.9);
+    overflow: hidden;
 }
 
 .project-comment__head {
@@ -2135,8 +2258,6 @@ body.modal-open {
     justify-content: space-between;
     gap: 10px;
     padding: 10px 36px 3px 12px;
-    border-width: 1px 1px 0;
-    border-radius: 14px 14px 0 0;
 }
 
 .project-comment__author {
@@ -2157,8 +2278,6 @@ body.modal-open {
 .project-comment__body {
     margin: 0;
     padding: 5px 12px 11px;
-    border-width: 0 1px 1px;
-    border-radius: 0 0 14px 14px;
     color: #e2e8f0;
     font-size: 13px;
     line-height: 1.45;
@@ -2282,7 +2401,7 @@ body.modal-open {
     width: 100%;
     min-width: 0;
     justify-self: stretch;
-    align-self: stretch;
+    align-self: start;
     box-sizing: border-box;
 }
 
