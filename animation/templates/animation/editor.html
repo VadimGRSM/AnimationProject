@@ -35,6 +35,37 @@
             {% if can_manage_members %}
                 <a href="{{ share_url }}" class="tool-button tool-button--small anim-header__share-link">Share</a>
             {% endif %}
+            <div class="view-menu" id="editor-view-menu">
+                <button type="button"
+                        class="tool-button tool-button--small view-menu__button"
+                        id="editor-view-menu-button"
+                        aria-haspopup="true"
+                        aria-expanded="false">
+                    View
+                </button>
+                <div class="view-menu__panel" id="editor-view-menu-panel" hidden>
+                    <label class="view-menu__item">
+                        <input type="checkbox" data-view-panel-toggle="tools" checked>
+                        <span>Tools</span>
+                    </label>
+                    <label class="view-menu__item">
+                        <input type="checkbox" data-view-panel-toggle="collaboration" checked>
+                        <span>Collaboration</span>
+                    </label>
+                    <label class="view-menu__item">
+                        <input type="checkbox" data-view-panel-toggle="history" checked>
+                        <span>History</span>
+                    </label>
+                    <label class="view-menu__item">
+                        <input type="checkbox" data-view-panel-toggle="layers" checked>
+                        <span>Layers</span>
+                    </label>
+                    <label class="view-menu__item">
+                        <input type="checkbox" data-view-panel-toggle="discussion" checked>
+                        <span>Discussion</span>
+                    </label>
+                </div>
+            </div>
             <div class="save-button-tooltip">
                 <button type="button"
                         id="save-project-button"
@@ -94,6 +125,7 @@
 
     <div class="editor-main">
         <aside class="editor-toolbar-panel"
+               data-view-panel="tools"
                aria-label="Tools panel">
             <div class="editor-toolbar-panel__header" aria-hidden="true"></div>
             <div class="editor-toolbar-panel__label">Tools</div>
@@ -382,6 +414,7 @@
 
         <aside class="editor-sidebar" aria-label="Editor sidebar">
             <section class="editor-sidebar__section editor-sidebar__section--collab"
+                     data-view-panel="collaboration"
                      aria-label="Collaboration">
                 <div class="editor-section-heading">
                     <div>
@@ -409,6 +442,7 @@
 
             <div class="editor-sidebar__panels">
                 <aside class="history-panel"
+                       data-view-panel="history"
                        aria-label="Action history">
                     <div class="history-panel__header" aria-hidden="true"></div>
                     <div class="editor-section-heading">
@@ -421,7 +455,9 @@
                     <p class="history-empty" id="history-empty" hidden>No actions yet</p>
                 </aside>
 
-                <aside class="layers-panel" aria-label="Layers">
+                <aside class="layers-panel"
+                       data-view-panel="layers"
+                       aria-label="Layers">
                     <div class="layers-panel__header" aria-hidden="true"></div>
                     <div class="editor-section-heading editor-section-heading--with-actions">
                         <div>
@@ -443,7 +479,9 @@
                     <p class="layers-empty" id="layers-empty" hidden>No layers found</p>
                 </aside>
 
-                <aside class="discussion-panel" aria-label="Project discussion">
+                <aside class="discussion-panel"
+                       data-view-panel="discussion"
+                       aria-label="Project discussion">
                     <div class="editor-section-heading">
                         <div>
                             <p class="editor-section-heading__eyebrow">Discussion</p>

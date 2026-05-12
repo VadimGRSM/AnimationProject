@@ -1136,6 +1136,52 @@ body.modal-open {
     flex-wrap: wrap;
 }
 
+.view-menu {
+    position: relative;
+    display: inline-flex;
+}
+
+.view-menu__button {
+    min-width: 72px;
+}
+
+.view-menu__panel {
+    position: absolute;
+    right: 0;
+    top: calc(100% + 8px);
+    z-index: 2400;
+    width: 220px;
+    padding: 8px;
+    border-radius: 16px;
+    border: 1px solid rgba(148, 163, 184, 0.18);
+    background: rgba(15, 23, 42, 0.98);
+    box-shadow: 0 22px 42px rgba(2, 6, 23, 0.42);
+    display: grid;
+    gap: 4px;
+}
+
+.view-menu__item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-height: 36px;
+    padding: 8px 10px;
+    border-radius: 10px;
+    color: #e2e8f0;
+    font-size: 13px;
+    font-weight: 700;
+    cursor: pointer;
+    user-select: none;
+}
+
+.view-menu__item:hover {
+    background: rgba(59, 130, 246, 0.16);
+}
+
+.view-menu__item input {
+    accent-color: #60a5fa;
+}
+
 .save-button-tooltip {
     position: relative;
     display: inline-flex;
@@ -1431,6 +1477,22 @@ body.modal-open {
     min-height: 0;
     position: relative;
     overflow: visible;
+}
+
+.editor-main--toolbar-hidden {
+    grid-template-columns: minmax(0, 1fr) var(--editor-sidebar-width, 320px);
+}
+
+.editor-main--sidebar-hidden {
+    grid-template-columns: 96px minmax(0, 1fr);
+}
+
+.editor-main--toolbar-hidden.editor-main--sidebar-hidden {
+    grid-template-columns: minmax(0, 1fr);
+}
+
+.editor-main--sidebar-hidden .editor-sidebar {
+    display: none;
 }
 
 .editor-workspace {
@@ -2751,6 +2813,18 @@ body.modal-open {
         grid-template-rows: minmax(0, 1fr) auto;
     }
 
+    .editor-main--toolbar-hidden {
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    .editor-main--sidebar-hidden {
+        grid-template-columns: 88px minmax(0, 1fr);
+    }
+
+    .editor-main--toolbar-hidden.editor-main--sidebar-hidden {
+        grid-template-columns: minmax(0, 1fr);
+    }
+
     .editor-sidebar {
         grid-column: 1 / -1;
         display: grid;
@@ -2759,6 +2833,10 @@ body.modal-open {
         width: 100%;
         min-width: 0;
         max-width: none;
+    }
+
+    .editor-main--sidebar-hidden .editor-sidebar {
+        display: none;
     }
 
     .editor-sidebar__panels {
@@ -2810,6 +2888,10 @@ body.modal-open {
         width: 100%;
         min-width: 0;
         max-width: none;
+    }
+
+    .editor-main--sidebar-hidden .editor-sidebar {
+        display: none;
     }
 
     .editor-toolbar-panel {

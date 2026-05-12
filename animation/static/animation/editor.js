@@ -71,6 +71,12 @@ const opacityInput = document.getElementById('brush-opacity');
 const blurInput = document.getElementById('brush-blur');
 const saveButton = document.getElementById('save-project-button');
 const exportButton = document.getElementById('export-project-button');
+const viewMenu = document.getElementById('editor-view-menu');
+const viewMenuButton = document.getElementById('editor-view-menu-button');
+const viewMenuPanel = document.getElementById('editor-view-menu-panel');
+const viewPanelToggleInputs = viewMenuPanel
+    ? viewMenuPanel.querySelectorAll('[data-view-panel-toggle]')
+    : [];
 const saveStatus = document.getElementById('save-status');
 const saveIndicator = document.getElementById('save-indicator');
 const lastSavedLabel = document.getElementById('last-saved-time');
@@ -118,9 +124,18 @@ const historyPanel = document.querySelector('.history-panel');
 const historyPanelHeader = historyPanel ? historyPanel.querySelector('.history-panel__header') : null;
 const historyList = document.getElementById('history-list');
 const historyEmpty = document.getElementById('history-empty');
+const editorViewPanels = document.querySelectorAll('[data-view-panel]');
 
 const editorProjectId = (editorRoot && editorRoot.dataset.projectId) || 'unknown';
 const PANEL_POSITION_STORAGE_PREFIX = `anim.editor.${editorProjectId}.panelPosition.`;
+const EDITOR_VIEW_STORAGE_KEY = `anim.editor.${editorProjectId}.viewPanels`;
+const EDITOR_VIEW_PANEL_DEFAULTS = {
+    tools: true,
+    collaboration: true,
+    history: true,
+    layers: true,
+    discussion: true,
+};
 
 function parseDatasetBoolean(value) {
     return String(value).trim().toLowerCase() === 'true';
@@ -6681,6 +6696,119 @@ function getCsrfToken() {
     return getCookie('csrftoken');
 }
 
+function loadEditorViewState() {
+    const state = { ...EDITOR_VIEW_PANEL_DEFAULTS };
+    try {
+        const raw = window.localStorage.getItem(EDITOR_VIEW_STORAGE_KEY);
+        if (!raw) return state;
+        const parsed = JSON.parse(raw);
+        if (!parsed || typeof parsed !== 'object') return state;
+        Object.keys(EDITOR_VIEW_PANEL_DEFAULTS).forEach((panelName) => {
+            if (typeof parsed[panelName] === 'boolean') {
+                state[panelName] = parsed[panelName];
+            }
+        });
+    } catch (error) {
+        // localStorage may be unavailable.
+    }
+    return state;
+}
+
+function storeEditorViewState(state) {
+    try {
+        window.localStorage.setItem(EDITOR_VIEW_STORAGE_KEY, JSON.stringify(state));
+    } catch (error) {
+        // localStorage may be unavailable.
+    }
+}
+
+function getCurrentEditorViewState() {
+    const state = { ...EDITOR_VIEW_PANEL_DEFAULTS };
+    if (viewPanelToggleInputs && viewPanelToggleInputs.forEach) {
+        viewPanelToggleInputs.forEach((input) => {
+            const panelName = input && input.dataset.viewPanelToggle;
+            if (!panelName || !(panelName in state)) return;
+            state[panelName] = Boolean(input.checked);
+        });
+    }
+    return state;
+}
+
+function applyEditorViewState(state, options = {}) {
+    const nextState = { ...EDITOR_VIEW_PANEL_DEFAULTS, ...(state || {}) };
+    if (viewPanelToggleInputs && viewPanelToggleInputs.forEach) {
+        viewPanelToggleInputs.forEach((input) => {
+            const panelName = input && input.dataset.viewPanelToggle;
+            if (!panelName || !(panelName in nextState)) return;
+            input.checked = Boolean(nextState[panelName]);
+        });
+    }
+    if (editorViewPanels && editorViewPanels.forEach) {
+        editorViewPanels.forEach((panel) => {
+            const panelName = panel && panel.dataset.viewPanel;
+            if (!panelName || !(panelName in nextState)) return;
+            panel.hidden = !nextState[panelName];
+        });
+    }
+
+    const hasSidebarPanel = Boolean(
+        nextState.collaboration || nextState.history || nextState.layers || nextState.discussion,
+    );
+    if (editorMain) {
+        editorMain.classList.toggle('editor-main--toolbar-hidden', !nextState.tools);
+        editorMain.classList.toggle('editor-main--sidebar-hidden', !hasSidebarPanel);
+    }
+    if (!nextState.tools) {
+        closeToolSettingsPopover();
+    }
+    if (!options.skipStore) {
+        storeEditorViewState(nextState);
+    }
+    if (!options.skipLayout) {
+        window.requestAnimationFrame(() => {
+            syncEditorLayout();
+        });
+    }
+}
+
+function setViewMenuOpen(isOpen) {
+    if (!viewMenuPanel || !viewMenuButton) return;
+    viewMenuPanel.hidden = !isOpen;
+    viewMenuButton.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+}
+
+function isViewMenuOpen() {
+    return Boolean(viewMenuPanel && !viewMenuPanel.hidden);
+}
+
+function bindViewMenuEvents() {
+    if (!viewMenu || !viewMenuButton || !viewMenuPanel) return;
+    viewMenuButton.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        setViewMenuOpen(!isViewMenuOpen());
+    });
+    if (viewPanelToggleInputs && viewPanelToggleInputs.forEach) {
+        viewPanelToggleInputs.forEach((input) => {
+            if (!input) return;
+            input.addEventListener('change', () => {
+                applyEditorViewState(getCurrentEditorViewState());
+            });
+        });
+    }
+    document.addEventListener('mousedown', (event) => {
+        if (!isViewMenuOpen()) return;
+        const target = event.target;
+        if (target && viewMenu.contains(target)) return;
+        setViewMenuOpen(false);
+    });
+    document.addEventListener('keydown', (event) => {
+        if (event.key !== 'Escape' || !isViewMenuOpen()) return;
+        setViewMenuOpen(false);
+        viewMenuButton.focus();
+    });
+}
+
 function getFrameSaveUrl(index) {
     if (!frameSaveUrlTemplate) return '';
     if (frameSaveUrlTemplate.includes('/0/save/')) {
@@ -11021,6 +11149,7 @@ async function initEditor() {
     syncCanvasStageUi();
     syncCanvasSizes();
     hydratePanelPositions();
+    applyEditorViewState(loadEditorViewState(), { skipStore: true, skipLayout: true });
     bindTimelineEvents();
     bindPlaybackEvents();
     await loadTimelineFrames();
@@ -11047,6 +11176,7 @@ async function initEditor() {
     bindHistoryPanelDrag();
     bindHistoryEvents();
     bindSaveEvents();
+    bindViewMenuEvents();
     bindProjectCommentEvents();
     bindExportEvents();
     bindCanvasStageEvents();
