@@ -130,7 +130,6 @@ const editorProjectId = (editorRoot && editorRoot.dataset.projectId) || 'unknown
 const PANEL_POSITION_STORAGE_PREFIX = `anim.editor.${editorProjectId}.panelPosition.`;
 const EDITOR_VIEW_STORAGE_KEY = `anim.editor.${editorProjectId}.viewPanels`;
 const EDITOR_VIEW_PANEL_DEFAULTS = {
-    tools: true,
     collaboration: true,
     history: true,
     layers: true,
@@ -1079,7 +1078,8 @@ function normalizeProjectComment(rawComment) {
         author: {
             id: Number.isFinite(authorId) && authorId > 0 ? authorId : null,
             display_name: author.display_name || author.email || 'Unknown',
-            avatar_url: author.avatar_url || '',
+            avatar_url: normalizeAvatarUrl(author.avatar_url || ''),
+            avatar_initial: author.avatar_initial || getPresenceAvatarInitial(author.display_name || author.email || 'Unknown'),
         },
         can_delete: canDelete,
         can_resolve: projectCanEdit,
@@ -1136,7 +1136,23 @@ function renderProjectComments() {
         if (comment.is_resolved) {
             item.classList.add('project-comment--resolved');
         }
+        if (comment.can_delete) {
+            item.classList.add('project-comment--own');
+        }
         item.dataset.commentId = String(comment.id);
+
+        const avatar = document.createElement('span');
+        avatar.className = 'project-comment__avatar';
+        avatar.setAttribute('aria-hidden', 'true');
+        if (comment.author.avatar_url) {
+            const avatarImage = document.createElement('img');
+            avatarImage.src = comment.author.avatar_url;
+            avatarImage.alt = '';
+            avatar.appendChild(avatarImage);
+        } else {
+            avatar.textContent = comment.author.avatar_initial || getPresenceAvatarInitial(comment.author.display_name);
+        }
+        item.appendChild(avatar);
 
         const head = document.createElement('div');
         head.className = 'project-comment__head';
@@ -1146,22 +1162,26 @@ function renderProjectComments() {
         author.textContent = comment.author.display_name;
         head.appendChild(author);
 
-        const meta = document.createElement('span');
-        meta.className = 'project-comment__meta';
-        const metaParts = [];
-        if (comment.frame_index) {
-            metaParts.push(`Frame ${comment.frame_index}`);
-        }
         const timeText = formatProjectCommentTime(comment.created_at);
         if (timeText) {
-            metaParts.push(timeText);
+            const meta = document.createElement('time');
+            meta.className = 'project-comment__meta';
+            meta.dateTime = comment.created_at || '';
+            meta.textContent = timeText;
+            head.appendChild(meta);
         }
-        if (comment.is_resolved) {
-            metaParts.push('Resolved');
-        }
-        meta.textContent = metaParts.join(' В· ');
-        head.appendChild(meta);
         item.appendChild(head);
+
+        if (comment.can_delete) {
+            const quickDeleteButton = document.createElement('button');
+            quickDeleteButton.type = 'button';
+            quickDeleteButton.className = 'project-comment__delete';
+            quickDeleteButton.dataset.commentAction = 'delete';
+            quickDeleteButton.setAttribute('aria-label', 'Delete comment');
+            quickDeleteButton.title = 'Delete comment';
+            quickDeleteButton.textContent = 'x';
+            item.appendChild(quickDeleteButton);
+        }
 
         const body = document.createElement('p');
         body.className = 'project-comment__body';
@@ -6755,11 +6775,8 @@ function applyEditorViewState(state, options = {}) {
         nextState.collaboration || nextState.history || nextState.layers || nextState.discussion,
     );
     if (editorMain) {
-        editorMain.classList.toggle('editor-main--toolbar-hidden', !nextState.tools);
+        editorMain.classList.remove('editor-main--toolbar-hidden');
         editorMain.classList.toggle('editor-main--sidebar-hidden', !hasSidebarPanel);
-    }
-    if (!nextState.tools) {
-        closeToolSettingsPopover();
     }
     if (!options.skipStore) {
         storeEditorViewState(nextState);
