@@ -7,15 +7,17 @@ from unittest import mock
 
 from asgiref.sync import async_to_sync, sync_to_async
 from channels.db import database_sync_to_async
+from channels_redis.core import RedisChannelLayer
 from channels.testing import WebsocketCommunicator
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.files.base import ContentFile
 from django.http import Http404
-from django.test import Client, TestCase, TransactionTestCase, override_settings
+from django.test import Client, SimpleTestCase, TestCase, TransactionTestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 
+from animstudio import settings as project_settings
 from animstudio.asgi import application
 from .access import (
     can_edit_project,
@@ -36,6 +38,14 @@ from .services.invite_service import PENDING_PROJECT_INVITE_SESSION_KEY
 from .models import AnimationProject, Frame, FrameLock, Layer, LayerLock, ProjectComment, ProjectInvite, ProjectMember, ProjectPresenceSession
 
 User = get_user_model()
+
+
+class ChannelLayerSettingsTests(SimpleTestCase):
+    def test_redis_socket_timeout_exceeds_channels_blocking_timeout(self):
+        channel_config = project_settings.CHANNEL_LAYERS["default"]["CONFIG"]
+        redis_host = channel_config["hosts"][0]
+
+        self.assertGreater(redis_host["socket_timeout"], RedisChannelLayer.brpop_timeout)
 
 
 def _make_png_bytes(size=(64, 64), color=(255, 0, 0, 255)):
