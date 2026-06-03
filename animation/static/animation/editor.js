@@ -1145,21 +1145,8 @@ function getProjectCommentScopeLabel(comment) {
     return 'Project';
 }
 
-function shouldShowProjectCommentNotification(comment, payload = {}) {
+function shouldShowProjectCommentNotification(comment) {
     if (!comment || comment.is_resolved) return false;
-    const authorId = Number(comment.author && comment.author.id);
-    const actorUserId = Number(payload.actor_user_id);
-    const currentUserId = Number(presenceCurrentUserId);
-    if (
-        Number.isFinite(currentUserId)
-        && currentUserId > 0
-        && (
-            (Number.isFinite(authorId) && authorId === currentUserId)
-            || (Number.isFinite(actorUserId) && actorUserId === currentUserId)
-        )
-    ) {
-        return false;
-    }
     if (!comment.frame_id) return true;
     return Number(comment.frame_id) === Number(currentFrameId);
 }
@@ -1227,8 +1214,8 @@ function renderProjectCommentNotifications() {
     });
 }
 
-function showProjectCommentNotification(comment, payload = {}) {
-    if (!shouldShowProjectCommentNotification(comment, payload)) return;
+function showProjectCommentNotification(comment) {
+    if (!shouldShowProjectCommentNotification(comment)) return;
     removeProjectCommentNotification(comment.id);
     const timerId = window.setTimeout(() => {
         removeProjectCommentNotification(comment.id);
@@ -2695,17 +2682,17 @@ async function handleProjectPresenceMessage(message) {
         return;
     }
 
-    if (shouldIgnoreProjectRealtimeEvent(payload)) {
-        return;
-    }
-
     if (message.type === 'project_comment_created') {
         const comment = normalizeProjectComment(payload.comment);
         if (comment) {
             projectCommentsById.set(comment.id, comment);
-            showProjectCommentNotification(comment, payload);
+            showProjectCommentNotification(comment);
             renderProjectComments();
         }
+        return;
+    }
+
+    if (shouldIgnoreProjectRealtimeEvent(payload)) {
         return;
     }
 

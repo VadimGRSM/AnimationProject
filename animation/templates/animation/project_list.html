@@ -22,11 +22,12 @@
                     <span class="projects-shortcut__icon" aria-hidden="true">▶</span>
                     <span class="projects-shortcut__text">Continue project</span>
                 </a>
-                <a class="projects-shortcut"
-                   href="#my-projects">
-                    <span class="projects-shortcut__icon" aria-hidden="true">▣</span>
+                <button type="button"
+                        class="projects-shortcut projects-shortcut--primary"
+                        id="browse-projects-button">
+                    <span class="projects-shortcut__icon" aria-hidden="true">&#9635;</span>
                     <span class="projects-shortcut__text">Browse projects</span>
-                </a>
+                </button>
             </div>
         </div>
     </aside>
@@ -160,6 +161,58 @@
     </section>
 </section>
 
+<div class="modal" id="browse-projects-modal" hidden>
+    <div class="modal__overlay" data-modal-close></div>
+    <div class="modal__content modal__content--wide project-browser" role="dialog" aria-modal="true" aria-labelledby="browse-projects-modal-title">
+        <div class="modal__header">
+            <h3 class="modal__title" id="browse-projects-modal-title">Browse projects</h3>
+            <button type="button" class="modal__close" data-modal-close aria-label="Close">&times;</button>
+        </div>
+        <div class="project-browser__body">
+            <label class="project-browser__search">
+                <span>Search</span>
+                <input type="search"
+                       id="browse-projects-search"
+                       placeholder="Search projects"
+                       autocomplete="off">
+            </label>
+            <ul class="project-browser__list" id="browse-projects-list">
+                {% for project in project_cards %}
+                    <li class="project-browser__item"
+                        data-project-id="{{ project.id }}"
+                        data-search="{{ project.title }} {{ project.owner_display }} {{ project.current_user_role }} {{ project.width }}x{{ project.height }}">
+                        <a class="project-browser__link" href="{{ project.editor_url }}">
+                            <span class="project-browser__thumb" aria-hidden="true">
+                                {% if project.preview_url %}
+                                    <img src="{{ project.preview_url }}" alt="">
+                                {% else %}
+                                    <span>{{ project.title|slice:":1"|upper }}</span>
+                                {% endif %}
+                            </span>
+                            <span class="project-browser__copy">
+                                <span class="project-browser__title">{{ project.title }}</span>
+                                <span class="project-browser__meta">
+                                    <span class="project-browser__role">
+                                        {% if project.current_user_role %}{{ project.current_user_role|title }}{% elif project.is_owned %}Owner{% else %}Member{% endif %}
+                                    </span>
+                                    <span class="project-browser__date" data-updated-at="{{ project.updated_at }}"></span>
+                                    <span>{{ project.width }}x{{ project.height }}</span>
+                                    <span>{{ project.fps }} FPS</span>
+                                </span>
+                            </span>
+                            <span class="project-browser__open">Open</span>
+                        </a>
+                    </li>
+                {% endfor %}
+            </ul>
+            <p class="project-browser__empty" id="browse-projects-empty"{% if project_cards %} hidden{% endif %}>No projects found</p>
+        </div>
+        <div class="modal__actions project-browser__actions">
+            <button type="button" class="tool-button" data-browse-create>Create project</button>
+        </div>
+    </div>
+</div>
+
 <div class="modal" id="create-modal" hidden>
     <div class="modal__overlay" data-modal-close></div>
     <div class="modal__content" role="dialog" aria-modal="true" aria-labelledby="create-modal-title">
@@ -264,9 +317,15 @@
 
 <script>
     document.addEventListener('DOMContentLoaded', () => {
+        const browseModal = document.getElementById('browse-projects-modal');
         const createModal = document.getElementById('create-modal');
         const renameModal = document.getElementById('rename-modal');
         const deleteModal = document.getElementById('delete-modal');
+        const browseButton = document.getElementById('browse-projects-button');
+        const browseSearchInput = document.getElementById('browse-projects-search');
+        const browseProjectList = document.getElementById('browse-projects-list');
+        const browseProjectEmpty = document.getElementById('browse-projects-empty');
+        const browseCreateButtons = document.querySelectorAll('[data-browse-create]');
         const createButton = document.getElementById('create-project-button');
         const createForm = document.getElementById('create-form');
         const createTitleInput = document.getElementById('create-title-input');
@@ -328,7 +387,7 @@
         };
 
         const hydrateProjectDates = (root = document) => {
-            root.querySelectorAll?.('.project-card__date[data-updated-at]').forEach((node) => {
+            root.querySelectorAll?.('.project-card__date[data-updated-at], .project-browser__date[data-updated-at]').forEach((node) => {
                 node.textContent = formatProjectDate(node.dataset.updatedAt || '');
             });
         };
@@ -398,6 +457,102 @@
 
             continueProjectShortcut.hidden = false;
             continueProjectShortcut.href = targetLink.getAttribute('href') || '#';
+        };
+
+        const getProjectRoleLabel = (project) => {
+            const role = String(project?.current_user_role || '').trim();
+            if (role) {
+                return role.charAt(0).toUpperCase() + role.slice(1);
+            }
+            if (project?.is_owned) {
+                return 'Owner';
+            }
+            return 'Member';
+        };
+
+        const getProjectSearchText = (project) => [
+            project?.title,
+            project?.owner_display,
+            getProjectRoleLabel(project),
+            `${project?.width || ''}x${project?.height || ''}`,
+        ].filter(Boolean).join(' ').toLowerCase();
+
+        const syncBrowseEmptyState = () => {
+            if (!browseProjectList || !browseProjectEmpty) return;
+            const visibleItems = Array.from(browseProjectList.querySelectorAll('.project-browser__item'))
+                .filter((item) => !item.hidden);
+            browseProjectEmpty.hidden = visibleItems.length > 0;
+        };
+
+        const filterBrowseProjects = () => {
+            if (!browseProjectList) return;
+            const query = (browseSearchInput?.value || '').trim().toLowerCase();
+            browseProjectList.querySelectorAll('.project-browser__item').forEach((item) => {
+                const searchText = (item.dataset.search || '').toLowerCase();
+                item.hidden = Boolean(query) && !searchText.includes(query);
+            });
+            syncBrowseEmptyState();
+        };
+
+        const createBrowseProjectItem = (project) => {
+            const item = document.createElement('li');
+            item.className = 'project-browser__item';
+            item.dataset.projectId = project.id;
+            item.dataset.search = getProjectSearchText(project);
+
+            const link = document.createElement('a');
+            link.className = 'project-browser__link';
+            link.href = project.editor_url;
+
+            const thumb = document.createElement('span');
+            thumb.className = 'project-browser__thumb';
+            thumb.setAttribute('aria-hidden', 'true');
+            if (project.preview_url) {
+                const image = document.createElement('img');
+                image.src = project.preview_url;
+                image.alt = '';
+                thumb.appendChild(image);
+            } else {
+                const initial = document.createElement('span');
+                initial.textContent = (project.title || 'P').charAt(0).toUpperCase();
+                thumb.appendChild(initial);
+            }
+
+            const copy = document.createElement('span');
+            copy.className = 'project-browser__copy';
+
+            const title = document.createElement('span');
+            title.className = 'project-browser__title';
+            title.textContent = project.title || 'Untitled project';
+
+            const meta = document.createElement('span');
+            meta.className = 'project-browser__meta';
+
+            const role = document.createElement('span');
+            role.className = 'project-browser__role';
+            role.textContent = getProjectRoleLabel(project);
+
+            const date = document.createElement('span');
+            date.className = 'project-browser__date';
+            date.dataset.updatedAt = project.updated_at || '';
+            date.textContent = formatProjectDate(project.updated_at);
+
+            const resolution = document.createElement('span');
+            resolution.textContent = `${project.width}x${project.height}`;
+
+            const fps = document.createElement('span');
+            fps.textContent = `${project.fps} FPS`;
+
+            meta.append(role, date, resolution, fps);
+            copy.append(title, meta);
+
+            const open = document.createElement('span');
+            open.className = 'project-browser__open';
+            open.textContent = TEXT.open;
+
+            link.append(thumb, copy, open);
+            item.appendChild(link);
+            return item;
         };
 
         const createProjectItem = (project) => {
@@ -517,6 +672,7 @@
         };
 
         const closeAllModals = () => {
+            closeModal(browseModal);
             closeModal(createModal);
             closeModal(renameModal);
             closeModal(deleteModal);
@@ -563,17 +719,43 @@
             openModal(deleteModal);
         };
 
-        if (createButton) {
-            createButton.addEventListener('click', () => {
-                if (createForm) {
-                    createForm.reset();
-                }
-                if (createTitleInput) {
-                    createTitleInput.focus();
-                }
-                clearInlineError(createError);
-                openModal(createModal);
+        const openCreateProjectModal = () => {
+            if (createForm) {
+                createForm.reset();
+            }
+            clearInlineError(createError);
+            openModal(createModal);
+            window.requestAnimationFrame(() => {
+                createTitleInput?.focus();
             });
+        };
+
+        if (browseButton) {
+            browseButton.addEventListener('click', () => {
+                if (browseSearchInput) {
+                    browseSearchInput.value = '';
+                }
+                filterBrowseProjects();
+                openModal(browseModal);
+                window.requestAnimationFrame(() => {
+                    browseSearchInput?.focus();
+                });
+            });
+        }
+
+        if (browseSearchInput) {
+            browseSearchInput.addEventListener('input', filterBrowseProjects);
+        }
+
+        browseCreateButtons.forEach((button) => {
+            button.addEventListener('click', () => {
+                closeModal(browseModal);
+                openCreateProjectModal();
+            });
+        });
+
+        if (createButton) {
+            createButton.addEventListener('click', openCreateProjectModal);
         }
 
         const bindProjectListEvents = (list) => {
@@ -641,6 +823,10 @@
                     if (data.project && ownedProjectList && ownedEmptyState) {
                         const item = createProjectItem(data.project);
                         ownedProjectList.insertBefore(item, ownedEmptyState);
+                        if (browseProjectList) {
+                            browseProjectList.prepend(createBrowseProjectItem(data.project));
+                            filterBrowseProjects();
+                        }
                         syncProjectSectionEmptyState(ownedProjectList, ownedEmptyState);
                         syncContinueShortcut();
                     }
@@ -718,6 +904,22 @@
                             deleteButton.dataset.projectTitle = updatedTitle;
                         }
                     }
+                    const browseItem = browseProjectList?.querySelector(`.project-browser__item[data-project-id="${projectId}"]`);
+                    if (browseItem) {
+                        const browseTitle = browseItem.querySelector('.project-browser__title');
+                        if (browseTitle) {
+                            browseTitle.textContent = updatedTitle;
+                        }
+                        const browseInitial = browseItem.querySelector('.project-browser__thumb > span');
+                        if (browseInitial) {
+                            browseInitial.textContent = updatedTitle.charAt(0).toUpperCase();
+                        }
+                        const metaText = Array.from(browseItem.querySelectorAll('.project-browser__meta span'))
+                            .map((node) => node.textContent || '')
+                            .join(' ');
+                        browseItem.dataset.search = `${updatedTitle} ${metaText}`.toLowerCase();
+                        filterBrowseProjects();
+                    }
 
                     showMessage(TEXT.renameSuccess, 'success');
                     closeModal(renameModal);
@@ -763,6 +965,11 @@
                     if (item) {
                         item.remove();
                     }
+                    const browseItem = browseProjectList?.querySelector(`.project-browser__item[data-project-id="${projectId}"]`);
+                    if (browseItem) {
+                        browseItem.remove();
+                        filterBrowseProjects();
+                    }
 
                     syncProjectSectionEmptyState(ownedProjectList, ownedEmptyState);
                     syncProjectSectionEmptyState(sharedProjectList, sharedEmptyState);
@@ -782,6 +989,7 @@
 
         syncProjectSectionEmptyState(ownedProjectList, ownedEmptyState);
         syncProjectSectionEmptyState(sharedProjectList, sharedEmptyState);
+        filterBrowseProjects();
         syncContinueShortcut();
     });
 </script>
