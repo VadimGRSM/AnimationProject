@@ -748,7 +748,7 @@ class ProjectConsumerLayerLockCacheTests(TestCase):
                     'tool': 'brush',
                 })
             )
-            for tool_name in ('fill', 'line', 'rectangle', 'ellipse'):
+            for tool_name in ('fill', 'line', 'rectangle', 'ellipse', 'select', 'history'):
                 self.assertTrue(
                     consumer.can_stream_layer_preview({
                         'frame_id': 1,
@@ -2611,6 +2611,81 @@ class ProjectWebsocketRoomTests(TransactionTestCase):
             self.assertEqual(fill_event['payload']['tool'], 'fill')
             self.assertEqual(fill_event['payload']['color'], '#22cc88')
             self.assertEqual(fill_event['payload']['presence_session_id'], owner_connection['presence_session_id'])
+
+            await editor_communicator.disconnect()
+            await owner_communicator.disconnect()
+
+        async_to_sync(scenario)()
+
+    def test_live_selection_and_history_preview_events_broadcast_to_other_editor(self):
+        async def scenario():
+            owner_communicator, owner_connection = await self._assert_member_can_connect(
+                self.owner,
+                ProjectMember.Role.OWNER,
+            )
+            editor_communicator, _ = await self._assert_member_can_connect(
+                self.editor,
+                ProjectMember.Role.EDITOR,
+                expected_user_count=2,
+            )
+            await owner_communicator.receive_json_from()
+
+            await owner_communicator.send_json_to({
+                'type': 'layer_lock_acquire',
+                'payload': {
+                    'frame_id': self.frame_one.pk,
+                    'layer_id': self.layer_one.pk,
+                },
+            })
+            await owner_communicator.receive_json_from()
+            await editor_communicator.receive_json_from()
+
+            await owner_communicator.send_json_to({
+                'type': 'layer_stroke_segment',
+                'payload': {
+                    'frame_id': self.frame_one.pk,
+                    'layer_id': self.layer_one.pk,
+                    'tool': 'select',
+                    'seq': 1,
+                    'stroke_id': 'select-1',
+                    'base_revision': 0,
+                    'selection_phase': 'selecting',
+                    'selection': {
+                        'type': 'rect',
+                        'x': 12,
+                        'y': 14,
+                        'width': 80,
+                        'height': 42,
+                    },
+                    'x': 92,
+                    'y': 56,
+                },
+            })
+            selection_event = await editor_communicator.receive_json_from()
+            self.assertEqual(selection_event['type'], 'layer_stroke_segment')
+            self.assertEqual(selection_event['payload']['tool'], 'select')
+            self.assertEqual(selection_event['payload']['selection']['type'], 'rect')
+            self.assertEqual(selection_event['payload']['presence_session_id'], owner_connection['presence_session_id'])
+
+            await owner_communicator.send_json_to({
+                'type': 'layer_stroke_end',
+                'payload': {
+                    'frame_id': self.frame_one.pk,
+                    'layer_id': self.layer_one.pk,
+                    'tool': 'history',
+                    'action': 'undo',
+                    'image_data': 'data:image/png;base64,AAAA',
+                    'seq': 1,
+                    'stroke_id': 'history-1',
+                    'base_revision': 0,
+                },
+            })
+            history_event = await editor_communicator.receive_json_from()
+            self.assertEqual(history_event['type'], 'layer_stroke_end')
+            self.assertEqual(history_event['payload']['tool'], 'history')
+            self.assertEqual(history_event['payload']['action'], 'undo')
+            self.assertEqual(history_event['payload']['image_data'], 'data:image/png;base64,AAAA')
+            self.assertEqual(history_event['payload']['presence_session_id'], owner_connection['presence_session_id'])
 
             await editor_communicator.disconnect()
             await owner_communicator.disconnect()

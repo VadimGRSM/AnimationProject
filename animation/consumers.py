@@ -500,7 +500,7 @@ class ProjectConsumer(AsyncJsonWebsocketConsumer):
         seq = payload.get("seq")
         base_revision = payload.get("base_revision")
         stroke_id = payload.get("stroke_id")
-        if tool not in {"brush", "eraser", "fill", "line", "rectangle", "ellipse"}:
+        if tool not in {"brush", "eraser", "fill", "line", "rectangle", "ellipse", "select", "history"}:
             return False
         try:
             numeric_frame_id = int(frame_id)

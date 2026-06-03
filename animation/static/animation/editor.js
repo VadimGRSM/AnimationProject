@@ -11,6 +11,7 @@ const TOOL_ELLIPSE = 'ellipse';
 const TOOL_LINE = 'line';
 const TOOL_SELECT = 'select';
 const TOOL_PAN = 'pan';
+const LIVE_TOOL_HISTORY = 'history';
 
 const SELECT_RECT = 'rect';
 const SELECT_ELLIPSE = 'ellipse';
@@ -360,6 +361,7 @@ const commentNotificationItems = new Map();
 const frameLocksById = new Map();
 const layerLocksById = new Map();
 const remoteCursorStates = new Map();
+const remoteSelectionStates = new Map();
 const remoteLayerPreviewStates = new Map();
 const remoteAvatarImageCache = new Map();
 let presenceSocket = null;
@@ -387,6 +389,11 @@ let liveStrokeLayerId = null;
 let liveStrokeBaseRevision = 0;
 let liveStrokeId = '';
 let liveStrokeCounter = 0;
+let liveSelectionSequence = 0;
+let liveSelectionId = '';
+let liveSelectionLayerId = null;
+let liveSelectionLastSentAt = 0;
+let liveLayerSnapshotLastSentAt = 0;
 const localProjectEventRequestIds = new Set();
 let projectEventRequestCounter = 0;
 let presenceReconnectAttempt = 0;
@@ -403,9 +410,12 @@ const PRESENCE_RECONNECT_BASE_DELAY_MS = 2000;
 const PRESENCE_RECONNECT_MAX_DELAY_MS = 15000;
 const REMOTE_CURSOR_INTERVAL_MS = 140;
 const REMOTE_CURSOR_STALE_MS = 2500;
-const REMOTE_LAYER_PREVIEW_STALE_MS = 2500;
+const REMOTE_SELECTION_STALE_MS = 6000;
+const REMOTE_LAYER_PREVIEW_STALE_MS = 35000;
 const LAYER_LOCK_REQUEST_RETRY_MS = 1200;
 const LIVE_STROKE_SEGMENT_INTERVAL_MS = 45;
+const LIVE_SELECTION_INTERVAL_MS = 55;
+const LIVE_LAYER_SNAPSHOT_INTERVAL_MS = 180;
 const AUTHORITATIVE_FRAME_REFRESH_DELAY_MS = 75;
 const COMMENT_NOTIFICATION_TTL_MS = 7000;
 const COMMENT_NOTIFICATION_MAX_ITEMS = 3;
@@ -1724,6 +1734,30 @@ function removeRemoteCursorByPresenceSession(targetPresenceSessionId, options = 
     }
 }
 
+function removeRemoteSelectionByPresenceSession(targetPresenceSessionId, options = {}) {
+    const numericPresenceSessionId = Number(targetPresenceSessionId);
+    if (!Number.isFinite(numericPresenceSessionId) || numericPresenceSessionId <= 0) return;
+    const didDelete = remoteSelectionStates.delete(numericPresenceSessionId);
+    if (didDelete && options.render !== false) {
+        renderOverlay();
+    }
+}
+
+function removeRemoteSelectionByUser(targetUserId, options = {}) {
+    const numericUserId = Number(targetUserId);
+    if (!Number.isFinite(numericUserId) || numericUserId <= 0) return;
+    let changed = false;
+    for (const [presenceId, state] of remoteSelectionStates.entries()) {
+        if (Number(state.user_id) === numericUserId) {
+            remoteSelectionStates.delete(presenceId);
+            changed = true;
+        }
+    }
+    if (changed && options.render !== false) {
+        renderOverlay();
+    }
+}
+
 function clearLayerLockStateForFrame(frameId) {
     const numericFrameId = Number(frameId);
     if (!Number.isFinite(numericFrameId) || numericFrameId <= 0) return;
@@ -1736,6 +1770,11 @@ function clearLayerLockStateForFrame(frameId) {
     for (const [presenceId, cursor] of remoteCursorStates.entries()) {
         if (cursor.frame_id === numericFrameId) {
             remoteCursorStates.delete(presenceId);
+        }
+    }
+    for (const [presenceId, state] of remoteSelectionStates.entries()) {
+        if (state.frame_id === numericFrameId) {
+            remoteSelectionStates.delete(presenceId);
         }
     }
     syncCollaborativeEditorUi();
@@ -1980,6 +2019,97 @@ function handleRemoteCursorMoved(payload) {
     renderOverlay();
 }
 
+function normalizeRemoteSelectionShape(rawShape) {
+    if (!rawShape || typeof rawShape !== 'object') return null;
+    const type = rawShape.type;
+    if (type === SELECT_RECT) {
+        const x = Number(rawShape.x);
+        const y = Number(rawShape.y);
+        const width = Number(rawShape.width);
+        const height = Number(rawShape.height);
+        if (![x, y, width, height].every(Number.isFinite) || width <= 0 || height <= 0) return null;
+        return { type: SELECT_RECT, x, y, width, height };
+    }
+    if (type === SELECT_ELLIPSE) {
+        const centerX = Number(rawShape.centerX);
+        const centerY = Number(rawShape.centerY);
+        const radiusX = Number(rawShape.radiusX);
+        const radiusY = Number(rawShape.radiusY);
+        if (![centerX, centerY, radiusX, radiusY].every(Number.isFinite) || radiusX <= 0 || radiusY <= 0) return null;
+        return { type: SELECT_ELLIPSE, centerX, centerY, radiusX, radiusY };
+    }
+    if (type === SELECT_LASSO) {
+        const points = Array.isArray(rawShape.points)
+            ? rawShape.points
+                .map((point) => ({ x: Number(point && point.x), y: Number(point && point.y) }))
+                .filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y))
+            : [];
+        if (points.length < 2) return null;
+        return { type: SELECT_LASSO, points };
+    }
+    return null;
+}
+
+function normalizeRemoteSelectionPayload(payload) {
+    if (!payload || typeof payload !== 'object') return null;
+    const frameId = Number(payload.frame_id);
+    const layerId = Number(payload.layer_id);
+    const presenceSession = Number(payload.presence_session_id);
+    if (
+        !Number.isFinite(frameId) || frameId <= 0
+        || !Number.isFinite(layerId) || layerId <= 0
+        || !Number.isFinite(presenceSession) || presenceSession <= 0
+        || presenceSession === presenceSessionId
+    ) {
+        return null;
+    }
+    if (frameId !== currentFrameId) {
+        removeRemoteSelectionByPresenceSession(presenceSession);
+        return null;
+    }
+
+    const presenceUser = projectPresence.get(Number(payload.user_id)) || {};
+    const displayName = payload.display_name
+        || presenceUser.display_name
+        || 'Remote user';
+    const phase = typeof payload.selection_phase === 'string' ? payload.selection_phase : 'update';
+    const selection = normalizeRemoteSelectionShape(payload.selection);
+    return {
+        frame_id: frameId,
+        layer_id: layerId,
+        presence_session_id: presenceSession,
+        user_id: Number(payload.user_id) || null,
+        display_name: displayName,
+        avatar_url: normalizeAvatarUrl(payload.avatar_url || presenceUser.avatar_url || ''),
+        avatar_initial: payload.avatar_initial || presenceUser.avatar_initial || getPresenceAvatarInitial(displayName),
+        phase,
+        selection,
+        x: Number(payload.x),
+        y: Number(payload.y),
+        updated_at: Date.now(),
+    };
+}
+
+function handleRemoteSelectionPreview(payload) {
+    const state = normalizeRemoteSelectionPayload(payload);
+    if (!state) return false;
+    if (!state.selection || state.phase === 'clear') {
+        removeRemoteSelectionByPresenceSession(state.presence_session_id);
+        if (Number.isFinite(state.x) && Number.isFinite(state.y)) {
+            handleRemoteCursorMoved(payload);
+        }
+        return true;
+    }
+    primeRemoteAvatarImage(state.avatar_url);
+    remoteSelectionStates.set(state.presence_session_id, state);
+    if (Number.isFinite(state.x) && Number.isFinite(state.y)) {
+        handleRemoteCursorMoved(payload);
+    } else {
+        renderOverlay();
+    }
+    return true;
+}
+
 function ensureRemoteLayerPreviewState(payload) {
     const layerId = Number(payload.layer_id);
     const frameId = Number(payload.frame_id);
@@ -2150,7 +2280,39 @@ function floodFillRemotePreview(state, payload, startX, startY) {
     return true;
 }
 
+async function applyRemoteLayerSnapshotPreview(state, payload) {
+    if (!state || !state.ctx || !state.canvas || typeof payload.image_data !== 'string') return false;
+    const imageData = payload.image_data;
+    if (!imageData) return false;
+    state.snapshot_token = (state.snapshot_token || 0) + 1;
+    const snapshotToken = state.snapshot_token;
+    try {
+        const image = await loadImageAsync(imageData);
+        if (state.snapshot_token !== snapshotToken) return false;
+        clearCanvas(state.ctx, state.canvas);
+        drawFrameImageToContext(
+            state.ctx,
+            image,
+            0,
+            0,
+            state.canvas.width,
+            state.canvas.height,
+        );
+        state.updated_at = Date.now();
+        renderScene();
+        renderOverlay();
+        return true;
+    } catch (error) {
+        console.warn('Could not apply remote layer snapshot preview', error);
+        return false;
+    }
+}
+
 function applyRemoteStrokePayloadToPreview(payload, options = {}) {
+    if (payload && payload.tool === TOOL_SELECT) {
+        return handleRemoteSelectionPreview(payload);
+    }
+
     const state = ensureRemoteLayerPreviewState(payload);
     if (!state || !state.ctx) return false;
 
@@ -2177,7 +2339,9 @@ function applyRemoteStrokePayloadToPreview(payload, options = {}) {
         state.last_seq = seq;
     }
 
-    if (payload.tool === TOOL_FILL) {
+    if (payload.tool === LIVE_TOOL_HISTORY) {
+        void applyRemoteLayerSnapshotPreview(state, payload);
+    } else if (payload.tool === TOOL_FILL) {
         floodFillRemotePreview(state, payload, Number(payload.x), Number(payload.y));
     } else if (isShapeTool(payload.tool)) {
         if (options.kind === 'begin') {
@@ -2457,11 +2621,16 @@ async function handleProjectPresenceMessage(message) {
 
     if (message.type === 'presence_user_left') {
         removeProjectPresenceUser(payload.user_id);
+        removeRemoteSelectionByUser(payload.user_id, { render: false });
         return;
     }
 
     if (message.type === 'presence_frame_changed') {
         upsertProjectPresenceUser(payload.user);
+        const changedUser = normalizeProjectPresenceUser(payload.user);
+        if (changedUser && changedUser.current_frame_id !== currentFrameId) {
+            removeRemoteSelectionByUser(changedUser.user_id, { render: false });
+        }
         return;
     }
 
@@ -2485,6 +2654,7 @@ async function handleProjectPresenceMessage(message) {
         if (!releasedLock) return;
         clearRemoteLayerPreview(releasedLock.layer_id, { render: false });
         removeRemoteCursorByPresenceSession(releasedLock.presence_session_id, { render: false });
+        removeRemoteSelectionByPresenceSession(releasedLock.presence_session_id, { render: false });
         const wasCurrentLayer = releasedLock.layer_id === activeLayerId;
         removeLayerLock(releasedLock.layer_id);
         if (wasCurrentLayer && canCurrentUserUseLayerLocks() && isCollaborationReady()) {
@@ -2634,6 +2804,7 @@ function connectProjectPresence() {
         frameLocksById.clear();
         layerLocksById.clear();
         remoteCursorStates.clear();
+        remoteSelectionStates.clear();
         remoteLayerPreviewStates.clear();
         pendingAuthoritativeFrameRefresh = null;
         authoritativeFrameRefreshInFlight = false;
@@ -3391,6 +3562,21 @@ function applyHistoryEntry(entry, direction) {
     }
 }
 
+function broadcastHistoryEntryPreview(entry, action) {
+    if (!entry) return;
+    if (entry.type === 'layer') {
+        broadcastLiveLayerSnapshotPreview(action, { layerId: entry.layerId, force: true });
+        return;
+    }
+    if (entry.type === 'full') {
+        layers.forEach((layer) => {
+            if (layer && Number.isFinite(Number(layer.id))) {
+                broadcastLiveLayerSnapshotPreview(action, { layerId: layer.id, force: true });
+            }
+        });
+    }
+}
+
 function undoHistory() {
     const history = getFrameHistory();
     if (!history || history.position <= 0) return;
@@ -3399,6 +3585,7 @@ function undoHistory() {
     history.position -= 1;
     markUnsavedChanges();
     updateHistoryPanel();
+    broadcastHistoryEntryPreview(entry, 'undo');
 }
 
 function redoHistory() {
@@ -3409,6 +3596,7 @@ function redoHistory() {
     history.position += 1;
     markUnsavedChanges();
     updateHistoryPanel();
+    broadcastHistoryEntryPreview(entry, 'redo');
 }
 
 function jumpToHistoryPosition(targetPosition) {
@@ -3434,6 +3622,7 @@ function jumpToHistoryPosition(targetPosition) {
 
     markUnsavedChanges();
     updateHistoryPanel();
+    broadcastLiveLayerSnapshotPreview('history_jump', { force: true });
 }
 
 function bindHistoryEvents() {
@@ -4376,6 +4565,99 @@ function drawRemoteCursorAvatar(targetCtx, cursor, centerX, centerY, radius, uiS
     targetCtx.restore();
 }
 
+function getRemoteSelectionColor(state, alpha = 1) {
+    const palette = [
+        [96, 165, 250],
+        [34, 197, 94],
+        [168, 85, 247],
+        [244, 114, 182],
+        [251, 146, 60],
+    ];
+    const seed = Number(state && (state.user_id || state.presence_session_id)) || 0;
+    const [r, g, b] = palette[Math.abs(seed) % palette.length];
+    return `rgba(${r}, ${g}, ${b}, ${clamp(alpha, 0, 1)})`;
+}
+
+function drawRemoteSelectionPath(targetCtx, selectionShape, state) {
+    if (!targetCtx || !selectionShape) return;
+    const uiScale = Math.max(scale || 1, 0.01);
+    targetCtx.save();
+    targetCtx.lineWidth = Math.max(1, 1.4 / uiScale);
+    targetCtx.strokeStyle = getRemoteSelectionColor(state, 0.95);
+    targetCtx.setLineDash([7 / uiScale, 4 / uiScale]);
+    targetCtx.lineDashOffset = selectionDashOffset;
+    appendSelectionPath(targetCtx, selectionShape);
+    targetCtx.stroke();
+    targetCtx.restore();
+}
+
+function drawRemoteSelectionLabel(targetCtx, state, bounds) {
+    if (!targetCtx || !state || !bounds) return;
+    const uiScale = Math.max(scale || 1, 0.01);
+    const label = truncatePresenceLabel(state.display_name || 'Remote user');
+    const labelText = state.phase === 'transform' ? `${label} moving` : `${label} selecting`;
+    const paddingX = 8 / uiScale;
+    const height = 22 / uiScale;
+    const radius = 11 / uiScale;
+    const gap = 6 / uiScale;
+    const fontSize = Math.max(10, 11 / uiScale);
+
+    targetCtx.save();
+    targetCtx.font = `700 ${fontSize}px Inter, system-ui, sans-serif`;
+    targetCtx.textAlign = 'left';
+    targetCtx.textBaseline = 'middle';
+    const textWidth = targetCtx.measureText(labelText).width;
+    const width = textWidth + paddingX * 2;
+    let x = bounds.x;
+    let y = bounds.y - height - gap;
+    if (bufferCanvas) {
+        x = clamp(x, 0, Math.max(0, bufferCanvas.width - width));
+        y = y < 0 ? bounds.y + gap : y;
+    }
+
+    targetCtx.shadowColor = 'rgba(2, 6, 23, 0.38)';
+    targetCtx.shadowBlur = 14 / uiScale;
+    targetCtx.fillStyle = 'rgba(15, 23, 42, 0.9)';
+    targetCtx.strokeStyle = getRemoteSelectionColor(state, 0.55);
+    targetCtx.lineWidth = Math.max(1, 1 / uiScale);
+    drawRoundedRectPath(targetCtx, x, y, width, height, radius);
+    targetCtx.fill();
+    targetCtx.stroke();
+    targetCtx.shadowColor = 'transparent';
+    targetCtx.fillStyle = '#e0f2fe';
+    targetCtx.fillText(labelText, x + paddingX, y + height / 2);
+    targetCtx.restore();
+}
+
+function renderRemoteSelections() {
+    if (!overlayCtx || !overlayCanvas) return;
+    const now = Date.now();
+    const selections = [];
+    for (const [presenceId, state] of remoteSelectionStates.entries()) {
+        if (
+            !state
+            || state.frame_id !== currentFrameId
+            || !state.selection
+            || now - state.updated_at > REMOTE_SELECTION_STALE_MS
+        ) {
+            remoteSelectionStates.delete(presenceId);
+            continue;
+        }
+        selections.push(state);
+    }
+    if (!selections.length) return;
+
+    withTransformedContext(overlayCtx, () => {
+        selections.forEach((state) => {
+            drawRemoteSelectionPath(overlayCtx, state.selection, state);
+            const bounds = getSelectionBounds(state.selection);
+            if (bounds && bounds.width > 0 && bounds.height > 0) {
+                drawRemoteSelectionLabel(overlayCtx, state, bounds);
+            }
+        });
+    });
+}
+
 function renderRemoteCursors() {
     if (!overlayCtx || !overlayCanvas) return;
     const now = Date.now();
@@ -4478,6 +4760,7 @@ function renderOverlay() {
             }
         });
     }
+    renderRemoteSelections();
     renderRemoteCursors();
     updateSelectionAnimationState();
 }
@@ -4822,10 +5105,20 @@ function hasUnsupportedLivePreviewMask() {
     return Boolean(selection && selection.type === SELECT_MAGIC && selection.maskCanvas);
 }
 
+function isLivePreviewTool(toolName) {
+    return toolName === TOOL_BRUSH
+        || toolName === TOOL_ERASER
+        || toolName === TOOL_FILL
+        || toolName === TOOL_SELECT
+        || toolName === LIVE_TOOL_HISTORY
+        || isShapeTool(toolName);
+}
+
 function canStreamLiveStroke(toolName) {
+    const canIgnoreSelectionMask = toolName === TOOL_SELECT || toolName === LIVE_TOOL_HISTORY;
     return Boolean(
-        (toolName === TOOL_BRUSH || toolName === TOOL_ERASER || toolName === TOOL_FILL || isShapeTool(toolName))
-        && !hasUnsupportedLivePreviewMask()
+        isLivePreviewTool(toolName)
+        && (canIgnoreSelectionMask || !hasUnsupportedLivePreviewMask())
         && isProjectPresenceSocketOpen()
         && isCollaborationReady()
         && Number.isFinite(currentFrameId)
@@ -4861,6 +5154,184 @@ function broadcastRemoteCursorPosition(x, y, options = {}) {
     }
     remoteCursorLastSentAt = now;
     return sendProjectPresenceMessage('remote_cursor_moved', buildLiveStrokePayload(toolName, { x, y }));
+}
+
+function serializeSelectionForRealtime(selectionShape) {
+    if (!selectionShape) return null;
+    if (selectionShape.type === SELECT_RECT) {
+        return {
+            type: SELECT_RECT,
+            x: selectionShape.x,
+            y: selectionShape.y,
+            width: selectionShape.width,
+            height: selectionShape.height,
+        };
+    }
+    if (selectionShape.type === SELECT_ELLIPSE) {
+        return {
+            type: SELECT_ELLIPSE,
+            centerX: selectionShape.centerX,
+            centerY: selectionShape.centerY,
+            radiusX: selectionShape.radiusX,
+            radiusY: selectionShape.radiusY,
+        };
+    }
+    if (selectionShape.type === SELECT_LASSO) {
+        const points = Array.isArray(selectionShape.points) ? selectionShape.points : [];
+        const maxPoints = 240;
+        const step = points.length > maxPoints ? Math.ceil(points.length / maxPoints) : 1;
+        return {
+            type: SELECT_LASSO,
+            points: points
+                .filter((_, index) => index % step === 0 || index === points.length - 1)
+                .map((point) => ({ x: point.x, y: point.y })),
+        };
+    }
+    if (selectionShape.type === SELECT_MAGIC) {
+        const bounds = getSelectionBounds(selectionShape);
+        if (!bounds || bounds.width <= 0 || bounds.height <= 0) return null;
+        return {
+            type: SELECT_RECT,
+            x: bounds.x,
+            y: bounds.y,
+            width: bounds.width,
+            height: bounds.height,
+        };
+    }
+    return null;
+}
+
+function resetLiveSelectionBroadcast() {
+    liveSelectionSequence = 0;
+    liveSelectionId = '';
+    liveSelectionLayerId = null;
+    liveSelectionLastSentAt = 0;
+}
+
+function buildLiveSelectionPayload(selectionShape, phase, extra = {}) {
+    return buildLiveStrokePayload(TOOL_SELECT, {
+        selection: serializeSelectionForRealtime(selectionShape),
+        selection_phase: phase,
+        selection_mode: selectionMode,
+        seq: liveSelectionSequence,
+        stroke_id: liveSelectionId,
+        base_revision: getLayerContentRevision(activeLayerId),
+        x: Number.isFinite(lastPointerX) ? lastPointerX : undefined,
+        y: Number.isFinite(lastPointerY) ? lastPointerY : undefined,
+        ...extra,
+    });
+}
+
+function beginLiveSelectionPreview(x, y, selectionShape = null, phase = 'selecting') {
+    if (!canStreamLiveStroke(TOOL_SELECT)) {
+        resetLiveSelectionBroadcast();
+        return false;
+    }
+    liveSelectionSequence = 1;
+    liveSelectionId = createLiveStrokeId();
+    liveSelectionLayerId = activeLayerId;
+    liveSelectionLastSentAt = Date.now();
+    return sendProjectPresenceMessage('layer_stroke_begin', buildLiveSelectionPayload(selectionShape, phase, { x, y }));
+}
+
+function maybeBroadcastLiveSelectionPreview(selectionShape, phase = 'selecting', options = {}) {
+    if (!canStreamLiveStroke(TOOL_SELECT) || liveSelectionLayerId !== activeLayerId) return false;
+    if (!liveSelectionId) {
+        const bounds = getSelectionBounds(selectionShape);
+        const startXForPreview = bounds ? bounds.x : lastPointerX;
+        const startYForPreview = bounds ? bounds.y : lastPointerY;
+        beginLiveSelectionPreview(startXForPreview, startYForPreview, selectionShape, phase);
+    }
+    const now = Date.now();
+    if (!options.force && now - liveSelectionLastSentAt < LIVE_SELECTION_INTERVAL_MS) {
+        return false;
+    }
+    liveSelectionSequence += 1;
+    liveSelectionLastSentAt = now;
+    return sendProjectPresenceMessage('layer_stroke_segment', buildLiveSelectionPayload(selectionShape, phase));
+}
+
+function endLiveSelectionPreview(selectionShape = null, phase = 'selected') {
+    if (!liveSelectionId || !canStreamLiveStroke(TOOL_SELECT) || liveSelectionLayerId !== activeLayerId) {
+        resetLiveSelectionBroadcast();
+        return false;
+    }
+    liveSelectionSequence += 1;
+    const didSend = sendProjectPresenceMessage('layer_stroke_end', buildLiveSelectionPayload(selectionShape, phase));
+    resetLiveSelectionBroadcast();
+    return didSend;
+}
+
+function broadcastLiveSelectionClear() {
+    if (!canStreamLiveStroke(TOOL_SELECT)) {
+        resetLiveSelectionBroadcast();
+        return false;
+    }
+    if (!liveSelectionId) {
+        liveSelectionSequence = 1;
+        liveSelectionId = createLiveStrokeId();
+        liveSelectionLayerId = activeLayerId;
+    } else {
+        liveSelectionSequence += 1;
+    }
+    const didSend = sendProjectPresenceMessage('layer_stroke_end', buildLiveSelectionPayload(null, 'clear'));
+    resetLiveSelectionBroadcast();
+    return didSend;
+}
+
+function getLayerSnapshotCanvas(layerId) {
+    const numericLayerId = Number(layerId);
+    const layer = getLayerById(numericLayerId);
+    if (!layer) return null;
+    if (numericLayerId === activeLayerId && hasFloatingSelection()) {
+        return getActiveLayerCompositeCanvas();
+    }
+    return layer.bufferCanvas || null;
+}
+
+function canStreamLiveLayerSnapshot(layerId = activeLayerId) {
+    const numericLayerId = Number(layerId);
+    return Boolean(
+        Number.isFinite(numericLayerId)
+        && numericLayerId > 0
+        && isProjectPresenceSocketOpen()
+        && isCollaborationReady()
+        && Number.isFinite(currentFrameId)
+        && currentFrameId > 0
+        && isLockOwnedByCurrentSession(getLayerLock(numericLayerId))
+    );
+}
+
+function broadcastLiveLayerSnapshotPreview(action = 'history', options = {}) {
+    const layerId = Number(options.layerId || activeLayerId);
+    if (!canStreamLiveLayerSnapshot(layerId)) return false;
+    const now = Date.now();
+    if (!options.force && now - liveLayerSnapshotLastSentAt < LIVE_LAYER_SNAPSHOT_INTERVAL_MS) {
+        return false;
+    }
+    const sourceCanvas = options.sourceCanvas || getLayerSnapshotCanvas(layerId);
+    if (!sourceCanvas || typeof sourceCanvas.toDataURL !== 'function') return false;
+    let imageData = '';
+    try {
+        imageData = sourceCanvas.toDataURL('image/png');
+    } catch (error) {
+        console.warn('Could not build live layer snapshot preview', error);
+        return false;
+    }
+    if (!imageData) return false;
+    liveLayerSnapshotLastSentAt = now;
+    const snapshotId = createLiveStrokeId();
+    return sendProjectPresenceMessage('layer_stroke_end', {
+        frame_id: currentFrameId,
+        layer_id: layerId,
+        layer_name: getLayerById(layerId)?.name || '',
+        tool: LIVE_TOOL_HISTORY,
+        action,
+        image_data: imageData,
+        seq: 1,
+        stroke_id: snapshotId,
+        base_revision: getLayerContentRevision(layerId),
+    });
 }
 
 function beginLiveStrokeBroadcast(x, y, toolName) {
@@ -6017,6 +6488,11 @@ function startSelectionTransform(mode, handleId, startX, startY, event) {
         setCanvasCursorOverride('move');
     }
     renderOverlay();
+    beginLiveSelectionPreview(startX, startY, selection, 'transform');
+    broadcastLiveLayerSnapshotPreview('selection_transform', {
+        sourceCanvas: getActiveLayerCompositeCanvas(),
+        force: true,
+    });
     return true;
 }
 
@@ -6044,6 +6520,11 @@ function startFloatingSelectionTransform(mode, handleId, startX, startY) {
         setCanvasCursorOverride('move');
     }
     renderOverlay();
+    beginLiveSelectionPreview(startX, startY, selection, 'transform');
+    broadcastLiveLayerSnapshotPreview('selection_transform', {
+        sourceCanvas: getActiveLayerCompositeCanvas(),
+        force: true,
+    });
     return true;
 }
 
@@ -6110,6 +6591,10 @@ function updateSelectionTransform(event) {
         renderLayer(activeLayer);
     }
     renderOverlay();
+    maybeBroadcastLiveSelectionPreview(selection, 'transform');
+    broadcastLiveLayerSnapshotPreview('selection_transform', {
+        sourceCanvas: getActiveLayerCompositeCanvas(),
+    });
 }
 
 function commitSelectionTransform() {
@@ -6149,6 +6634,8 @@ function commitSelectionTransform() {
 
     markUnsavedChanges();
     commitLayerHistory();
+    endLiveSelectionPreview(selection, 'transform');
+    broadcastLiveLayerSnapshotPreview('selection_transform', { force: true });
 
     resetSelectionTransformState();
     renderScene();
@@ -6380,6 +6867,7 @@ function deleteSelectionContent() {
     const didClear = clearSelectionContent();
     if (didClear) {
         commitLayerHistory();
+        broadcastLiveLayerSnapshotPreview('delete', { force: true });
     } else {
         cancelPendingHistory();
     }
@@ -6400,6 +6888,7 @@ function cutSelectionToClipboard() {
     const didClear = clearSelectionContent();
     if (didClear) {
         commitLayerHistory();
+        broadcastLiveLayerSnapshotPreview('cut', { force: true });
     } else {
         cancelPendingHistory();
     }
@@ -6455,6 +6944,7 @@ function pasteSelectionFromClipboard() {
     }
     renderOverlay();
     commitLayerHistory();
+    broadcastLiveLayerSnapshotPreview('paste', { force: true });
     return true;
 }
 
@@ -6501,9 +6991,12 @@ function isPointInSelection(x, y, selectionShape) {
     return false;
 }
 
-function clearSelection() {
+function clearSelection(options = {}) {
     if (hasFloatingSelection()) {
         commitSelectionTransform();
+    }
+    if (options.broadcast !== false && !isSwitchingFrame && !isHistoryApplying) {
+        broadcastLiveSelectionClear();
     }
     setAutoPanSelectionHover(false);
     selection = null;
@@ -8393,6 +8886,11 @@ function cancelLiveCanvasInteractionsForPlayback() {
 
     if (isTransformingSelection) {
         isTransformingSelection = false;
+        endLiveSelectionPreview(selection, 'transform');
+        broadcastLiveLayerSnapshotPreview('selection_transform', {
+            sourceCanvas: getActiveLayerCompositeCanvas(),
+            force: true,
+        });
         hideTransformHint();
         setCanvasCursorOverride(null);
         hoverTransformHandle = null;
@@ -8754,6 +9252,11 @@ async function loadFrameByIndex(targetIndex) {
             for (const [presenceId, cursor] of remoteCursorStates.entries()) {
                 if (cursor.frame_id === previousFrameId) {
                     remoteCursorStates.delete(presenceId);
+                }
+            }
+            for (const [presenceId, state] of remoteSelectionStates.entries()) {
+                if (state.frame_id === previousFrameId) {
+                    remoteSelectionStates.delete(presenceId);
                 }
             }
         }
@@ -9860,6 +10363,10 @@ function handlePointerDown(event) {
         }
         if (selectionMode === SELECT_MAGIC) {
             createMagicWandSelection(x, y);
+            if (selection) {
+                beginLiveSelectionPreview(x, y, selection, 'selecting');
+                endLiveSelectionPreview(selection, 'selected');
+            }
             return;
         }
         isSelecting = true;
@@ -9868,6 +10375,7 @@ function handlePointerDown(event) {
         selectionDraft = null;
         lassoPoints = [{ x, y }];
         renderOverlay();
+        beginLiveSelectionPreview(x, y, null, 'selecting');
         return;
     }
 
@@ -9948,6 +10456,9 @@ function handlePointerMove(event) {
             }
             renderOverlay();
         }
+        if (selectionDraft) {
+            maybeBroadcastLiveSelectionPreview(selectionDraft, 'selecting');
+        }
         return;
     }
 
@@ -9963,6 +10474,11 @@ function handlePointerUp(event) {
     pendingCanvasStartFromOutside = null;
     if (isTransformingSelection) {
         isTransformingSelection = false;
+        endLiveSelectionPreview(selection, 'transform');
+        broadcastLiveLayerSnapshotPreview('selection_transform', {
+            sourceCanvas: getActiveLayerCompositeCanvas(),
+            force: true,
+        });
         hideTransformHint();
         setCanvasCursorOverride(null);
         hoverTransformHandle = null;
@@ -10014,6 +10530,7 @@ function handlePointerUp(event) {
         lassoPoints = [];
         isSelecting = false;
         renderOverlay();
+        endLiveSelectionPreview(nextSelection, nextSelection ? 'selected' : 'clear');
         if (event) {
             logCoordDebug('select-up', event);
         }
@@ -10227,6 +10744,7 @@ function pasteExternalImage(image, options = {}) {
     }
     renderOverlay();
     commitLayerHistory();
+    broadcastLiveLayerSnapshotPreview('paste_image', { force: true });
     return true;
 }
 
