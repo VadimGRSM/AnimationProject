@@ -167,7 +167,11 @@ def acquire_frame_lock(project_id, frame_id, user_id, role, presence_session_id)
         }
 
     existing_lock = FrameLock.objects.select_for_update().filter(frame_id=frame.pk).first()
-    if existing_lock and existing_lock.presence_session_id != presence_session.pk:
+    if (
+        existing_lock
+        and existing_lock.presence_session_id != presence_session.pk
+        and existing_lock.user_id != user_id
+    ):
         return {
             'status': 'denied',
             'reason': 'locked_by_other',
@@ -388,7 +392,11 @@ def acquire_layer_lock(project_id, frame_id, layer_id, user_id, role, presence_s
         }
 
     existing_lock = LayerLock.objects.select_for_update().filter(layer_id=layer.pk).first()
-    if existing_lock and existing_lock.presence_session_id != presence_session.pk:
+    if (
+        existing_lock
+        and existing_lock.presence_session_id != presence_session.pk
+        and existing_lock.user_id != user_id
+    ):
         return {
             'status': 'denied',
             'reason': 'locked_by_other',

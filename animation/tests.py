@@ -574,6 +574,34 @@ class LayerLockSemanticsTests(TestCase):
         self.assertEqual(denied_lock_state['lock']['presence_session_id'], owner_presence.pk)
         self.assertEqual(LayerLock.objects.filter(project=self.project, layer=self.layer_one).count(), 1)
 
+    def test_same_user_new_session_can_reclaim_locked_layer(self):
+        first_presence = self._create_presence_session(self.owner, ProjectMember.Role.OWNER)
+        second_presence = self._create_presence_session(self.owner, ProjectMember.Role.OWNER)
+
+        acquire_layer_lock(
+            project_id=self.project.pk,
+            frame_id=self.frame.pk,
+            layer_id=self.layer_one.pk,
+            user_id=self.owner.pk,
+            role=ProjectMember.Role.OWNER,
+            presence_session_id=first_presence.pk,
+        )
+        reclaimed_lock_state = acquire_layer_lock(
+            project_id=self.project.pk,
+            frame_id=self.frame.pk,
+            layer_id=self.layer_one.pk,
+            user_id=self.owner.pk,
+            role=ProjectMember.Role.OWNER,
+            presence_session_id=second_presence.pk,
+        )
+        refreshed_lock = LayerLock.objects.get(project=self.project, layer=self.layer_one)
+
+        self.assertEqual(reclaimed_lock_state['status'], 'acquired')
+        self.assertEqual(reclaimed_lock_state['lock']['presence_session_id'], second_presence.pk)
+        self.assertEqual(LayerLock.objects.filter(project=self.project, layer=self.layer_one).count(), 1)
+        self.assertEqual(refreshed_lock.user_id, self.owner.pk)
+        self.assertEqual(refreshed_lock.presence_session_id, second_presence.pk)
+
     def test_repeated_acquire_for_owned_layer_is_idempotent(self):
         presence_session = self._create_presence_session(self.owner, ProjectMember.Role.OWNER)
 
@@ -685,6 +713,17 @@ class ProjectConsumerLayerLockCacheTests(TestCase):
         ])
 
         self.assertEqual(consumer.owned_layer_lock_ids, {11, 13})
+
+    def test_layer_lock_acquired_event_removes_stolen_owned_lock_from_cache(self):
+        consumer = ProjectConsumer()
+        consumer.presence_session_id = 77
+        consumer.owned_layer_lock_ids = {21}
+
+        consumer.remove_owned_layer_locks([
+            {'layer_id': 21, 'presence_session_id': 88},
+        ])
+
+        self.assertEqual(consumer.owned_layer_lock_ids, set())
 
     def test_live_preview_authorization_uses_owned_layer_lock_cache(self):
         consumer = ProjectConsumer()
@@ -1979,6 +2018,65 @@ class ProjectWebsocketRoomTests(TransactionTestCase):
 
             await editor_communicator.disconnect()
             await owner_communicator.disconnect()
+
+        async_to_sync(scenario)()
+
+    def test_same_user_new_session_can_reclaim_layer_lock(self):
+        async def scenario():
+            first_communicator, first_connection = await self._assert_member_can_connect(
+                self.owner,
+                ProjectMember.Role.OWNER,
+            )
+            second_communicator, second_connection = await self._assert_member_can_connect(
+                self.owner,
+                ProjectMember.Role.OWNER,
+            )
+            self.assertNotEqual(
+                first_connection['presence_session_id'],
+                second_connection['presence_session_id'],
+            )
+
+            await first_communicator.send_json_to({
+                'type': 'layer_lock_acquire',
+                'payload': {
+                    'frame_id': self.frame_one.pk,
+                    'layer_id': self.layer_one.pk,
+                },
+            })
+            first_acquired = await first_communicator.receive_json_from()
+            second_seen_first = await second_communicator.receive_json_from()
+            self.assertEqual(first_acquired['type'], 'layer_lock_acquired')
+            self.assertEqual(second_seen_first['type'], 'layer_lock_acquired')
+            self.assertEqual(
+                first_acquired['payload']['lock']['presence_session_id'],
+                first_connection['presence_session_id'],
+            )
+
+            await second_communicator.send_json_to({
+                'type': 'layer_lock_acquire',
+                'payload': {
+                    'frame_id': self.frame_one.pk,
+                    'layer_id': self.layer_one.pk,
+                },
+            })
+            first_seen_reclaim = await first_communicator.receive_json_from()
+            second_acquired = await second_communicator.receive_json_from()
+            self.assertEqual(first_seen_reclaim['type'], 'layer_lock_acquired')
+            self.assertEqual(second_acquired['type'], 'layer_lock_acquired')
+            self.assertEqual(second_acquired['payload']['lock']['user_id'], self.owner.pk)
+            self.assertEqual(second_acquired['payload']['lock']['layer_id'], self.layer_one.pk)
+            self.assertEqual(
+                second_acquired['payload']['lock']['presence_session_id'],
+                second_connection['presence_session_id'],
+            )
+
+            lock_row = await database_sync_to_async(self._layer_lock_row)(self.layer_one.pk)
+            self.assertIsNotNone(lock_row)
+            self.assertEqual(lock_row.user_id, self.owner.pk)
+            self.assertEqual(lock_row.presence_session_id, second_connection['presence_session_id'])
+
+            await second_communicator.disconnect()
+            await first_communicator.disconnect()
 
         async_to_sync(scenario)()
 

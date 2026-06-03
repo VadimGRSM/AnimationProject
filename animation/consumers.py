@@ -621,6 +621,7 @@ class ProjectConsumer(AsyncJsonWebsocketConsumer):
         )
 
     async def layer_lock_acquired(self, event):
+        self.remove_owned_layer_locks([event["lock"]])
         self.add_owned_layer_lock(event["lock"])
         await self.send_event(
             "layer_lock_acquired",

@@ -680,6 +680,15 @@ function isLockOwnedByCurrentSession(lock) {
     );
 }
 
+function isLockOwnedByCurrentUser(lock) {
+    return Boolean(
+        lock
+        && Number.isFinite(lock.user_id)
+        && Number.isFinite(presenceCurrentUserId)
+        && lock.user_id === presenceCurrentUserId,
+    );
+}
+
 function isLayerLockOwnedByCurrentSession(layerId) {
     return isLockOwnedByCurrentSession(getLayerLock(layerId));
 }
@@ -1574,9 +1583,11 @@ function requestLayerLock(frameId, layerId) {
         return true;
     }
     if (currentLock) {
-        clearPendingLayerLockRequest(numericLayerId);
-        syncCollaborativeEditorUi();
-        return false;
+        if (!isLockOwnedByCurrentUser(currentLock)) {
+            clearPendingLayerLockRequest(numericLayerId);
+            syncCollaborativeEditorUi();
+            return false;
+        }
     }
     const requestKey = getLayerLockRequestKey(numericFrameId, numericLayerId);
     const now = Date.now();
@@ -1657,9 +1668,11 @@ function syncCurrentLayerLock(previousLayerId = null) {
     }
 
     if (currentLock) {
-        clearPendingLayerLockRequest(activeLayerId);
-        syncCollaborativeEditorUi();
-        return;
+        if (!isLockOwnedByCurrentUser(currentLock)) {
+            clearPendingLayerLockRequest(activeLayerId);
+            syncCollaborativeEditorUi();
+            return;
+        }
     }
 
     requestLayerLock(currentFrameId, activeLayerId);
