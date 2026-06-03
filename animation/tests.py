@@ -709,13 +709,14 @@ class ProjectConsumerLayerLockCacheTests(TestCase):
                     'tool': 'brush',
                 })
             )
-            self.assertFalse(
-                consumer.can_stream_layer_preview({
-                    'frame_id': 1,
-                    'layer_id': 21,
-                    'tool': 'fill',
-                })
-            )
+            for tool_name in ('fill', 'line', 'rectangle', 'ellipse'):
+                self.assertTrue(
+                    consumer.can_stream_layer_preview({
+                        'frame_id': 1,
+                        'layer_id': 21,
+                        'tool': tool_name,
+                    })
+                )
 
     def test_live_preview_authorization_rejects_invalid_sequence_payloads(self):
         consumer = ProjectConsumer()
@@ -2415,6 +2416,103 @@ class ProjectWebsocketRoomTests(TransactionTestCase):
             self.assertEqual(end_event['type'], 'layer_stroke_end')
             self.assertEqual(end_event['payload']['tool'], 'eraser')
             self.assertEqual(end_event['payload']['seq'], 3)
+
+            await editor_communicator.disconnect()
+            await owner_communicator.disconnect()
+
+        async_to_sync(scenario)()
+
+    def test_live_shape_and_fill_events_broadcast_to_other_editor(self):
+        async def scenario():
+            owner_communicator, owner_connection = await self._assert_member_can_connect(
+                self.owner,
+                ProjectMember.Role.OWNER,
+            )
+            editor_communicator, _ = await self._assert_member_can_connect(
+                self.editor,
+                ProjectMember.Role.EDITOR,
+                expected_user_count=2,
+            )
+            await owner_communicator.receive_json_from()
+
+            await owner_communicator.send_json_to({
+                'type': 'layer_lock_acquire',
+                'payload': {
+                    'frame_id': self.frame_one.pk,
+                    'layer_id': self.layer_one.pk,
+                },
+            })
+            await owner_communicator.receive_json_from()
+            await editor_communicator.receive_json_from()
+
+            await owner_communicator.send_json_to({
+                'type': 'layer_stroke_begin',
+                'payload': {
+                    'frame_id': self.frame_one.pk,
+                    'layer_id': self.layer_one.pk,
+                    'tool': 'line',
+                    'color': '#4455aa',
+                    'size': 4,
+                    'opacity': 1,
+                    'blur': 0,
+                    'seq': 1,
+                    'stroke_id': 'shape-1',
+                    'base_revision': 0,
+                    'x': 8,
+                    'y': 10,
+                },
+            })
+            begin_event = await editor_communicator.receive_json_from()
+            self.assertEqual(begin_event['type'], 'layer_stroke_begin')
+            self.assertEqual(begin_event['payload']['tool'], 'line')
+            self.assertEqual(begin_event['payload']['presence_session_id'], owner_connection['presence_session_id'])
+
+            await owner_communicator.send_json_to({
+                'type': 'layer_stroke_segment',
+                'payload': {
+                    'frame_id': self.frame_one.pk,
+                    'layer_id': self.layer_one.pk,
+                    'tool': 'line',
+                    'color': '#4455aa',
+                    'size': 4,
+                    'opacity': 1,
+                    'blur': 0,
+                    'seq': 2,
+                    'stroke_id': 'shape-1',
+                    'base_revision': 0,
+                    'x1': 8,
+                    'y1': 10,
+                    'x2': 64,
+                    'y2': 70,
+                    'x': 64,
+                    'y': 70,
+                },
+            })
+            segment_event = await editor_communicator.receive_json_from()
+            self.assertEqual(segment_event['type'], 'layer_stroke_segment')
+            self.assertEqual(segment_event['payload']['tool'], 'line')
+            self.assertEqual(segment_event['payload']['x1'], 8)
+            self.assertEqual(segment_event['payload']['x2'], 64)
+
+            await owner_communicator.send_json_to({
+                'type': 'layer_stroke_end',
+                'payload': {
+                    'frame_id': self.frame_one.pk,
+                    'layer_id': self.layer_one.pk,
+                    'tool': 'fill',
+                    'color': '#22cc88',
+                    'seq': 1,
+                    'stroke_id': 'fill-1',
+                    'base_revision': 0,
+                    'x': 20,
+                    'y': 22,
+                },
+            })
+            fill_event = await editor_communicator.receive_json_from()
+            self.assertEqual(fill_event['type'], 'layer_stroke_end')
+            self.assertEqual(fill_event['payload']['tool'], 'fill')
+            self.assertEqual(fill_event['payload']['color'], '#22cc88')
+            self.assertEqual(fill_event['payload']['presence_session_id'], owner_connection['presence_session_id'])
 
             await editor_communicator.disconnect()
             await owner_communicator.disconnect()

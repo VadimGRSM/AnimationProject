@@ -2032,12 +2032,109 @@ function resetRemoteLayerStrokeState(state, options = {}) {
     state.stampCarryDistance = 0;
     state.stroke_desynced = false;
     state.stroke_needs_refresh = false;
+    state.draftBaseCanvas = null;
+    state.draftBaseCtx = null;
 }
 
 function markRemoteLayerStrokeDesynced(state) {
     if (!state) return;
     state.stroke_desynced = true;
     state.stroke_needs_refresh = true;
+}
+
+function captureRemotePreviewDraftBase(state) {
+    if (!state || !state.canvas) return false;
+    if (!state.draftBaseCanvas) {
+        state.draftBaseCanvas = document.createElement('canvas');
+    }
+    if (state.draftBaseCanvas.width !== state.canvas.width) {
+        state.draftBaseCanvas.width = state.canvas.width;
+    }
+    if (state.draftBaseCanvas.height !== state.canvas.height) {
+        state.draftBaseCanvas.height = state.canvas.height;
+    }
+    if (!state.draftBaseCtx) {
+        state.draftBaseCtx = state.draftBaseCanvas.getContext('2d');
+    }
+    if (!state.draftBaseCtx) return false;
+    clearCanvas(state.draftBaseCtx, state.draftBaseCanvas);
+    state.draftBaseCtx.drawImage(state.canvas, 0, 0);
+    return true;
+}
+
+function restoreRemotePreviewDraftBase(state) {
+    if (!state || !state.ctx || !state.canvas || !state.draftBaseCanvas) return false;
+    clearCanvas(state.ctx, state.canvas);
+    state.ctx.drawImage(state.draftBaseCanvas, 0, 0);
+    return true;
+}
+
+function drawRemoteShapePreview(state, payload, fromX, fromY, toX, toY) {
+    if (!state || !state.ctx) return false;
+    if (
+        !Number.isFinite(fromX) || !Number.isFinite(fromY)
+        || !Number.isFinite(toX) || !Number.isFinite(toY)
+    ) {
+        return false;
+    }
+    if (!state.draftBaseCanvas) {
+        captureRemotePreviewDraftBase(state);
+    }
+    restoreRemotePreviewDraftBase(state);
+    state.ctx.save();
+    applyRemotePreviewStrokeStyles(state.ctx, payload);
+    drawShapePath(state.ctx, payload.tool, fromX, fromY, toX, toY);
+    state.ctx.stroke();
+    state.ctx.restore();
+    return true;
+}
+
+function floodFillRemotePreview(state, payload, startX, startY) {
+    if (!state || !state.ctx || !state.canvas) return false;
+    const width = state.canvas.width;
+    const height = state.canvas.height;
+    const x = Math.floor(startX);
+    const y = Math.floor(startY);
+    if (x < 0 || y < 0 || x >= width || y >= height) return false;
+
+    const imageData = state.ctx.getImageData(0, 0, width, height);
+    const { data } = imageData;
+    const startIndex = (y * width + x) * 4;
+    const targetColor = [
+        data[startIndex],
+        data[startIndex + 1],
+        data[startIndex + 2],
+        data[startIndex + 3],
+    ];
+    const fillColor = hexToRgba(payload.color || '#000000');
+    if (colorsMatch(data, startIndex, fillColor)) return false;
+
+    const visited = new Uint8Array(width * height);
+    const stack = [x, y];
+    while (stack.length > 0) {
+        const currentY = stack.pop();
+        const currentX = stack.pop();
+        if (currentX === undefined || currentY === undefined) break;
+        if (currentX < 0 || currentY < 0 || currentX >= width || currentY >= height) {
+            continue;
+        }
+
+        const offset = currentY * width + currentX;
+        if (visited[offset]) continue;
+        visited[offset] = 1;
+
+        const pixelIndex = offset * 4;
+        if (!colorsMatch(data, pixelIndex, targetColor)) continue;
+
+        setPixelColor(data, pixelIndex, fillColor);
+        stack.push(currentX + 1, currentY);
+        stack.push(currentX - 1, currentY);
+        stack.push(currentX, currentY + 1);
+        stack.push(currentX, currentY - 1);
+    }
+
+    state.ctx.putImageData(imageData, 0, 0);
+    return true;
 }
 
 function applyRemoteStrokePayloadToPreview(payload, options = {}) {
@@ -2067,7 +2164,23 @@ function applyRemoteStrokePayloadToPreview(payload, options = {}) {
         state.last_seq = seq;
     }
 
-    if (options.kind === 'begin') {
+    if (payload.tool === TOOL_FILL) {
+        floodFillRemotePreview(state, payload, Number(payload.x), Number(payload.y));
+    } else if (isShapeTool(payload.tool)) {
+        if (options.kind === 'begin') {
+            captureRemotePreviewDraftBase(state);
+        } else {
+            const fromX = Number.isFinite(Number(payload.x1)) ? Number(payload.x1) : Number(payload.start_x);
+            const fromY = Number.isFinite(Number(payload.y1)) ? Number(payload.y1) : Number(payload.start_y);
+            const toX = Number.isFinite(Number(payload.x2)) ? Number(payload.x2) : Number(payload.x);
+            const toY = Number.isFinite(Number(payload.y2)) ? Number(payload.y2) : Number(payload.y);
+            drawRemoteShapePreview(state, payload, fromX, fromY, toX, toY);
+            if (options.kind === 'end') {
+                state.draftBaseCanvas = null;
+                state.draftBaseCtx = null;
+            }
+        }
+    } else if (options.kind === 'begin') {
         state.stampCarryDistance = 0;
         drawRemotePreviewPoint(state.ctx, payload, Number(payload.x), Number(payload.y));
     } else if (options.kind === 'segment') {
@@ -4698,7 +4811,7 @@ function hasUnsupportedLivePreviewMask() {
 
 function canStreamLiveStroke(toolName) {
     return Boolean(
-        (toolName === TOOL_BRUSH || toolName === TOOL_ERASER)
+        (toolName === TOOL_BRUSH || toolName === TOOL_ERASER || toolName === TOOL_FILL || isShapeTool(toolName))
         && !hasUnsupportedLivePreviewMask()
         && isProjectPresenceSocketOpen()
         && isCollaborationReady()
@@ -4784,6 +4897,48 @@ function maybeBroadcastLiveStrokeSegment(x, y) {
     liveStrokeLastSentAt = now;
 }
 
+function maybeBroadcastLiveShapePreview(x, y, options = {}) {
+    if (!isShapeTool(activeTool)) return;
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !liveStrokeLayerId) {
+        return;
+    }
+    if (!canStreamLiveStroke(activeTool) || liveStrokeLayerId !== activeLayerId) {
+        return;
+    }
+    const now = Date.now();
+    if (!options.force && now - liveStrokeLastSentAt < LIVE_STROKE_SEGMENT_INTERVAL_MS) {
+        return;
+    }
+    liveStrokeSequence += 1;
+    sendProjectPresenceMessage('layer_stroke_segment', buildLiveStrokePayload(activeTool, {
+        x1: startX,
+        y1: startY,
+        x2: x,
+        y2: y,
+        x,
+        y,
+        seq: liveStrokeSequence,
+        stroke_id: liveStrokeId,
+        base_revision: liveStrokeBaseRevision,
+    }));
+    liveStrokeLastPoint = { x, y };
+    liveStrokeLastSentAt = now;
+}
+
+function broadcastLiveFillPreview(x, y, color) {
+    if (!canStreamLiveStroke(TOOL_FILL)) return false;
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return false;
+    const fillStrokeId = createLiveStrokeId();
+    return sendProjectPresenceMessage('layer_stroke_end', buildLiveStrokePayload(TOOL_FILL, {
+        x,
+        y,
+        color,
+        seq: 1,
+        stroke_id: fillStrokeId,
+        base_revision: getLayerContentRevision(activeLayerId),
+    }));
+}
+
 function endLiveStrokeBroadcast(x, y) {
     if (!liveStrokeLayerId || !canStreamLiveStroke(activeTool)) {
         liveStrokeLastPoint = null;
@@ -4808,13 +4963,20 @@ function endLiveStrokeBroadcast(x, y) {
         }
     }
     liveStrokeSequence += 1;
-    sendProjectPresenceMessage('layer_stroke_end', buildLiveStrokePayload(activeTool, {
+    const payload = {
         x,
         y,
         seq: liveStrokeSequence,
         stroke_id: liveStrokeId,
         base_revision: liveStrokeBaseRevision,
-    }));
+    };
+    if (isShapeTool(activeTool)) {
+        payload.x1 = startX;
+        payload.y1 = startY;
+        payload.x2 = x;
+        payload.y2 = y;
+    }
+    sendProjectPresenceMessage('layer_stroke_end', buildLiveStrokePayload(activeTool, payload));
     liveStrokeLastPoint = null;
     liveStrokeLayerId = null;
     liveStrokeSequence = 0;
@@ -4858,6 +5020,11 @@ function startDrawing(x, y, toolName) {
             blur: activeStrokeBlur,
         });
         beginLiveStrokeBroadcast(x, y, toolName);
+        return;
+    }
+
+    if (isShapeTool(toolName)) {
+        beginLiveStrokeBroadcast(x, y, toolName);
     }
 }
 
@@ -4892,6 +5059,7 @@ function continueDrawing(x, y) {
     if (isShapeTool(activeTool)) {
         const target = getConstrainedShapeEnd(activeTool, startX, startY, x, y);
         drawShapePreview(target.x, target.y);
+        maybeBroadcastLiveShapePreview(target.x, target.y);
         lastX = target.x;
         lastY = target.y;
         return;
@@ -9704,10 +9872,12 @@ function handlePointerDown(event) {
 
     if (activeTool === TOOL_FILL) {
         beginLayerHistory(getToolHistoryLabel(TOOL_FILL));
-        const didFill = floodFill(x, y, { color: getColorByMouseButton(activePointerButton) });
+        const fillColor = getColorByMouseButton(activePointerButton);
+        const didFill = floodFill(x, y, { color: fillColor });
         if (didFill) {
             markUnsavedChanges();
             commitLayerHistory();
+            broadcastLiveFillPreview(x, y, fillColor);
         } else {
             cancelPendingHistory();
         }
