@@ -2627,7 +2627,7 @@ async function handleProjectPresenceMessage(message) {
 
     if (message.type === 'presence_frame_changed') {
         upsertProjectPresenceUser(payload.user);
-        const changedUser = normalizeProjectPresenceUser(payload.user);
+        const changedUser = normalizePresenceUser(payload.user);
         if (changedUser && changedUser.current_frame_id !== currentFrameId) {
             removeRemoteSelectionByUser(changedUser.user_id, { render: false });
         }
