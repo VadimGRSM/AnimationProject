@@ -286,6 +286,60 @@ def _merge_active_layer_content(existing_raw, incoming_raw, active_layer_id):
     return _serialize_frame_content_payload(merged_payload)
 
 
+def _parse_content_layer_id(layer_entry):
+    try:
+        return int(layer_entry.get('id'))
+    except (TypeError, ValueError, AttributeError):
+        return None
+
+
+def _prune_deleted_layer_content(frame, deleted_layer_id, remaining_layers):
+    remaining_layers = list(remaining_layers)
+    remaining_ids = {layer.pk for layer in remaining_layers}
+    remaining_by_id = {layer.pk: layer for layer in remaining_layers}
+    payload = _parse_frame_content_payload(frame.content_json)
+    if payload is None:
+        payload = {'version': 1, 'layers': []}
+    else:
+        payload = dict(payload)
+
+    next_layers = []
+    did_change = False
+    for layer_entry in payload.get('layers', []):
+        if not isinstance(layer_entry, dict):
+            did_change = True
+            continue
+        layer_id = _parse_content_layer_id(layer_entry)
+        if layer_id == deleted_layer_id or (layer_id is not None and layer_id not in remaining_ids):
+            did_change = True
+            continue
+        entry = dict(layer_entry)
+        remaining_layer = remaining_by_id.get(layer_id)
+        if remaining_layer is not None:
+            next_index = len(next_layers)
+            if entry.get('order') != remaining_layer.order:
+                entry['order'] = remaining_layer.order
+                did_change = True
+            if entry.get('index') != next_index:
+                entry['index'] = next_index
+                did_change = True
+        next_layers.append(entry)
+
+    active_layer_id = _parse_content_layer_id({'id': payload.get('active_layer_id')})
+    if active_layer_id not in remaining_ids:
+        next_active_layer = remaining_layers[-1] if remaining_layers else None
+        payload['active_layer_id'] = next_active_layer.pk if next_active_layer else None
+        payload['active_layer_order'] = next_active_layer.order if next_active_layer else None
+        payload['active_layer_index'] = (len(remaining_layers) - 1) if next_active_layer else None
+        did_change = True
+
+    if payload.get('layers') != next_layers:
+        payload['layers'] = next_layers
+        did_change = True
+
+    return _serialize_frame_content_payload(payload), did_change
+
+
 def serialize_project_card(project, first_frame=None, membership=None):
     frame_payload = serialize_frame(first_frame) if first_frame else {
         'preview_url': '',
@@ -1321,31 +1375,46 @@ def layer_update(request, pk, index, layer_id):
 @require_POST
 def layer_delete(request, pk, index, layer_id):
     project = get_editable_project_or_404(request.user, pk)
-    frame = get_object_or_404(Frame, project=project, index=index)
-    layer = get_object_or_404(Layer, frame=frame, pk=layer_id)
-    deleted_layer_id = layer.pk
     try:
         payload = json.loads(request.body.decode('utf-8')) if request.body else {}
     except json.JSONDecodeError:
         payload = {}
-    layer.delete()
-    ensure_default_layer(frame)
-    reorder_layers(frame)
-    layers = frame.layers.order_by('order', 'id')
-    response_layers = [serialize_layer(item) for item in layers]
-    transaction.on_commit(
-        lambda project_id=project.pk, event_payload={
-            'frame_id': frame.pk,
-            'frame_index': frame.index,
-            'layer_id': deleted_layer_id,
-            'layers': response_layers,
-            'actor_user_id': request.user.pk,
-            'client_request_id': normalize_client_request_id(payload.get('client_request_id')),
-        }: broadcast_project_event(project_id, 'layer_deleted', event_payload)
-    )
+
+    with transaction.atomic():
+        frame = get_object_or_404(
+            Frame.objects.select_for_update(),
+            project=project,
+            index=index,
+        )
+        layer = get_object_or_404(Layer.objects.select_for_update(), frame=frame, pk=layer_id)
+        deleted_layer_id = layer.pk
+        layer.delete()
+        ensure_default_layer(frame)
+        reorder_layers(frame)
+        layers = list(frame.layers.order_by('order', 'id'))
+        response_layers = [serialize_layer(item) for item in layers]
+        pruned_content_json, _ = _prune_deleted_layer_content(frame, deleted_layer_id, layers)
+        frame.content_json = pruned_content_json
+        if frame.preview_image:
+            frame.preview_image.delete(save=False)
+        frame.content_revision += 1
+        frame.save(update_fields=['content_json', 'preview_image', 'content_revision', 'updated_at'])
+        project.save(update_fields=['updated_at'])
+        frame_payload = build_frame_preview_payload(frame)
+        transaction.on_commit(
+            lambda project_id=project.pk, event_payload={
+                **frame_payload,
+                'layer_id': deleted_layer_id,
+                'layers': response_layers,
+                'actor_user_id': request.user.pk,
+                'client_request_id': normalize_client_request_id(payload.get('client_request_id')),
+            }: broadcast_project_event(project_id, 'layer_deleted', event_payload)
+        )
+
     return JsonResponse({
         'ok': True,
         'layers': response_layers,
+        **frame_payload,
     })
 
 

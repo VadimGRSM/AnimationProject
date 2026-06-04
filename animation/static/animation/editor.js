@@ -2478,7 +2478,23 @@ async function applyRemoteLayerStructureChange(payload) {
     if (!Number.isFinite(frameId) || frameId !== currentFrameId) {
         return;
     }
+    const previousActiveLayerId = activeLayerId;
+    updateTimelineFramePreview(payload);
+    if (Object.prototype.hasOwnProperty.call(payload, 'preview_url')) {
+        currentFramePreviewUrl = payload.preview_url || '';
+    }
+    if (payload.updated_at) {
+        currentFrameUpdatedAt = payload.updated_at;
+    }
+    if (payload.frame_content_revision !== undefined) {
+        currentFrameContentRevision = normalizeFrameContentRevision(payload.frame_content_revision);
+        markCurrentFrameAuthoritativelySynced(currentFrameContentRevision);
+    }
+    if (payload.layer_id) {
+        currentFrameContentJson = '';
+    }
     await loadLayers();
+    syncCurrentLayerLock(previousActiveLayerId);
 }
 
 async function applyRemoteLayerUpdate(payload) {
@@ -4351,7 +4367,14 @@ async function deleteLayer(layerId) {
     if (isLayerPanelInteractionLocked()) return;
     const url = getLayerDeleteUrl(layerId);
     if (!url) return;
+    const savedOk = await ensureCurrentFrameSavedBeforeLeave({
+        failureText: 'Could not save the current frame before deleting the layer.',
+    });
+    if (!savedOk) {
+        return;
+    }
     beginFullHistory('layer_delete');
+    const previousActiveLayerId = activeLayerId;
     const clientRequestId = createProjectEventRequestId();
     rememberLocalProjectEventRequest(clientRequestId);
     try {
@@ -4368,7 +4391,26 @@ async function deleteLayer(layerId) {
         if (!response.ok || !data || !data.ok) {
             throw new Error('Could not delete layer.');
         }
+        updateTimelineFramePreview(data);
+        if (Object.prototype.hasOwnProperty.call(data, 'preview_url')) {
+            currentFramePreviewUrl = data.preview_url || '';
+        }
+        if (data.updated_at) {
+            currentFrameUpdatedAt = data.updated_at;
+        }
+        if (data.frame_content_revision !== undefined) {
+            currentFrameContentRevision = normalizeFrameContentRevision(data.frame_content_revision);
+            markCurrentFrameAuthoritativelySynced(currentFrameContentRevision);
+        }
+        currentFrameContentJson = '';
         mergeLayerList(data.layers || []);
+        syncCurrentLayerLock(previousActiveLayerId);
+        hasUnsavedChanges = false;
+        lastSavedAt = new Date();
+        setSaveStatus('Saved', 'saved');
+        setSaveIndicator('saved');
+        updateLastSavedLabel();
+        updateSaveButtonState();
         commitFullHistory();
     } catch (error) {
         forgetLocalProjectEventRequest(clientRequestId);
@@ -9106,6 +9148,7 @@ function updateTimelineFramePreview(framePayload) {
 
     const frameId = Number(framePayload.frame_id ?? framePayload.id);
     const frameIndex = Number(framePayload.frame_index ?? framePayload.index);
+    const hasPreviewUrl = Object.prototype.hasOwnProperty.call(framePayload, 'preview_url');
     const previewUrl = framePayload.preview_url || '';
     const updatedAt = framePayload.updated_at || '';
     const contentRevision = normalizeFrameContentRevision(
@@ -9115,7 +9158,9 @@ function updateTimelineFramePreview(framePayload) {
     const stored = Number.isFinite(frameId) ? getTimelineFrameById(frameId) : null;
     const storedByIndex = stored || (Number.isFinite(frameIndex) ? getTimelineFrameByIndex(frameIndex) : null);
     if (storedByIndex) {
-        storedByIndex.preview_url = previewUrl || storedByIndex.preview_url || '';
+        if (hasPreviewUrl) {
+            storedByIndex.preview_url = previewUrl;
+        }
         storedByIndex.updated_at = updatedAt || storedByIndex.updated_at || '';
         storedByIndex.content_revision = contentRevision || storedByIndex.content_revision || 0;
         if (Number.isFinite(frameIndex) && frameIndex > 0) {
@@ -9171,6 +9216,15 @@ function updateTimelineFramePreview(framePayload) {
                 el.appendChild(placeholder);
             }
         };
+    } else if (hasPreviewUrl) {
+        const img = el.querySelector('img.timeline-frame__img');
+        if (img) img.remove();
+        if (!el.querySelector('.timeline-frame__placeholder')) {
+            const placeholder = document.createElement('span');
+            placeholder.className = 'timeline-frame__placeholder';
+            placeholder.textContent = String(frameIndex || '');
+            el.appendChild(placeholder);
+        }
     }
 
     onionSkinNotifyFrameUpdated(framePayload);

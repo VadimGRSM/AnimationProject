@@ -3210,6 +3210,120 @@ class FrameRealtimeSyncTests(TestCase):
         self.assertNotIn('frame', editor_response_payload)
         self.assertNotIn('content_json', editor_response_payload)
 
+    def test_deleting_final_layer_prunes_saved_content_and_preview(self):
+        with tempfile.TemporaryDirectory() as tmp_media_root:
+            with override_settings(MEDIA_ROOT=tmp_media_root):
+                self.frame.content_json = json.dumps({
+                    'version': 1,
+                    'active_layer_id': self.layer.pk,
+                    'active_layer_order': self.layer.order,
+                    'active_layer_index': 0,
+                    'layers': [
+                        {
+                            'id': self.layer.pk,
+                            'order': self.layer.order,
+                            'index': 0,
+                            'image_data': 'ink-that-should-not-return',
+                        },
+                    ],
+                })
+                self.frame.preview_image.save(
+                    f'project_{self.project.pk}_frame_{self.frame.index}.png',
+                    ContentFile(_make_png_bytes()),
+                    save=True,
+                )
+                original_preview_name = self.frame.preview_image.name
+                self.frame.save(update_fields=['content_json'])
+
+                response = self.client.post(
+                    reverse(
+                        'animation:layer_delete',
+                        kwargs={
+                            'pk': self.project.pk,
+                            'index': self.frame.index,
+                            'layer_id': self.layer.pk,
+                        },
+                    ),
+                    data=json.dumps({'client_request_id': 'delete-final-layer'}),
+                    content_type='application/json',
+                )
+
+                self.assertEqual(response.status_code, 200)
+                payload = response.json()
+                self.assertTrue(payload['ok'])
+                self.assertEqual(payload['preview_url'], '')
+                self.assertFalse(payload['has_preview'])
+                self.assertEqual(payload['frame_content_revision'], 1)
+                self.assertEqual(len(payload['layers']), 1)
+                self.assertNotEqual(payload['layers'][0]['id'], self.layer.pk)
+
+                self.frame.refresh_from_db()
+                saved_payload = json.loads(self.frame.content_json)
+                self.assertEqual(saved_payload['layers'], [])
+                self.assertEqual(saved_payload['active_layer_id'], payload['layers'][0]['id'])
+                self.assertEqual(saved_payload['active_layer_order'], payload['layers'][0]['order'])
+                self.assertEqual(saved_payload['active_layer_index'], 0)
+                self.assertEqual(self.frame.content_revision, 1)
+                self.assertFalse(bool(self.frame.preview_image))
+                self.assertFalse(self.frame.preview_image.storage.exists(original_preview_name))
+
+    def test_deleting_layer_removes_only_that_layer_from_saved_content(self):
+        second_layer = Layer.objects.create(frame=self.frame, order=2, name='Paint', visible=True, opacity=100)
+        self.frame.content_json = json.dumps({
+            'version': 1,
+            'active_layer_id': self.layer.pk,
+            'active_layer_order': self.layer.order,
+            'active_layer_index': 0,
+            'layers': [
+                {
+                    'id': self.layer.pk,
+                    'order': self.layer.order,
+                    'index': 0,
+                    'image_data': 'ink-to-delete',
+                },
+                {
+                    'id': second_layer.pk,
+                    'order': second_layer.order,
+                    'index': 1,
+                    'image_data': 'paint-to-keep',
+                },
+            ],
+        })
+        self.frame.save(update_fields=['content_json'])
+
+        response = self.client.post(
+            reverse(
+                'animation:layer_delete',
+                kwargs={
+                    'pk': self.project.pk,
+                    'index': self.frame.index,
+                    'layer_id': self.layer.pk,
+                },
+            ),
+            data=json.dumps({'client_request_id': 'delete-one-layer'}),
+            content_type='application/json',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload['ok'])
+        self.assertEqual([layer['id'] for layer in payload['layers']], [second_layer.pk])
+
+        self.frame.refresh_from_db()
+        saved_payload = json.loads(self.frame.content_json)
+        self.assertEqual(saved_payload['active_layer_id'], second_layer.pk)
+        self.assertEqual(saved_payload['active_layer_order'], payload['layers'][0]['order'])
+        self.assertEqual(saved_payload['active_layer_index'], 0)
+        self.assertEqual(saved_payload['layers'], [
+            {
+                'id': second_layer.pk,
+                'order': payload['layers'][0]['order'],
+                'index': 0,
+                'image_data': 'paint-to-keep',
+            },
+        ])
+        self.assertEqual(self.frame.content_revision, 1)
+
     def test_project_save_updates_frame_revisions(self):
         second_frame = Frame.objects.create(project=self.project, index=2, content_json='{"layers":[]}')
         payload = {
