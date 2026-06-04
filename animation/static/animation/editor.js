@@ -1562,6 +1562,18 @@ function removeLayerLock(layerId) {
     syncCollaborativeEditorUi();
 }
 
+function clearDeletedLayerRealtimeState(layerId) {
+    const numericLayerId = Number(layerId);
+    if (!Number.isFinite(numericLayerId) || numericLayerId <= 0) return;
+    const deletedLock = getLayerLock(numericLayerId);
+    clearRemoteLayerPreview(numericLayerId, { render: false });
+    if (deletedLock) {
+        removeRemoteCursorByPresenceSession(deletedLock.presence_session_id, { render: false });
+        removeRemoteSelectionByPresenceSession(deletedLock.presence_session_id, { render: false });
+    }
+    removeLayerLock(numericLayerId);
+}
+
 function requestLayerLock(frameId, layerId) {
     const numericFrameId = Number(frameId);
     const numericLayerId = Number(layerId);
@@ -2479,6 +2491,13 @@ async function applyRemoteLayerStructureChange(payload) {
         return;
     }
     const previousActiveLayerId = activeLayerId;
+    const changedLayerId = Number(payload.layer_id);
+    const wasActiveLayerDeleted = Number.isFinite(changedLayerId)
+        && changedLayerId > 0
+        && changedLayerId === activeLayerId;
+    if (payload.layer_id) {
+        clearDeletedLayerRealtimeState(payload.layer_id);
+    }
     updateTimelineFramePreview(payload);
     if (Object.prototype.hasOwnProperty.call(payload, 'preview_url')) {
         currentFramePreviewUrl = payload.preview_url || '';
@@ -2494,6 +2513,20 @@ async function applyRemoteLayerStructureChange(payload) {
         currentFrameContentJson = '';
     }
     await loadLayers();
+    if (wasActiveLayerDeleted) {
+        cancelPendingHistory();
+        clearSelection();
+        hasUnsavedChanges = false;
+        lastSavedAt = null;
+        setSaveIndicator('idle');
+        if (isCurrentFrameReadOnly()) {
+            setSaveStatus(getCurrentFrameEditingState().text);
+        } else {
+            setSaveStatus(getText('no_changes'));
+        }
+        updateLastSavedLabel();
+        updateSaveButtonState();
+    }
     syncCurrentLayerLock(previousActiveLayerId);
 }
 
@@ -4391,6 +4424,7 @@ async function deleteLayer(layerId) {
         if (!response.ok || !data || !data.ok) {
             throw new Error('Could not delete layer.');
         }
+        clearDeletedLayerRealtimeState(layerId);
         updateTimelineFramePreview(data);
         if (Object.prototype.hasOwnProperty.call(data, 'preview_url')) {
             currentFramePreviewUrl = data.preview_url || '';
