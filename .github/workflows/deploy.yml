@@ -50,7 +50,7 @@ jobs:
             docker compose exec -T web python manage.py migrate --noinput
 
             echo "Collect static"
-            docker compose exec -T web python manage.py collectstatic --noinput
+            docker compose exec -T web python manage.py collectstatic --clear --noinput
 
             echo "Ensure django.contrib.sites record exists"
             docker compose exec -T web python manage.py shell -c "from django.contrib.sites.models import Site; Site.objects.update_or_create(id=4, defaults={'domain':'www.animstudio.website','name':'AnimStudio'})"
