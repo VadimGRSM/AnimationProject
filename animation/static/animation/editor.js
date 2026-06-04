@@ -13,6 +13,16 @@ const TOOL_SELECT = 'select';
 const TOOL_PAN = 'pan';
 const LIVE_TOOL_HISTORY = 'history';
 
+const CANVAS_READBACK_CONTEXT_OPTIONS = { willReadFrequently: true };
+
+function getCanvasContext(canvasElement, options = undefined) {
+    return canvasElement ? canvasElement.getContext('2d', options) : null;
+}
+
+function getCanvasReadbackContext(canvasElement) {
+    return getCanvasContext(canvasElement, CANVAS_READBACK_CONTEXT_OPTIONS);
+}
+
 const SELECT_RECT = 'rect';
 const SELECT_ELLIPSE = 'ellipse';
 const SELECT_LASSO = 'lasso';
@@ -1778,7 +1788,7 @@ function ensureRemotePreviewCanvas(state, sourceCanvas) {
         state.canvas.height = projectFrameHeight;
     }
     if (!state.ctx) {
-        state.ctx = state.canvas.getContext('2d');
+        state.ctx = getCanvasReadbackContext(state.canvas);
     }
     if (!state.ctx) return false;
     clearCanvas(state.ctx, state.canvas);
@@ -3800,7 +3810,7 @@ function ensureLayerCanvases(layer) {
         layer.bufferCanvas = document.createElement('canvas');
     }
     if (!layer.bufferCtx) {
-        layer.bufferCtx = layer.bufferCanvas.getContext('2d');
+        layer.bufferCtx = getCanvasReadbackContext(layer.bufferCanvas);
     }
 }
 
@@ -10088,7 +10098,7 @@ async function ensureCurrentFrameSavedBeforeLeave(options = {}) {
     }
     const savedOk = await saveCurrentFrame();
     if (!savedOk && hasUnsavedChanges) {
-        if (options.failureText && (!saveStatusText || !saveStatusText.textContent)) {
+        if (options.failureText && (!saveStatus || !saveStatus.textContent)) {
             setSaveStatus(options.failureText, 'error');
             setSaveIndicator('error');
         }
