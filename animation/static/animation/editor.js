@@ -4260,6 +4260,11 @@ async function loadLayers() {
 function fillBackgroundLayerIfNeeded() {
     if (didInitBackground) return;
     if (currentFramePreviewUrl) return;
+    if (String(currentFrameContentJson || '').trim()) return;
+    if (layers.length !== 1) {
+        didInitBackground = true;
+        return;
+    }
     const backgroundLayer = getBackgroundLayer();
     if (!backgroundLayer || !backgroundLayer.bufferCtx || !backgroundLayer.bufferCanvas) return;
     backgroundLayer.bufferCtx.fillStyle = '#ffffff';
