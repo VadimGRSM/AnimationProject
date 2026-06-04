@@ -2120,7 +2120,7 @@ body.modal-open {
     pointer-events: none;
     display: none;
     transform: translate(-50%, -50%);
-    z-index: 5;
+    z-index: 1400;
 }
 
 .eyedropper-zoom.is-visible {
