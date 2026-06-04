@@ -33,6 +33,7 @@ class ProjectConsumer(AsyncJsonWebsocketConsumer):
     FORBIDDEN_CLOSE_CODE = 4403
     NOT_FOUND_CLOSE_CODE = 4404
     REMOTE_CURSOR_BROADCAST_INTERVAL_SECONDS = 0.14
+    MAX_LIVE_PREVIEW_IMAGE_DATA_CHARS = 400000
 
     async def connect(self):
         raw_project_id = self.scope["url_route"]["kwargs"].get("project_id")
@@ -161,6 +162,7 @@ class ProjectConsumer(AsyncJsonWebsocketConsumer):
 
         if message_type == "ping":
             await self.touch_presence_session()
+            await self.refresh_project_group_membership()
             await self.send_event(
                 "pong",
                 {
@@ -332,6 +334,12 @@ class ProjectConsumer(AsyncJsonWebsocketConsumer):
         self._last_remote_cursor_broadcast_at = now
         return False
 
+    async def refresh_project_group_membership(self):
+        project_group_name = getattr(self, "project_group_name", None)
+        if not project_group_name:
+            return
+        await self.channel_layer.group_add(project_group_name, self.channel_name)
+
     @staticmethod
     def build_project_group_name(project_id):
         return f"project_{project_id}"
@@ -500,8 +508,14 @@ class ProjectConsumer(AsyncJsonWebsocketConsumer):
         seq = payload.get("seq")
         base_revision = payload.get("base_revision")
         stroke_id = payload.get("stroke_id")
+        image_data = payload.get("image_data")
         if tool not in {"brush", "eraser", "fill", "line", "rectangle", "ellipse", "select", "history"}:
             return False
+        if image_data is not None:
+            if not isinstance(image_data, str):
+                return False
+            if len(image_data) > self.MAX_LIVE_PREVIEW_IMAGE_DATA_CHARS:
+                return False
         try:
             numeric_frame_id = int(frame_id)
             numeric_layer_id = int(layer_id)

@@ -797,6 +797,28 @@ class ProjectConsumerLayerLockCacheTests(TestCase):
             })
         )
 
+    def test_live_preview_authorization_rejects_oversized_image_payloads(self):
+        consumer = ProjectConsumer()
+        consumer.presence_session_id = 101
+        consumer.owned_layer_lock_ids = {21}
+
+        self.assertFalse(
+            consumer.can_stream_layer_preview({
+                'frame_id': 1,
+                'layer_id': 21,
+                'tool': 'history',
+                'image_data': 'x' * (consumer.MAX_LIVE_PREVIEW_IMAGE_DATA_CHARS + 1),
+            })
+        )
+        self.assertTrue(
+            consumer.can_stream_layer_preview({
+                'frame_id': 1,
+                'layer_id': 21,
+                'tool': 'history',
+                'image_data': 'x' * consumer.MAX_LIVE_PREVIEW_IMAGE_DATA_CHARS,
+            })
+        )
+
 
 class ProjectAccessTests(TestCase):
     def setUp(self):

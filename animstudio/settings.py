@@ -91,6 +91,7 @@ REDIS_PORT = os.environ.get("REDIS_PORT", "6379")
 REDIS_URL = os.environ.get("REDIS_URL", f"redis://{REDIS_HOST}:{REDIS_PORT}/0")
 REDIS_SOCKET_CONNECT_TIMEOUT = float(os.environ.get("REDIS_SOCKET_CONNECT_TIMEOUT", "5"))
 REDIS_SOCKET_TIMEOUT = float(os.environ.get("REDIS_SOCKET_TIMEOUT", "15"))
+REDIS_CHANNEL_GROUP_EXPIRY = int(os.environ.get("REDIS_CHANNEL_GROUP_EXPIRY", "1800"))
 
 CHANNEL_LAYERS = {
     "default": {
@@ -103,6 +104,7 @@ CHANNEL_LAYERS = {
                     "socket_timeout": REDIS_SOCKET_TIMEOUT,
                 },
             ],
+            "group_expiry": REDIS_CHANNEL_GROUP_EXPIRY,
         },
     },
 }

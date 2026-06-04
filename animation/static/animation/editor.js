@@ -426,6 +426,7 @@ const LAYER_LOCK_REQUEST_RETRY_MS = 1200;
 const LIVE_STROKE_SEGMENT_INTERVAL_MS = 45;
 const LIVE_SELECTION_INTERVAL_MS = 55;
 const LIVE_LAYER_SNAPSHOT_INTERVAL_MS = 180;
+const LIVE_LAYER_SNAPSHOT_MAX_DATA_URL_CHARS = 400000;
 const AUTHORITATIVE_FRAME_REFRESH_DELAY_MS = 75;
 const COMMENT_NOTIFICATION_TTL_MS = 7000;
 const COMMENT_NOTIFICATION_MAX_ITEMS = 3;
@@ -523,6 +524,16 @@ const UI_TEXT = {
     project_fps_updated: 'Project FPS updated.',
     project_fps_invalid: 'Enter a valid project FPS (1-60).',
 };
+
+const SERVER_LAYER_HISTORY_LABELS = new Set([
+    'layer_add',
+    'layer_delete',
+    'layer_opacity_action',
+    'layer_show_action',
+    'layer_hide_action',
+    'layer_rename_action',
+    'layer_order',
+]);
 
 function interpolateText(template, params = null) {
     if (!params || typeof template !== 'string') return template;
@@ -3425,6 +3436,9 @@ function commitLayerHistory() {
 function beginFullHistory(label) {
     if (isHistoryApplying) return;
     cancelPendingHistory();
+    if (SERVER_LAYER_HISTORY_LABELS.has(label)) {
+        return;
+    }
     const beforeSnapshot = captureFullSnapshot();
     if (!beforeSnapshot) return;
     historyPending = {
@@ -3533,15 +3547,6 @@ function applyFullSnapshot(snapshot) {
     isHistoryApplying = true;
     discardSelectionState();
 
-    const layerPayloads = snapshot.layers.map((layer) => ({
-        id: layer.id,
-        name: layer.name,
-        order: layer.order,
-        visible: layer.visible,
-        opacity: layer.opacity,
-    }));
-    mergeLayerList(layerPayloads);
-
     snapshot.layers.forEach((layerSnapshot) => {
         const layer = getLayerById(layerSnapshot.id);
         if (!layer) return;
@@ -3557,11 +3562,18 @@ function applyFullSnapshot(snapshot) {
         }
     });
 
-    const nextActive = snapshot.activeLayerId && getLayerById(snapshot.activeLayerId)
-        ? snapshot.activeLayerId
-        : (layers.length ? layers[layers.length - 1].id : null);
-    activeLayerId = nextActive;
-    updateActiveLayerPointers();
+    if (
+        snapshot.activeLayerId
+        && getLayerById(snapshot.activeLayerId)
+        && (
+            snapshot.activeLayerId === activeLayerId
+            || isLayerLockOwnedByCurrentSession(snapshot.activeLayerId)
+            || !canCurrentUserUseLayerLocks()
+        )
+    ) {
+        activeLayerId = snapshot.activeLayerId;
+        updateActiveLayerPointers();
+    }
     applyAllLayerStyles();
     renderLayerList();
     renderScene();
@@ -3610,25 +3622,18 @@ function applyHistoryEntry(entry, direction) {
 
 function broadcastHistoryEntryPreview(entry, action) {
     if (!entry) return;
-    if (entry.type === 'layer') {
-        broadcastLiveLayerSnapshotPreview(action, { layerId: entry.layerId, force: true });
-        return;
-    }
-    if (entry.type === 'full') {
-        layers.forEach((layer) => {
-            if (layer && Number.isFinite(Number(layer.id))) {
-                broadcastLiveLayerSnapshotPreview(action, { layerId: layer.id, force: true });
-            }
-        });
-    }
 }
 
 function undoHistory() {
     const history = getFrameHistory();
     if (!history || history.position <= 0) return;
     const entry = history.entries[history.position - 1];
+    const previousActiveLayerId = activeLayerId;
     applyHistoryEntry(entry, 'undo');
     history.position -= 1;
+    if (previousActiveLayerId !== activeLayerId) {
+        syncCurrentLayerLock(previousActiveLayerId);
+    }
     markUnsavedChanges();
     updateHistoryPanel();
     broadcastHistoryEntryPreview(entry, 'undo');
@@ -3638,8 +3643,12 @@ function redoHistory() {
     const history = getFrameHistory();
     if (!history || history.position >= history.entries.length) return;
     const entry = history.entries[history.position];
+    const previousActiveLayerId = activeLayerId;
     applyHistoryEntry(entry, 'redo');
     history.position += 1;
+    if (previousActiveLayerId !== activeLayerId) {
+        syncCurrentLayerLock(previousActiveLayerId);
+    }
     markUnsavedChanges();
     updateHistoryPanel();
     broadcastHistoryEntryPreview(entry, 'redo');
@@ -3651,6 +3660,7 @@ function jumpToHistoryPosition(targetPosition) {
     if (!history) return;
     const nextPosition = clamp(Number(targetPosition) || 0, 0, history.entries.length);
     if (nextPosition === history.position) return;
+    const previousActiveLayerId = activeLayerId;
 
     if (nextPosition < history.position) {
         while (history.position > nextPosition) {
@@ -3666,9 +3676,11 @@ function jumpToHistoryPosition(targetPosition) {
         }
     }
 
+    if (previousActiveLayerId !== activeLayerId) {
+        syncCurrentLayerLock(previousActiveLayerId);
+    }
     markUnsavedChanges();
     updateHistoryPanel();
-    broadcastLiveLayerSnapshotPreview('history_jump', { force: true });
 }
 
 function bindHistoryEvents() {
@@ -5397,6 +5409,9 @@ function broadcastLiveLayerSnapshotPreview(action = 'history', options = {}) {
         return false;
     }
     if (!imageData) return false;
+    if (imageData.length > LIVE_LAYER_SNAPSHOT_MAX_DATA_URL_CHARS) {
+        return false;
+    }
     liveLayerSnapshotLastSentAt = now;
     const snapshotId = createLiveStrokeId();
     return sendProjectPresenceMessage('layer_stroke_end', {
