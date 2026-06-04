@@ -1,7 +1,12 @@
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core import mail
 from django.test import TestCase
 from django.urls import reverse
+
+from allauth.socialaccount.models import SocialAccount, SocialLogin
+
+from .adapters import apply_google_profile_to_user
 
 
 User = get_user_model()
@@ -13,6 +18,79 @@ class AccountsFlowTests(TestCase):
 
         self.assertTrue(hasattr(user, "profile"))
         self.assertEqual(user.display_name, "user")
+
+    def test_avatar_url_falls_back_to_google_avatar(self):
+        user = User(
+            email="google@example.com",
+            display_name="Google User",
+            avatar_external_url="https://lh3.googleusercontent.com/avatar.png",
+        )
+
+        self.assertEqual(user.avatar_url, "https://lh3.googleusercontent.com/avatar.png")
+
+    def test_google_profile_data_populates_user(self):
+        user = User(email="google@example.com")
+        sociallogin = SocialLogin(
+            user=user,
+            account=SocialAccount(
+                provider="google",
+                uid="google-123",
+                extra_data={
+                    "email": "google@example.com",
+                    "name": "Google Artist",
+                    "given_name": "Google",
+                    "family_name": "Artist",
+                    "picture": "https://lh3.googleusercontent.com/avatar.png",
+                },
+            ),
+        )
+
+        changed_fields = apply_google_profile_to_user(user, sociallogin, overwrite=True)
+
+        self.assertCountEqual(
+            changed_fields,
+            ["display_name", "first_name", "last_name", "avatar_external_url"],
+        )
+        self.assertEqual(user.display_name, "Google Artist")
+        self.assertEqual(user.first_name, "Google")
+        self.assertEqual(user.last_name, "Artist")
+        self.assertEqual(user.avatar_external_url, "https://lh3.googleusercontent.com/avatar.png")
+
+    def test_google_profile_sync_does_not_overwrite_custom_display_name(self):
+        user = User.objects.create_user(
+            email="linked@example.com",
+            password="StrongPassword123",
+            display_name="Local Name",
+        )
+        sociallogin = SocialLogin(
+            user=user,
+            account=SocialAccount(
+                provider="google",
+                uid="google-456",
+                extra_data={
+                    "name": "Google Name",
+                    "given_name": "Google",
+                    "family_name": "Name",
+                    "picture": "https://lh3.googleusercontent.com/linked.png",
+                },
+            ),
+        )
+
+        apply_google_profile_to_user(user, sociallogin, commit=True)
+        user.refresh_from_db()
+
+        self.assertEqual(user.display_name, "Local Name")
+        self.assertEqual(user.first_name, "Google")
+        self.assertEqual(user.last_name, "Name")
+        self.assertEqual(user.avatar_external_url, "https://lh3.googleusercontent.com/linked.png")
+
+    def test_google_social_auth_settings_are_enabled(self):
+        self.assertEqual(settings.ACCOUNT_ADAPTER, "accounts.adapters.AnimStudioAccountAdapter")
+        self.assertEqual(settings.SOCIALACCOUNT_ADAPTER, "accounts.adapters.AnimStudioSocialAccountAdapter")
+        self.assertTrue(settings.SOCIALACCOUNT_AUTO_SIGNUP)
+        self.assertTrue(settings.SOCIALACCOUNT_EMAIL_AUTHENTICATION)
+        self.assertTrue(settings.SOCIALACCOUNT_EMAIL_AUTHENTICATION_AUTO_CONNECT)
+        self.assertTrue(settings.SOCIALACCOUNT_LOGIN_ON_GET)
 
     def test_signup_creates_user_profile_and_session(self):
         response = self.client.post(

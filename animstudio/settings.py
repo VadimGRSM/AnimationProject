@@ -158,6 +158,13 @@ ACCOUNT_UNIQUE_EMAIL = True
 ACCOUNT_SESSION_REMEMBER = True
 ACCOUNT_USER_DISPLAY = "accounts.models.user_display"
 ACCOUNT_EMAIL_CONFIRMATION_ANONYMOUS_REDIRECT_URL = "account_login"
+ACCOUNT_ADAPTER = "accounts.adapters.AnimStudioAccountAdapter"
+
+SOCIALACCOUNT_ADAPTER = "accounts.adapters.AnimStudioSocialAccountAdapter"
+SOCIALACCOUNT_AUTO_SIGNUP = True
+SOCIALACCOUNT_EMAIL_AUTHENTICATION = True
+SOCIALACCOUNT_EMAIL_AUTHENTICATION_AUTO_CONNECT = True
+SOCIALACCOUNT_LOGIN_ON_GET = True
 
 SOCIALACCOUNT_PROVIDERS = {
     "google": {
@@ -165,6 +172,8 @@ SOCIALACCOUNT_PROVIDERS = {
         "AUTH_PARAMS": {"access_type": "online"},
         "OAUTH_PKCE_ENABLED": True,
         "FETCH_USERINFO": True,
+        "VERIFIED_EMAIL": True,
+        "EMAIL_AUTHENTICATION": True,
     }
 }
 

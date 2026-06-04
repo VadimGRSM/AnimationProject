@@ -11,6 +11,7 @@ class User(AbstractUser):
     email = models.EmailField("Email", unique=True)
     display_name = models.CharField("Display name", max_length=150, blank=True)
     avatar = models.ImageField(upload_to="avatars/", blank=True, null=True)
+    avatar_external_url = models.URLField("External avatar URL", blank=True)
     created_at = models.DateTimeField(default=timezone.now, editable=False)
 
     USERNAME_FIELD = "email"
@@ -32,12 +33,12 @@ class User(AbstractUser):
 
     @property
     def avatar_url(self):
-        if not self.avatar:
-            return ""
-        try:
-            return self.avatar.url
-        except ValueError:
-            return ""
+        if self.avatar:
+            try:
+                return self.avatar.url
+            except ValueError:
+                pass
+        return self.avatar_external_url
 
     def __str__(self):
         return self.display_name or self.email

@@ -1,36 +1,15 @@
 from django.contrib import messages
 from django.contrib.auth import REDIRECT_FIELD_NAME, login
 from django.contrib.auth.decorators import login_required
-from django.shortcuts import redirect, render, resolve_url
-from django.utils.http import url_has_allowed_host_and_scheme
+from django.shortcuts import redirect, render
 
-from animation.services.invite_service import (
-    PENDING_PROJECT_INVITE_SESSION_KEY,
-    get_project_invite_path,
-)
-
+from .auth_redirects import get_post_auth_redirect
 from .forms import ProfileEditForm, SignUpForm
-
-
-def _get_post_auth_redirect(request):
-    redirect_to = request.POST.get(REDIRECT_FIELD_NAME) or request.GET.get(REDIRECT_FIELD_NAME)
-    if redirect_to and url_has_allowed_host_and_scheme(
-        redirect_to,
-        allowed_hosts={request.get_host()},
-        require_https=request.is_secure(),
-    ):
-        return redirect_to
-
-    invite_token = request.session.get(PENDING_PROJECT_INVITE_SESSION_KEY)
-    if invite_token:
-        return get_project_invite_path(invite_token)
-
-    return resolve_url("animation:project_list")
 
 
 def signup_view(request):
     if request.user.is_authenticated:
-        return redirect(_get_post_auth_redirect(request))
+        return redirect(get_post_auth_redirect(request))
 
     if request.method == "POST":
         form = SignUpForm(request.POST)
@@ -38,7 +17,7 @@ def signup_view(request):
             user = form.save()
             login(request, user, backend="django.contrib.auth.backends.ModelBackend")
             messages.success(request, "Account created. Welcome to AnimStudio.")
-            return redirect(_get_post_auth_redirect(request))
+            return redirect(get_post_auth_redirect(request))
     else:
         form = SignUpForm()
 
