@@ -110,6 +110,12 @@ const exportModal = document.getElementById('export-modal');
 const exportModalCloseButton = document.getElementById('export-modal-close');
 const exportCancelButton = document.getElementById('export-cancel-button');
 const exportConfirmButton = document.getElementById('export-confirm-button');
+const deleteFrameModal = document.getElementById('delete-frame-modal');
+const deleteFrameModalCloseButton = document.getElementById('delete-frame-modal-close');
+const deleteFrameCancelButton = document.getElementById('delete-frame-cancel-button');
+const deleteFrameConfirmButton = document.getElementById('delete-frame-confirm-button');
+const deleteFrameModalSummary = document.getElementById('delete-frame-modal-summary');
+const deleteFrameErrorLabel = document.getElementById('delete-frame-error');
 const editorPopupBackdrop = document.getElementById('editor-popup-backdrop');
 const exportResolutionSelect = document.getElementById('export-resolution');
 const exportFpsField = document.getElementById('export-fps-field');
@@ -363,6 +369,9 @@ let isSwitchingLayer = false;
 let dragFrameId = null;
 let panStartedByMiddle = false;
 let isExporting = false;
+let isDeletingFrame = false;
+let pendingDeleteFrameIndex = null;
+let pendingDeleteFrameId = null;
 let timelineControlsTemporarilyDisabled = false;
 let isUpdatingProjectFps = false;
 const projectPresence = new Map();
@@ -2997,6 +3006,8 @@ function applyGlobalModalSuppressionState(element, isSuppressed) {
 
 function syncPopupBackdropState() {
     const exportOpen = isExportModalOpen();
+    const deleteFrameOpen = isDeleteFrameModalOpen();
+    const hasGlobalModal = exportOpen || deleteFrameOpen;
     const openEditorPopups = getOpenEditorPopupIds();
     const hasEditorPopup = openEditorPopups.length > 0;
     const resolvedActivePopup = getResolvedActiveEditorPopupId();
@@ -3007,13 +3018,13 @@ function syncPopupBackdropState() {
     }
 
     if (editorPopupBackdrop) {
-        editorPopupBackdrop.hidden = exportOpen || !hasEditorPopup;
+        editorPopupBackdrop.hidden = hasGlobalModal || !hasEditorPopup;
     }
-    document.body.classList.toggle('modal-open', exportOpen || hasEditorPopup);
+    document.body.classList.toggle('modal-open', hasGlobalModal || hasEditorPopup);
 
-    const activeEditorPopup = exportOpen ? null : resolvedActivePopup;
-    const suppressToolSettingsForGlobalModal = exportOpen && isToolSettingsPopoverOpen();
-    const suppressOnionForGlobalModal = exportOpen && isOnionPanelOpen();
+    const activeEditorPopup = hasGlobalModal ? null : resolvedActivePopup;
+    const suppressToolSettingsForGlobalModal = hasGlobalModal && isToolSettingsPopoverOpen();
+    const suppressOnionForGlobalModal = hasGlobalModal && isOnionPanelOpen();
     const suppressToolbarForGlobalModal = suppressToolSettingsForGlobalModal;
 
     if (toolbarPanel) {
@@ -9691,19 +9702,108 @@ async function createFrameOnServer(options = {}) {
     }
 }
 
+function isDeleteFrameModalOpen() {
+    return Boolean(deleteFrameModal && !deleteFrameModal.hidden);
+}
+
+function setDeleteFrameError(message) {
+    if (!deleteFrameErrorLabel) return;
+    const text = typeof message === 'string' ? message.trim() : '';
+    if (!text) {
+        deleteFrameErrorLabel.textContent = '';
+        deleteFrameErrorLabel.hidden = true;
+        return;
+    }
+    deleteFrameErrorLabel.textContent = text;
+    deleteFrameErrorLabel.hidden = false;
+}
+
+function setDeleteFrameControlsDisabled(disabled) {
+    if (deleteFrameConfirmButton) deleteFrameConfirmButton.disabled = disabled;
+    if (deleteFrameCancelButton) deleteFrameCancelButton.disabled = disabled;
+    if (deleteFrameModalCloseButton) deleteFrameModalCloseButton.disabled = disabled;
+}
+
+function resetDeleteFrameModalUi() {
+    setDeleteFrameError('');
+    setDeleteFrameControlsDisabled(false);
+}
+
+function openDeleteFrameModal() {
+    if (!deleteFrameModal) {
+        void deleteCurrentFrameOnServer();
+        return;
+    }
+    if (shouldDisableTimelineControls()) return;
+    if (isSwitchingFrame) return;
+
+    const frameIndex = Number(currentFrameIndex);
+    if (!Number.isFinite(frameIndex) || frameIndex <= 0) return;
+    const deleteUrl = getFrameDeleteUrl(frameIndex);
+    if (!deleteUrl) return;
+
+    const frame = getTimelineFrameByIndex(frameIndex);
+    const frameId = frame && Number.isFinite(Number(frame.id)) ? Number(frame.id) : currentFrameId;
+    pendingDeleteFrameIndex = frameIndex;
+    pendingDeleteFrameId = Number.isFinite(Number(frameId)) ? Number(frameId) : null;
+
+    resetDeleteFrameModalUi();
+    if (deleteFrameModalSummary) {
+        deleteFrameModalSummary.textContent = `Frame ${frameIndex}`;
+    }
+    deleteFrameModal.hidden = false;
+    syncPopupBackdropState();
+    if (deleteFrameConfirmButton) {
+        deleteFrameConfirmButton.focus();
+    }
+}
+
+function closeDeleteFrameModal(options = {}) {
+    if (!deleteFrameModal) return;
+    if (isDeletingFrame && !options.force) return;
+    deleteFrameModal.hidden = true;
+    pendingDeleteFrameIndex = null;
+    pendingDeleteFrameId = null;
+    resetDeleteFrameModalUi();
+    syncPopupBackdropState();
+    if (deleteFrameButton && !options.skipFocus) {
+        deleteFrameButton.focus();
+    }
+}
+
+function getPendingDeleteFrameIndex() {
+    const pendingId = Number(pendingDeleteFrameId);
+    if (Number.isFinite(pendingId) && pendingId > 0) {
+        const frame = getTimelineFrameById(pendingId);
+        const frameIndex = frame ? Number(frame.index) : NaN;
+        return Number.isFinite(frameIndex) && frameIndex > 0 ? frameIndex : null;
+    }
+
+    const fallbackIndex = Number(pendingDeleteFrameIndex || currentFrameIndex);
+    return Number.isFinite(fallbackIndex) && fallbackIndex > 0 ? fallbackIndex : null;
+}
+
 async function deleteCurrentFrameOnServer() {
     if (shouldDisableTimelineControls()) return;
     if (isSwitchingFrame) return;
-    const deleteUrl = getFrameDeleteUrl(currentFrameIndex);
+    const frameIndex = getPendingDeleteFrameIndex();
+    if (!frameIndex) {
+        setDeleteFrameError('This frame is no longer available.');
+        return;
+    }
+    const deleteUrl = getFrameDeleteUrl(frameIndex);
     if (!deleteUrl) return;
 
-    const confirmDelete = window.confirm(`Delete frame ${currentFrameIndex}?`);
-    if (!confirmDelete) return;
-
+    isDeletingFrame = true;
+    setDeleteFrameError('');
+    setDeleteFrameControlsDisabled(true);
     setTimelineControlsDisabled(true);
 
     const savedOk = await saveCurrentFrame();
     if (!savedOk && hasUnsavedChanges) {
+        setDeleteFrameError('Could not save the current frame before deleting.');
+        setDeleteFrameControlsDisabled(false);
+        isDeletingFrame = false;
         setTimelineControlsDisabled(false);
         return;
     }
@@ -9732,13 +9832,17 @@ async function deleteCurrentFrameOnServer() {
         currentFrameId = null;
         resetOnionFrameCache();
         renderTimelineFrames();
+        closeDeleteFrameModal({ force: true, skipFocus: true });
         await loadFrameByIndex(nextIndex);
     } catch (error) {
         forgetLocalProjectEventRequest(clientRequestId);
         console.error('Frame deletion error', error);
+        setDeleteFrameError('Could not delete the frame.');
         setSaveStatus('Could not delete the frame.', 'error');
         setSaveIndicator('error');
     } finally {
+        isDeletingFrame = false;
+        setDeleteFrameControlsDisabled(false);
         setTimelineControlsDisabled(false);
     }
 }
@@ -9807,7 +9911,7 @@ function bindTimelineEvents() {
     if (deleteFrameButton) {
         deleteFrameButton.addEventListener('click', () => {
             if (shouldDisableTimelineControls()) return;
-            deleteCurrentFrameOnServer();
+            openDeleteFrameModal();
         });
     }
 
@@ -9867,6 +9971,29 @@ function bindTimelineEvents() {
             .filter((value) => Number.isFinite(value));
         saveFrameOrder(orderedIds);
     });
+}
+
+function bindDeleteFrameModalEvents() {
+    if (!deleteFrameModal) return;
+
+    deleteFrameModal.addEventListener('click', (event) => {
+        const closeTarget = event.target && event.target.closest('[data-delete-frame-action="close"]');
+        if (closeTarget || event.target === deleteFrameModal) {
+            closeDeleteFrameModal();
+        }
+    });
+
+    if (deleteFrameModalCloseButton) {
+        deleteFrameModalCloseButton.addEventListener('click', () => closeDeleteFrameModal());
+    }
+    if (deleteFrameCancelButton) {
+        deleteFrameCancelButton.addEventListener('click', () => closeDeleteFrameModal());
+    }
+    if (deleteFrameConfirmButton) {
+        deleteFrameConfirmButton.addEventListener('click', () => {
+            deleteCurrentFrameOnServer();
+        });
+    }
 }
 
 function flattenLayers() {
@@ -10953,6 +11080,14 @@ function handleKeyDown(event) {
         if (event.code === 'Escape') {
             event.preventDefault();
             closeExportModal();
+        }
+        return;
+    }
+
+    if (isDeleteFrameModalOpen()) {
+        if (event.code === 'Escape') {
+            event.preventDefault();
+            closeDeleteFrameModal();
         }
         return;
     }
@@ -12075,6 +12210,7 @@ async function initEditor() {
     hydratePanelPositions();
     applyEditorViewState(loadEditorViewState(), { skipStore: true, skipLayout: true });
     bindTimelineEvents();
+    bindDeleteFrameModalEvents();
     bindPlaybackEvents();
     await loadTimelineFrames();
     initOnionSkin();

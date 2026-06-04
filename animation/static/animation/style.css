@@ -892,6 +892,17 @@ body.modal-open {
     color: #94a3b8;
 }
 
+.modal__frame-summary {
+    margin: 0;
+    padding: 12px 14px;
+    border-radius: 14px;
+    border: 1px solid rgba(96, 165, 250, 0.26);
+    background: rgba(30, 64, 175, 0.16);
+    color: #dbeafe;
+    font-size: 14px;
+    font-weight: 700;
+}
+
 .modal__actions {
     display: flex;
     align-items: center;
